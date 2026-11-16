@@ -1,0 +1,71 @@
+export type DemoSyncStatus = 'QUEUED_OFFLINE' | 'SYNCING' | 'SYNCED' | 'SENT_VIA_SMS';
+
+export interface DemoQueuedOrder {
+  idempotencyKey: string; // 8-char compact REF8 for CoD & NextSMS parity
+  sellerHub: string;
+  compactSmsBody: string;
+  totalTzs: number;
+  clientCreatedAt: string;
+  syncStatus: DemoSyncStatus;
+  retryCount: number;
+  serverNote?: string;
+}
+
+const DB_NAME = 'sokokuu_tz_cod_demo';
+const STORE_NAME = 'pending_cod_orders';
+const DB_VERSION = 1;
+
+function openDemoDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'idempotencyKey' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function listQueuedOrders(): Promise<DemoQueuedOrder[]> {
+  const db = await openDemoDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const items = (req.result as DemoQueuedOrder[]) || [];
+      items.sort((a, b) => b.clientCreatedAt.localeCompare(a.clientCreatedAt));
+      resolve(items);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function putQueuedOrder(order: DemoQueuedOrder): Promise<void> {
+  const db = await openDemoDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put(order);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function clearSyncedOrders(): Promise<void> {
+  const all = await listQueuedOrders();
+  const db = await openDemoDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    all.forEach((item) => {
+      if (item.syncStatus === 'SYNCED' || item.syncStatus === 'SENT_VIA_SMS') {
+        store.delete(item.idempotencyKey);
+      }
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}

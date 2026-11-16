@@ -1,0 +1,41 @@
+{
+  "id": "/dashboard/retailer",
+  "name": "SokoKuu TZ",
+  "short_name": "SokoKuu",
+  "description": "Offline-first Tanzanian B2B2C Retail POS, Inventory & Wholesale Supply Chain Platform.",
+  "start_url": "/dashboard/retailer",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#059669",
+  "lang": "sw",
+  "dir": "ltr",
+  "categories": ["business", "shopping", "finance"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/sokokuu-brand-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
