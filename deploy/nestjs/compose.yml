@@ -1,0 +1,102 @@
+# ==============================================================================
+# SokoKuu TZ — NestJS Backend & Infrastructure Compose Stack
+# PostgreSQL 16 + PostGIS 3.4 | Redis 7 | RabbitMQ 3.13 Management | NestJS API
+# ==============================================================================
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: sokokuu-postgres-postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sokokuu_tz}
+      POSTGRES_USER: ${POSTGRES_USER:-sokokuu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: Africa/Dar_es_Salaam
+      PGTZ: Africa/Dar_es_Salaam
+    ports:
+      - '5432:5432'
+    volumes:
+      - sokokuu_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-sokokuu} -d ${POSTGRES_DB:-sokokuu_tz}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sokokuu-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    environment:
+      TZ: Africa/Dar_es_Salaam
+    ports:
+      - '6379:6379'
+    volumes:
+      - sokokuu_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: sokokuu-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-sokokuu}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+      TZ: Africa/Dar_es_Salaam
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    volumes:
+      - sokokuu_rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  sokokuu-api:
+    build:
+      context: ../..
+      dockerfile: deploy/nestjs/Dockerfile
+    container_name: sokokuu-nestjs-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3001
+      TZ: Africa/Dar_es_Salaam
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sokokuu}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sokokuu_tz}?schema=public
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sokokuu}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      NEXTSMS_WEBHOOK_SHARED_TOKEN: ${NEXTSMS_WEBHOOK_SHARED_TOKEN:?NEXTSMS_WEBHOOK_SHARED_TOKEN is required}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:ops@sokokuu.tz}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?VAPID_PUBLIC_KEY is required}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?VAPID_PRIVATE_KEY is required}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,https://sokokuu.tz}
+    ports:
+      - '3001:3001'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/api/v1/health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sokokuu_pg_data:
+  sokokuu_redis_data:
+  sokokuu_rabbitmq_data:

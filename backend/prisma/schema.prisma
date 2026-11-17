@@ -1,0 +1,911 @@
+// ==============================================================================
+// SokoKuu TZ — Canonical Prisma Schema (PostgreSQL 16 + PostGIS 3.4)
+// Preserves all blueprint V1–V10 models, enums, integer TZS/Quarter-Quanta,
+// plus business_branches, idempotency_keys, refresh_sessions, and domain_outbox_events.
+// ==============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------------------------
+// Domain Enums
+// ------------------------------------------------------------------------------
+
+enum UserRole {
+  SUPER_ADMIN
+  WHOLESALER
+  RETAILER
+  CONSUMER
+  DRIVER
+
+  @@map("user_role")
+}
+
+enum BusinessTier {
+  WHOLESALE_HUB
+  RETAIL_DUKA
+  HYBRID_STORE
+
+  @@map("business_tier")
+}
+
+enum PackagingUnit {
+  CARTON
+  DOZEN
+  PACK
+  UNIT
+  SACK_50KG
+  SACK_25KG
+  QUARTER_KILO_LITRE
+  HALF_KILO_LITRE
+  THREE_QUARTER_KILO
+  SINGLE_KILO_LITRE
+
+  @@map("packaging_unit")
+}
+
+enum OrderStatus {
+  PLACED
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+  DISPUTED
+
+  @@map("order_status")
+}
+
+enum OrderOrigin {
+  PWA_ONLINE
+  PWA_IDB_SYNC
+  NEXTSMS_INBOUND
+  POS_WALKIN
+
+  @@map("order_origin")
+}
+
+enum LedgerVerificationStatus {
+  PENDING
+  WAITING
+  BUYER_CONFIRMED
+  DRIVER_CONFIRMED
+  SUCCESSFUL
+  DISPUTED
+
+  @@map("ledger_verification_status")
+}
+
+enum LeadStatus {
+  PROSPECT
+  CONVERTED
+  ARCHIVED
+
+  @@map("lead_status")
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  FAILED
+  DEAD_LETTER
+
+  @@map("outbox_status")
+}
+
+enum SystemUnitCategory {
+  WEIGHT
+  VOLUME
+  PACKAGING
+
+  @@map("system_unit_category")
+}
+
+enum StandardPricingProfileType {
+  RETAIL
+  WHOLESALE
+  REGIONAL
+  PROMOTIONAL
+
+  @@map("standard_pricing_profile_type")
+}
+
+// ------------------------------------------------------------------------------
+// 1. Users & Rotating Refresh Sessions
+// ------------------------------------------------------------------------------
+
+model User {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phoneE164       String   @unique @map("phone_e164") @db.VarChar(16)
+  fullName        String   @map("full_name") @db.VarChar(150)
+  passwordHash    String   @map("password_hash") @db.VarChar(255)
+  role            UserRole
+  preferredLocale String   @default("sw") @map("preferred_locale") @db.VarChar(5)
+  smsHmacSecret   String   @map("sms_hmac_secret") @db.VarChar(128)
+  isActive        Boolean  @default(true) @map("is_active")
+  version         BigInt   @default(0)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ownedMerchants       BusinessProfile[]     @relation("MerchantOwner")
+  buyerOrders          Order[]               @relation("OrderBuyer")
+  driverOrders         Order[]               @relation("OrderDriver")
+  driverLedgers        CashDeliveryLedger[]  @relation("LedgerDriver")
+  eodDriverBatches     EodSettlementBatch[]  @relation("EodDriver")
+  eodSettledBatches    EodSettlementBatch[]  @relation("EodSettler")
+  webPushSubscriptions WebPushSubscription[]
+  refreshSessions      RefreshSession[]
+  securityAuditLogs    SecurityAuditLog[]
+
+  @@index([role, isActive], map: "idx_users_role_active")
+  @@map("users")
+}
+
+model RefreshSession {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  familyId   String    @map("family_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  replacedBy String?   @map("replaced_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, familyId], map: "idx_refresh_sessions_user_family")
+  @@map("refresh_sessions")
+}
+
+// ------------------------------------------------------------------------------
+// 2. Multi-Tenant Merchants (business_profiles) & Branches
+// ------------------------------------------------------------------------------
+
+model BusinessProfile {
+  id                   String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerUserId          String                                @map("owner_user_id") @db.Uuid
+  smsShortCode         String                                @unique @map("sms_short_code") @db.VarChar(10)
+  businessName         String                                @map("business_name") @db.VarChar(180)
+  tier                 BusinessTier
+  streetAddress        String                                @map("street_address")
+  ward                 String                                @db.VarChar(100)
+  district             String                                @db.VarChar(100)
+  latitude             Decimal                               @db.Decimal(9, 6)
+  longitude            Decimal                               @db.Decimal(9, 6)
+  location             Unsupported("geography(Point, 4326)")?
+  logoCdnUrl           String?                               @map("logo_cdn_url")
+  isOpen               Boolean                               @default(true) @map("is_open")
+  isPlatformManaged    Boolean                               @default(true) @map("is_platform_managed")
+  geospatialMapEnabled Boolean                               @default(false) @map("geospatial_map_enabled")
+  version              BigInt                                @default(0)
+  createdAt            DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  owner                  User                      @relation("MerchantOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  branches               BusinessBranch[]
+  products               Product[]
+  clonedProducts         MerchantClonedProduct[]
+  sellerOrders           Order[]                   @relation("OrderSeller")
+  dispatchAuditTraces    OrderDispatchAuditTrace[]
+  convertedFromLeads     SokoLead[]
+  posSaleReceipts        PosSaleReceipt[]
+  eodSettlementBatches   EodSettlementBatch[]
+  financialAuditLogs     FinancialAuditLog[]
+  unitPricingOverrides   MerchantUnitPricingOverride[]
+  priceAuditLogs         MerchantPriceAuditLog[]
+  externalPurchaseReceipts ExternalPurchaseReceipt[]
+
+  @@index([id, isPlatformManaged], map: "idx_business_platform_managed")
+  @@map("business_profiles")
+}
+
+model BusinessBranch {
+  id           String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId   String                                @map("business_id") @db.Uuid
+  branchCode   String                                @map("branch_code") @db.VarChar(24)
+  branchName   String                                @map("branch_name") @db.VarChar(160)
+  streetAddress String                               @map("street_address")
+  ward         String                                @db.VarChar(100)
+  district     String                                @db.VarChar(100)
+  latitude     Decimal                               @db.Decimal(9, 6)
+  longitude    Decimal                               @db.Decimal(9, 6)
+  location     Unsupported("geography(Point, 4326)")?
+  isPrimary    Boolean                               @default(false) @map("is_primary")
+  isActive     Boolean                               @default(true) @map("is_active")
+  version      BigInt                                @default(0)
+  createdAt    DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime                              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  business BusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, branchCode], map: "uq_business_branch_code")
+  @@index([businessId, isActive], map: "idx_business_branches_active")
+  @@map("business_branches")
+}
+
+// ------------------------------------------------------------------------------
+// 3. Global Master Catalog, Categories & Merchant Shelf Clones
+// ------------------------------------------------------------------------------
+
+model SokoCatalogCategory {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  categoryCode       String   @unique @map("category_code") @db.VarChar(64)
+  nameSw             String   @map("name_sw") @db.VarChar(120)
+  nameEn             String   @map("name_en") @db.VarChar(120)
+  imagekitFolderPath String   @map("imagekit_folder_path") @db.VarChar(200)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("soko_catalog_categories")
+}
+
+model SokoGlobalCatalog {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  canonicalSku         String   @unique @map("canonical_sku") @db.VarChar(32)
+  fixedNameSw          String   @map("fixed_name_sw") @db.VarChar(200)
+  fixedNameEn          String   @map("fixed_name_en") @db.VarChar(200)
+  categoryCode         String   @map("category_code") @db.VarChar(64)
+  staticImageUrl       String   @map("static_image_url")
+  imagekitCdnUrl       String   @map("imagekit_cdn_url")
+  baseQuantumUnit      String   @default("QUANTA_250G") @map("base_quantum_unit") @db.VarChar(32)
+  clonedByStoresCount  BigInt   @default(0) @map("cloned_by_stores_count")
+  isActive             Boolean  @default(true) @map("is_active")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchantClones MerchantClonedProduct[]
+  sellerProducts Product[]
+  productUnits   GlobalProductUnit[]
+  standardPrices GlobalCatalogStandardPrice[]
+
+  @@index([categoryCode, isActive], map: "idx_global_catalog_active")
+  @@map("soko_global_catalog")
+}
+
+model MerchantClonedProduct {
+  id                                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  retailerBusinessId                 String   @map("retailer_business_id") @db.Uuid
+  globalCatalogId                    String   @map("global_catalog_id") @db.Uuid
+  availableQuantaStock               Int      @default(0) @map("available_quanta_stock")
+  lowStockThresholdQuanta            Int      @default(20) @map("low_stock_threshold_quanta")
+  unitPriceTzs                       BigInt   @default(0) @map("unit_price_tzs")
+  imagekitCdnUrl                     String   @default("") @map("imagekit_cdn_url")
+  inventoryValueTzs                  BigInt   @default(0) @map("inventory_value_tzs")
+  lastBuyingPricePerQuantumTzs       BigInt   @default(0) @map("last_buying_price_per_quantum_tzs")
+  weightedAvgBuyingCostPerQuantumTzs BigInt   @default(0) @map("weighted_avg_buying_cost_per_quantum_tzs")
+  buyingPriceEstablished             Boolean  @default(false) @map("buying_price_established")
+  lastAgreedPurchasePriceTzs         BigInt?  @map("last_agreed_purchase_price_tzs")
+  createdAt                          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant                 BusinessProfile               @relation(fields: [retailerBusinessId], references: [id], onDelete: Cascade)
+  globalCatalog            SokoGlobalCatalog             @relation(fields: [globalCatalogId], references: [id], onDelete: Restrict)
+  unitPricingOverrides     MerchantUnitPricingOverride[]
+  priceAuditLogs           MerchantPriceAuditLog[]
+  externalPurchaseReceipts ExternalPurchaseReceipt[]
+
+  @@unique([retailerBusinessId, globalCatalogId], map: "uq_merchant_global_clone")
+  @@map("merchant_cloned_products")
+}
+
+// ------------------------------------------------------------------------------
+// 4. Merchant Products, Volume Price Tiers & Bulk Deconstruction Logs
+// ------------------------------------------------------------------------------
+
+model Product {
+  id                         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sellerBusinessId           String        @map("seller_business_id") @db.Uuid
+  globalCatalogId            String?       @map("global_catalog_id") @db.Uuid
+  smsItemCode                String        @map("sms_item_code") @db.VarChar(8)
+  nameEn                     String        @map("name_en") @db.VarChar(200)
+  nameSw                     String        @map("name_sw") @db.VarChar(200)
+  cartonUnits                Int           @default(24) @map("carton_units")
+  cartonPriceTzs             BigInt        @map("carton_price_tzs")
+  dozenPriceTzs              BigInt        @map("dozen_price_tzs")
+  packPriceTzs               BigInt        @map("pack_price_tzs")
+  unitPriceTzs               BigInt        @map("unit_price_tzs")
+  baseUnitStock              Int           @default(0) @map("base_unit_stock")
+  baseQuarterQuantaStock     Int           @default(0) @map("base_quarter_quanta_stock")
+  sealedBulkPackagesStock    Int           @default(0) @map("sealed_bulk_packages_stock")
+  sealedParentUnitType       PackagingUnit @default(SACK_50KG) @map("sealed_parent_unit_type")
+  quantaPerSealedPackage     Int           @default(200) @map("quanta_per_sealed_package")
+  wholesaleMinUnitsThreshold Int           @default(1) @map("wholesale_min_units_threshold")
+  wholesaleMinWeightKg       Decimal       @default(1.00) @map("wholesale_min_weight_kg") @db.Decimal(8, 2)
+  wholesaleMinQuarterQuanta  Int?          @map("wholesale_min_quarter_quanta")
+  lowStockThresholdQuanta    Int           @default(20) @map("low_stock_threshold_quanta")
+  isActive                   Boolean       @default(true) @map("is_active")
+  version                    BigInt        @default(0)
+  createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  seller             BusinessProfile              @relation(fields: [sellerBusinessId], references: [id], onDelete: Restrict)
+  globalCatalog      SokoGlobalCatalog?           @relation(fields: [globalCatalogId], references: [id], onDelete: SetNull)
+  priceTiers         ProductPriceTier[]
+  customUnits        MerchantCustomUnit[]
+  orderItems         OrderItem[]
+  deconstructionLogs InventoryDeconstructionLog[]
+  posSaleReceipts    PosSaleReceipt[]
+
+  @@unique([sellerBusinessId, smsItemCode], map: "uq_seller_sms_item")
+  @@map("products")
+}
+
+model MerchantCustomUnit {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId            String   @map("product_id") @db.Uuid
+  unitCode             String   @map("unit_code") @db.VarChar(32)
+  unitLabel            String   @map("unit_label") @db.VarChar(64)
+  baseKg               Decimal  @map("base_kg") @db.Decimal(8, 2)
+  quarterQuantaPerUnit Int      @map("quarter_quanta_per_unit")
+  priceTzs             BigInt   @map("price_tzs")
+  isWholesaleTier      Boolean  @default(false) @map("is_wholesale_tier")
+  isActive             Boolean  @default(true) @map("is_active")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, unitCode], map: "uq_product_custom_unit_code")
+  @@map("merchant_custom_units")
+}
+
+model ProductPriceTier {
+  id                   String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId            String        @map("product_id") @db.Uuid
+  unitType             PackagingUnit @map("unit_type")
+  quarterQuantaPerUnit Int           @map("quarter_quanta_per_unit")
+  priceTzs             BigInt        @map("price_tzs")
+  isWholesaleTier      Boolean       @default(false) @map("is_wholesale_tier")
+  isActive             Boolean       @default(true) @map("is_active")
+  createdAt            DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, unitType, isWholesaleTier], map: "uq_product_unit_wholesale_flag")
+  @@index([productId, unitType, isWholesaleTier], map: "idx_price_tiers_lookup")
+  @@map("product_price_tiers")
+}
+
+model InventoryDeconstructionLog {
+  id                    String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId             String        @map("product_id") @db.Uuid
+  parentUnitType        PackagingUnit @map("parent_unit_type")
+  bulkPackagesBroken    Int           @map("bulk_packages_broken")
+  creditedQuarterQuanta Int           @map("credited_quarter_quanta")
+  looseQuantaBefore     Int           @map("loose_quanta_before")
+  looseQuantaAfter      Int           @map("loose_quanta_after")
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt(sort: Desc)], map: "idx_deconstruction_product_time")
+  @@map("inventory_deconstruction_logs")
+}
+
+// ------------------------------------------------------------------------------
+// 5. Orders, Line Items, Dual-PIN Cash Ledgers & Routing Audit Traces
+// ------------------------------------------------------------------------------
+
+model Order {
+  id                    String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderRef              String      @unique @map("order_ref") @db.Char(8)
+  buyerUserId           String      @map("buyer_user_id") @db.Uuid
+  sellerBusinessId      String      @map("seller_business_id") @db.Uuid
+  driverUserId          String?     @map("driver_user_id") @db.Uuid
+  status                OrderStatus @default(PLACED)
+  originChannel         OrderOrigin @default(PWA_ONLINE) @map("origin_channel")
+  routingTargetPipeline String      @default("SUPER_ADMIN_HELPDESK_PIPELINE") @map("routing_target_pipeline") @db.VarChar(64)
+  rawSmsPayload         String?     @map("raw_sms_payload") @db.VarChar(160)
+  expectedTotalTzs      BigInt      @map("expected_total_tzs")
+  deliveryFeeTzs        BigInt      @default(0) @map("delivery_fee_tzs")
+  paymentMethod         String      @default("CASH") @map("payment_method") @db.VarChar(24)
+  paidAmountTzs         BigInt      @default(0) @map("paid_amount_tzs")
+  version               BigInt      @default(0)
+  placedAt              DateTime    @default(now()) @map("placed_at") @db.Timestamptz(6)
+  dispatchedAt          DateTime?   @map("dispatched_at") @db.Timestamptz(6)
+  deliveredAt           DateTime?   @map("delivered_at") @db.Timestamptz(6)
+  cancelledAt           DateTime?   @map("cancelled_at") @db.Timestamptz(6)
+  cancellationReason    String?     @map("cancellation_reason")
+
+  buyer              User                      @relation("OrderBuyer", fields: [buyerUserId], references: [id], onDelete: Restrict)
+  seller             BusinessProfile           @relation("OrderSeller", fields: [sellerBusinessId], references: [id], onDelete: Restrict)
+  driver             User?                     @relation("OrderDriver", fields: [driverUserId], references: [id], onDelete: SetNull)
+  items              OrderItem[]
+  cashLedger         CashDeliveryLedger?
+  auditTraces        OrderDispatchAuditTrace[]
+  financialAuditLogs FinancialAuditLog[]
+  nextSmsInboundLogs NextSmsInboundLog[]
+
+  @@index([buyerUserId, status], map: "idx_orders_buyer_status")
+  @@index([sellerBusinessId, status], map: "idx_orders_seller_status")
+  @@index([driverUserId, status], map: "idx_orders_driver_active")
+  @@map("orders")
+}
+
+model OrderItem {
+  id                     String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId                String        @map("order_id") @db.Uuid
+  productId              String        @map("product_id") @db.Uuid
+  unitType               PackagingUnit @map("unit_type")
+  quantity               Int
+  baseUnitsTotal         Int           @map("base_units_total")
+  unitPriceTzs           BigInt        @map("unit_price_tzs")
+  lineTotalTzs           BigInt        @map("line_total_tzs")
+  isWholesaleTierApplied Boolean       @default(false) @map("is_wholesale_tier_applied")
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("order_items")
+}
+
+model CashDeliveryLedger {
+  id                    String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId               String                   @unique @map("order_id") @db.Uuid
+  driverUserId          String?                  @map("driver_user_id") @db.Uuid
+  oneTimeQrToken        String?                  @unique @map("one_time_qr_token") @db.VarChar(255)
+  qrTokenExpiresAt      DateTime?                @map("qr_token_expires_at") @db.Timestamptz(6)
+  qrTokenSignature      String?                  @map("qr_token_signature") @db.VarChar(128)
+  isQrTokenConsumed     Boolean                  @default(false) @map("is_qr_token_consumed")
+  buyerConfirmationPin  String                   @map("buyer_confirmation_pin") @db.VarChar(128)
+  driverConfirmationPin String                   @map("driver_confirmation_pin") @db.VarChar(128)
+  isBuyerConfirmed      Boolean                  @default(false) @map("is_buyer_confirmed")
+  isDriverConfirmed     Boolean                  @default(false) @map("is_driver_confirmed")
+  expectedCashAmount    BigInt                   @map("expected_cash_amount")
+  collectedCashAmount   BigInt                   @default(0) @map("collected_cash_amount")
+  paymentMethod         String                   @default("CASH") @map("payment_method") @db.VarChar(24)
+  mobileMoneyRef        String?                  @map("mobile_money_ref") @db.VarChar(64)
+  mobileMoneyVerified   Boolean                  @default(false) @map("mobile_money_verified")
+  verificationStatus    LedgerVerificationStatus @default(WAITING) @map("verification_status")
+  buyerConfirmedAt      DateTime?                @map("buyer_confirmed_at") @db.Timestamptz(6)
+  driverConfirmedAt     DateTime?                @map("driver_confirmed_at") @db.Timestamptz(6)
+  reconciledAt          DateTime?                @map("reconciled_at") @db.Timestamptz(6)
+  eodSettledAt          DateTime?                @map("eod_settled_at") @db.Timestamptz(6)
+  eodSettlementBatchId  String?                  @map("eod_settlement_batch_id") @db.Uuid
+  version               BigInt                   @default(0)
+  createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                 @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order              Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  driver             User?               @relation("LedgerDriver", fields: [driverUserId], references: [id], onDelete: SetNull)
+  eodSettlementBatch EodSettlementBatch? @relation(fields: [eodSettlementBatchId], references: [id], onDelete: SetNull)
+
+  @@index([verificationStatus], map: "idx_ledger_status")
+  @@map("cash_delivery_ledgers")
+}
+
+model OrderDispatchAuditTrace {
+  id                         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId                    String    @map("order_id") @db.Uuid
+  orderRef8                  String    @map("order_ref8") @db.VarChar(16)
+  sellerBusinessId           String    @map("seller_business_id") @db.Uuid
+  isPlatformManagedSnapshot  Boolean   @map("is_platform_managed_snapshot")
+  routingOutputCode          String    @map("routing_output_code") @db.VarChar(64)
+  targetPipeline             String    @map("target_pipeline") @db.VarChar(64)
+  txIsolationLevel           String    @default("REPEATABLE_READ") @map("tx_isolation_level") @db.VarChar(32)
+  helpdeskStatus             String    @default("OPEN") @map("helpdesk_status") @db.VarChar(32)
+  handledByAdminId           String?   @map("handled_by_admin_id") @db.Uuid
+  handledNotes               String?   @map("handled_notes")
+  handledAt                  DateTime? @map("handled_at") @db.Timestamptz(6)
+  recordedAt                 DateTime  @default(now()) @map("recorded_at") @db.Timestamptz(6)
+
+  order  Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  seller BusinessProfile @relation(fields: [sellerBusinessId], references: [id], onDelete: Restrict)
+
+  @@index([sellerBusinessId, recordedAt(sort: Desc)], map: "idx_audit_traces_seller_time")
+  @@map("order_dispatch_audit_traces")
+}
+
+// ------------------------------------------------------------------------------
+// 6. Field Sales Leads, Web Push, Idempotency & Transactional Outbox
+// ------------------------------------------------------------------------------
+
+model SokoLead {
+  id                  String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantName        String                                @map("shop_name") @db.VarChar(180)
+  ownerName           String                                @map("owner_name") @db.VarChar(150)
+  ownerPhoneE164      String                                @unique @map("owner_phone_e164") @db.VarChar(16)
+  wardName            String                                @map("ward_name") @db.VarChar(140)
+  businessTier        BusinessTier                          @map("business_tier")
+  latitude            Float
+  longitude           Float
+  gpsAccuracyMeters   Int                                   @default(10) @map("gps_accuracy_meters")
+  location            Unsupported("geography(Point, 4326)")
+  status              LeadStatus                            @default(PROSPECT)
+  version             BigInt                                @default(1)
+  capturedByAgentId   String                                @map("captured_by_agent_id") @db.Uuid
+  convertedBusinessId String?                               @map("converted_business_id") @db.Uuid
+  convertedByAdminId  String?                               @map("converted_by_admin_id") @db.Uuid
+  convertedAt         DateTime?                             @map("converted_at") @db.Timestamptz(6)
+  createdAt           DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  convertedMerchant BusinessProfile? @relation(fields: [convertedBusinessId], references: [id], onDelete: SetNull)
+
+  @@index([id, status, version], map: "idx_soko_leads_status_version")
+  @@map("soko_leads")
+}
+
+model WebPushSubscription {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  endpoint   String   @unique
+  p256dhKey  String   @map("p256dh_key") @db.VarChar(255)
+  authSecret String   @map("auth_secret") @db.VarChar(255)
+  deviceType String?  @map("device_type") @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_web_push_user")
+  @@map("web_push_subscriptions")
+}
+
+model IdempotencyKey {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scopeKey     String   @unique @map("scope_key") @db.VarChar(180)
+  requestHash  String   @map("request_hash") @db.VarChar(128)
+  state        String   @default("COMPLETED") @db.VarChar(24)
+  responseCode Int?     @map("response_code")
+  responseBody Json?    @map("response_body")
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "idx_idempotency_expires_at")
+  @@index([state, createdAt], map: "idx_idempotency_state_created")
+  @@map("idempotency_keys")
+}
+
+model CashDeliveryLedgerArchive {
+  id                    String                   @id @db.Uuid
+  orderId               String                   @unique @map("order_id") @db.Uuid
+  driverUserId          String?                  @map("driver_user_id") @db.Uuid
+  oneTimeQrToken        String?                  @map("one_time_qr_token") @db.VarChar(255)
+  qrTokenExpiresAt      DateTime?                @map("qr_token_expires_at") @db.Timestamptz(6)
+  qrTokenSignature      String?                  @map("qr_token_signature") @db.VarChar(128)
+  isQrTokenConsumed     Boolean                  @default(false) @map("is_qr_token_consumed")
+  buyerConfirmationPin  String                   @map("buyer_confirmation_pin") @db.VarChar(128)
+  driverConfirmationPin String                   @map("driver_confirmation_pin") @db.VarChar(128)
+  isBuyerConfirmed      Boolean                  @default(false) @map("is_buyer_confirmed")
+  isDriverConfirmed     Boolean                  @default(false) @map("is_driver_confirmed")
+  expectedCashAmount    BigInt                   @map("expected_cash_amount")
+  collectedCashAmount   BigInt                   @default(0) @map("collected_cash_amount")
+  paymentMethod         String                   @default("CASH") @map("payment_method") @db.VarChar(24)
+  mobileMoneyRef        String?                  @map("mobile_money_ref") @db.VarChar(64)
+  mobileMoneyVerified   Boolean                  @default(false) @map("mobile_money_verified")
+  verificationStatus    LedgerVerificationStatus @map("verification_status")
+  buyerConfirmedAt      DateTime?                @map("buyer_confirmed_at") @db.Timestamptz(6)
+  driverConfirmedAt     DateTime?                @map("driver_confirmed_at") @db.Timestamptz(6)
+  reconciledAt          DateTime?                @map("reconciled_at") @db.Timestamptz(6)
+  eodSettledAt          DateTime?                @map("eod_settled_at") @db.Timestamptz(6)
+  eodSettlementBatchId  String?                  @map("eod_settlement_batch_id") @db.Uuid
+  version               BigInt                   @default(0)
+  createdAt             DateTime                 @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                 @map("updated_at") @db.Timestamptz(6)
+  archivedAt            DateTime                 @default(now()) @map("archived_at") @db.Timestamptz(6)
+
+  @@index([driverUserId, reconciledAt], map: "idx_ledger_archive_driver_reconciled")
+  @@map("cash_delivery_ledgers_archive")
+}
+
+model DomainOutboxEvent {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String       @map("aggregate_type") @db.VarChar(64)
+  aggregateId   String       @map("aggregate_id") @db.Uuid
+  eventType     String       @map("event_type") @db.VarChar(96)
+  routingKey    String       @map("routing_key") @db.VarChar(128)
+  payload       Json
+  correlationId String?      @map("correlation_id") @db.VarChar(64)
+  status        OutboxStatus @default(PENDING)
+  retryCount    Int          @default(0) @map("retry_count")
+  lastError     String?      @map("last_error")
+  nextRetryAt   DateTime?    @map("next_retry_at") @db.Timestamptz(6)
+  publishedAt   DateTime?    @map("published_at") @db.Timestamptz(6)
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  smsDeliveryLogs SmsDeliveryLog[]
+
+  @@index([status, createdAt], map: "idx_domain_outbox_pending")
+  @@map("domain_outbox_events")
+}
+
+model SecurityAuditLog {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  eventType String   @map("event_type") @db.VarChar(64)
+  ipAddress String?  @map("ip_address") @db.VarChar(64)
+  details   Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)], map: "idx_security_audit_user_time")
+  @@map("security_audit_logs")
+}
+
+// ------------------------------------------------------------------------------
+// 7. Phase 3 Financial Reconciliation, POS Receipts & NextSMS Tracking
+// ------------------------------------------------------------------------------
+
+model EodSettlementBatch {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sellerBusinessId      String   @map("seller_business_id") @db.Uuid
+  driverUserId          String   @map("driver_user_id") @db.Uuid
+  settledByUserId       String   @map("settled_by_user_id") @db.Uuid
+  settledOrdersCount    Int      @default(0) @map("settled_orders_count")
+  expectedTotalTzs      BigInt   @default(0) @map("expected_total_tzs")
+  collectedTotalTzs     BigInt   @default(0) @map("collected_total_tzs")
+  outstandingBalanceTzs BigInt   @default(0) @map("outstanding_balance_tzs")
+  varianceTzs           BigInt   @default(0) @map("variance_tzs")
+  cashTotalTzs          BigInt   @default(0) @map("cash_total_tzs")
+  mpesaTotalTzs         BigInt   @default(0) @map("mpesa_total_tzs")
+  tigoPesaTotalTzs      BigInt   @default(0) @map("tigo_pesa_total_tzs")
+  posSalesTotalTzs      BigInt   @default(0) @map("pos_sales_total_tzs")
+  notes                 String?
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  seller             BusinessProfile      @relation(fields: [sellerBusinessId], references: [id], onDelete: Restrict)
+  driver             User                 @relation("EodDriver", fields: [driverUserId], references: [id], onDelete: Restrict)
+  settledBy          User                 @relation("EodSettler", fields: [settledByUserId], references: [id], onDelete: Restrict)
+  ledgers            CashDeliveryLedger[]
+  posSaleReceipts    PosSaleReceipt[]
+  financialAuditLogs FinancialAuditLog[]
+
+  @@index([sellerBusinessId, driverUserId, createdAt(sort: Desc)], map: "idx_eod_batches_seller_driver")
+  @@map("eod_settlement_batches")
+}
+
+model PosSaleReceipt {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  receiptId            String   @unique @map("receipt_id") @db.VarChar(48)
+  sellerBusinessId     String   @map("seller_business_id") @db.Uuid
+  productId            String   @map("product_id") @db.Uuid
+  quantaSold           Int      @map("quanta_sold")
+  paymentMethod        String   @map("payment_method") @db.VarChar(24)
+  totalTzs             BigInt   @map("total_tzs")
+  collectedAmountTzs   BigInt   @map("collected_amount_tzs")
+  paymentVerified      Boolean  @default(true) @map("payment_verified")
+  mobileMoneyRef       String?  @map("mobile_money_ref") @db.VarChar(64)
+  eodSettlementBatchId String?  @map("eod_settlement_batch_id") @db.Uuid
+  recordedByUserId     String?  @map("recorded_by_user_id") @db.Uuid
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  seller             BusinessProfile     @relation(fields: [sellerBusinessId], references: [id], onDelete: Restrict)
+  product            Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  eodSettlementBatch EodSettlementBatch? @relation(fields: [eodSettlementBatchId], references: [id], onDelete: SetNull)
+
+  @@index([sellerBusinessId, createdAt(sort: Desc)], map: "idx_pos_receipts_seller_time")
+  @@map("pos_sales_receipts")
+}
+
+model FinancialAuditLog {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId       String?  @map("actor_user_id") @db.Uuid
+  sellerBusinessId  String?  @map("seller_business_id") @db.Uuid
+  orderId           String?  @map("order_id") @db.Uuid
+  settlementBatchId String?  @map("settlement_batch_id") @db.Uuid
+  eventType         String   @map("event_type") @db.VarChar(64)
+  amountTzs         BigInt   @default(0) @map("amount_tzs")
+  previousState     String?  @map("previous_state") @db.VarChar(64)
+  newState          String?  @map("new_state") @db.VarChar(64)
+  details           Json     @default("{}")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  seller          BusinessProfile?    @relation(fields: [sellerBusinessId], references: [id], onDelete: Restrict)
+  order           Order?              @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  settlementBatch EodSettlementBatch? @relation(fields: [settlementBatchId], references: [id], onDelete: Restrict)
+
+  @@index([sellerBusinessId, createdAt(sort: Desc)], map: "idx_financial_audit_seller_time")
+  @@map("financial_audit_logs")
+}
+
+model NextSmsInboundLog {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messageId       String?  @unique @map("message_id") @db.VarChar(128)
+  senderPhoneE164 String   @map("sender_phone_e164") @db.VarChar(16)
+  rawMessage      String   @map("raw_message") @db.VarChar(160)
+  parsedAction    String   @map("parsed_action") @db.VarChar(24)
+  orderRef8       String?  @map("order_ref8") @db.VarChar(16)
+  isValidHmac     Boolean  @default(false) @map("is_valid_hmac")
+  orderId         String?  @map("order_id") @db.Uuid
+  status          String   @db.VarChar(24)
+  errorCode       String?  @map("error_code") @db.VarChar(64)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([orderRef8, createdAt(sort: Desc)], map: "idx_nextsms_inbound_order_ref")
+  @@map("nextsms_inbound_logs")
+}
+
+model SmsDeliveryLog {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  outboxEventId      String?   @map("outbox_event_id") @db.Uuid
+  recipientPhoneE164 String    @map("recipient_phone_e164") @db.VarChar(16)
+  messageBody        String    @map("message_body") @db.VarChar(160)
+  provider           String    @default("NEXTSMS") @db.VarChar(32)
+  providerMessageId  String?   @map("provider_message_id") @db.VarChar(128)
+  status             String    @default("QUEUED") @db.VarChar(24)
+  attemptCount       Int       @default(0) @map("attempt_count")
+  maxAttempts        Int       @default(3) @map("max_attempts")
+  nextRetryAt        DateTime? @map("next_retry_at") @db.Timestamptz(6)
+  lastError          String?   @map("last_error")
+  sentAt             DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  outboxEvent DomainOutboxEvent? @relation(fields: [outboxEventId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextRetryAt], map: "idx_sms_delivery_status_retry")
+  @@map("sms_delivery_logs")
+}
+
+// ------------------------------------------------------------------------------
+// 8. Centralized Product Units, Versioned Standard Pricing & Purchase Costing
+// ------------------------------------------------------------------------------
+
+model SystemUnit {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unitCode          String             @unique @map("unit_code") @db.VarChar(32)
+  category          SystemUnitCategory
+  nameSw            String             @map("name_sw") @db.VarChar(80)
+  nameEn            String             @map("name_en") @db.VarChar(80)
+  abbreviation      String             @db.VarChar(16)
+  allowFractional   Boolean            @default(false) @map("allow_fractional")
+  baseReferenceCode String?            @map("base_reference_code") @db.VarChar(32)
+  isActive          Boolean            @default(true) @map("is_active")
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  productUnits GlobalProductUnit[]
+
+  @@map("system_units")
+}
+
+model GlobalProductUnit {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  globalCatalogId      String   @map("global_catalog_id") @db.Uuid
+  systemUnitId         String   @map("system_unit_id") @db.Uuid
+  quarterQuantaPerUnit Int      @map("quarter_quanta_per_unit")
+  displayLabelSw       String?  @map("display_label_sw") @db.VarChar(100)
+  displayLabelEn       String?  @map("display_label_en") @db.VarChar(100)
+  isWholesaleUnit      Boolean  @default(false) @map("is_wholesale_unit")
+  isActive             Boolean  @default(true) @map("is_active")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  globalCatalog            SokoGlobalCatalog             @relation(fields: [globalCatalogId], references: [id], onDelete: Cascade)
+  systemUnit               SystemUnit                    @relation(fields: [systemUnitId], references: [id], onDelete: Restrict)
+  standardPrices           GlobalCatalogStandardPrice[]
+  merchantOverrides        MerchantUnitPricingOverride[]
+  externalPurchaseReceipts ExternalPurchaseReceipt[]
+
+  @@unique([globalCatalogId, systemUnitId], map: "uq_global_product_system_unit")
+  @@index([globalCatalogId, isActive], map: "idx_global_product_units_catalog")
+  @@map("global_product_units")
+}
+
+model StandardPricingProfile {
+  id               String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profileCode      String                     @unique @map("profile_code") @db.VarChar(48)
+  profileType      StandardPricingProfileType @map("profile_type")
+  nameSw           String                     @map("name_sw") @db.VarChar(120)
+  nameEn           String                     @map("name_en") @db.VarChar(120)
+  version          Int                        @default(1)
+  currency         String                     @default("TZS") @db.VarChar(8)
+  effectiveFrom    DateTime                   @default(now()) @map("effective_from") @db.Timestamptz(6)
+  effectiveTo      DateTime?                  @map("effective_to") @db.Timestamptz(6)
+  isActive         Boolean                    @default(true) @map("is_active")
+  createdByAdminId String?                    @map("created_by_admin_id") @db.Uuid
+  createdAt        DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  standardPrices GlobalCatalogStandardPrice[]
+
+  @@map("standard_pricing_profiles")
+}
+
+model GlobalCatalogStandardPrice {
+  id                  String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  globalCatalogId     String                     @map("global_catalog_id") @db.Uuid
+  globalProductUnitId String                     @map("global_product_unit_id") @db.Uuid
+  pricingProfileId    String                     @map("pricing_profile_id") @db.Uuid
+  profileType         StandardPricingProfileType @map("profile_type")
+  version             Int                        @default(1)
+  minQty              Int                        @default(1) @map("min_qty")
+  maxQty              Int?                       @map("max_qty")
+  standardPriceTzs    BigInt                     @map("standard_price_tzs")
+  currency            String                     @default("TZS") @db.VarChar(8)
+  effectiveFrom       DateTime                   @default(now()) @map("effective_from") @db.Timestamptz(6)
+  effectiveTo         DateTime?                  @map("effective_to") @db.Timestamptz(6)
+  isActive            Boolean                    @default(true) @map("is_active")
+  createdByAdminId    String?                    @map("created_by_admin_id") @db.Uuid
+  createdAt           DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  globalCatalog     SokoGlobalCatalog             @relation(fields: [globalCatalogId], references: [id], onDelete: Cascade)
+  globalProductUnit GlobalProductUnit             @relation(fields: [globalProductUnitId], references: [id], onDelete: Cascade)
+  pricingProfile    StandardPricingProfile        @relation(fields: [pricingProfileId], references: [id], onDelete: Restrict)
+  merchantOverrides MerchantUnitPricingOverride[]
+
+  @@index([globalCatalogId, globalProductUnitId, profileType, isActive, version], map: "idx_global_standard_prices_lookup")
+  @@map("global_catalog_standard_prices")
+}
+
+model MerchantUnitPricingOverride {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clonedProductId          String   @map("cloned_product_id") @db.Uuid
+  businessId               String   @map("business_id") @db.Uuid
+  globalProductUnitId      String   @map("global_product_unit_id") @db.Uuid
+  standardPriceId          String?  @map("standard_price_id") @db.Uuid
+  standardPriceVersion     Int?     @map("standard_price_version")
+  selectedStandardPriceTzs BigInt?  @map("selected_standard_price_tzs")
+  amendedSellingPriceTzs   BigInt?  @map("amended_selling_price_tzs")
+  effectiveSellingPriceTzs BigInt   @map("effective_selling_price_tzs")
+  isOverridden             Boolean  @default(false) @map("is_overridden")
+  isActive                 Boolean  @default(true) @map("is_active")
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  clonedProduct     MerchantClonedProduct       @relation(fields: [clonedProductId], references: [id], onDelete: Cascade)
+  business          BusinessProfile             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  globalProductUnit GlobalProductUnit           @relation(fields: [globalProductUnitId], references: [id], onDelete: Restrict)
+  standardPrice     GlobalCatalogStandardPrice? @relation(fields: [standardPriceId], references: [id], onDelete: SetNull)
+
+  @@unique([clonedProductId, globalProductUnitId], map: "uq_merchant_cloned_unit_override")
+  @@index([businessId, isActive], map: "idx_merchant_unit_overrides_business")
+  @@map("merchant_unit_pricing_overrides")
+}
+
+model MerchantPriceAuditLog {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId           String   @map("business_id") @db.Uuid
+  clonedProductId      String   @map("cloned_product_id") @db.Uuid
+  globalProductUnitId  String   @map("global_product_unit_id") @db.Uuid
+  actorUserId          String   @map("actor_user_id") @db.Uuid
+  action               String   @db.VarChar(32)
+  previousPriceTzs     BigInt?  @map("previous_price_tzs")
+  newPriceTzs          BigInt   @map("new_price_tzs")
+  standardPriceId      String?  @map("standard_price_id") @db.Uuid
+  standardPriceVersion Int?     @map("standard_price_version")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business      BusinessProfile       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  clonedProduct MerchantClonedProduct @relation(fields: [clonedProductId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, createdAt(sort: Desc)], map: "idx_merchant_price_audit_biz_time")
+  @@map("merchant_price_audit_logs")
+}
+
+model ExternalPurchaseReceipt {
+  id                                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId                         String    @map("business_id") @db.Uuid
+  clonedProductId                    String    @map("cloned_product_id") @db.Uuid
+  globalProductUnitId                String?   @map("global_product_unit_id") @db.Uuid
+  supplierName                       String    @map("supplier_name") @db.VarChar(180)
+  supplierReference                  String?   @map("supplier_reference") @db.VarChar(80)
+  receiptStatus                      String    @default("GOODS_RECEIVED") @map("receipt_status") @db.VarChar(32)
+  quantityUnits                      Int       @map("quantity_units")
+  quarterQuantaPerUnit               Int       @map("quarter_quanta_per_unit")
+  receivedQuanta                     Int       @map("received_quanta")
+  agreedTotalCostTzs                 BigInt    @map("agreed_total_cost_tzs")
+  costPerQuantumTzs                  BigInt    @map("cost_per_quantum_tzs")
+  prevWeightedAvgCostPerQuantumTzs   BigInt    @default(0) @map("prev_weighted_avg_cost_per_quantum_tzs")
+  newWeightedAvgCostPerQuantumTzs    BigInt    @default(0) @map("new_weighted_avg_cost_per_quantum_tzs")
+  recordedByUserId                   String    @map("recorded_by_user_id") @db.Uuid
+  receivedAt                         DateTime? @map("received_at") @db.Timestamptz(6)
+  createdAt                          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business          BusinessProfile       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  clonedProduct     MerchantClonedProduct @relation(fields: [clonedProductId], references: [id], onDelete: Cascade)
+  globalProductUnit GlobalProductUnit?    @relation(fields: [globalProductUnitId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, createdAt(sort: Desc)], map: "idx_external_purchase_receipts_biz_time")
+  @@map("external_purchase_receipts")
+}

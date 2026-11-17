@@ -22,6 +22,7 @@ import {
   PackagePlus,
   Percent,
   Plus,
+  Scale,
   Search,
   ShieldCheck,
   Smartphone,
@@ -31,6 +32,7 @@ import {
 } from 'lucide-react';
 import { CODE_ARTIFACTS, type CodeArtifact } from '../data/blueprints';
 import { TRANSLATIONS, type Locale } from '../data/i18n';
+import { SokoApiClient } from '../services/sokoApiClient';
 import {
   ADMIN_ALERT_CHANNEL_NAME,
   addCatalogCategory,
@@ -46,6 +48,7 @@ import {
 } from '../lib/sokoManagedState';
 import { AdminAlertTerminal } from './AdminAlertTerminal';
 import { AdminShopsDirectoryPanel } from './AdminShopsDirectoryPanel';
+import { AdminUnitsAndPricingPanel } from './AdminUnitsAndPricingPanel';
 import { BrandLogo } from './BrandLogo';
 import { CodeViewer } from './CodeViewer';
 import { ConcurrencySmsCsvPanel } from './ConcurrencySmsCsvPanel';
@@ -74,6 +77,7 @@ export type AdminSectionKey =
   | 'leads'
   | 'catalog'
   | 'categories'
+  | 'units'
   | 'vault';
 export type AdminModuleKey = CodeArtifact['section'];
 
@@ -304,8 +308,8 @@ export function SuperAdminDashboardLayout({
     setCatalogEntries(updated);
     setAdminToast(
       isSw
-        ? `${entry.canonicalSku} -> Inatumiwa na Maduka: ${entry.clonedByStoresCount + 1} (Hifadhidata ya SokoKuu imesasishwa).`
-        : `${entry.canonicalSku} -> Cloned by Stores: ${entry.clonedByStoresCount + 1} (Cloud Database Core updated).`
+        ? `${entry.canonicalSku} -> Inatumiwa na Wafanyabiashara: ${entry.clonedByStoresCount + 1} (Hifadhidata ya SokoKuu imesasishwa).`
+        : `${entry.canonicalSku} -> Cloned by Merchants: ${entry.clonedByStoresCount + 1} (Cloud Database Core updated).`
     );
   };
 
@@ -442,15 +446,15 @@ export function SuperAdminDashboardLayout({
     },
     {
       key: 'shops',
-      labelSw: 'Maduka & Mipangilio',
-      labelEn: 'Shops & Settings',
-      metaSw: 'Uelekezaji · Ruhusa za Ramani',
-      metaEn: 'Routing · Map Permissions',
+      labelSw: 'Wafanyabiashara & Mipangilio',
+      labelEn: 'Merchants & Settings',
+      metaSw: 'Uelekezaji · Ruhusa za Wafanyabiashara',
+      metaEn: 'Routing · Merchant Permissions',
       icon: Store,
     },
     {
       key: 'map_matrix',
-      labelSw: 'Ramani ya Maduka (GIS)',
+      labelSw: 'Ramani ya Wafanyabiashara (GIS)',
       labelEn: 'Proximity Map Matrix',
       metaSw: 'PostGIS · Live Nodes',
       metaEn: 'PostGIS · Live Nodes',
@@ -479,6 +483,14 @@ export function SuperAdminDashboardLayout({
       metaSw: `${categories.length} Kategoria za CDN`,
       metaEn: `${categories.length} CDN Folders`,
       icon: FolderPlus,
+    },
+    {
+      key: 'units',
+      labelSw: 'Vipimo & Bei Sanifu',
+      labelEn: 'Units & Standard Pricing',
+      metaSw: 'Sajili ya Vipimo · Kanuni ya Bei',
+      metaEn: 'Canonical Units · Pricing Guard',
+      icon: Scale,
     },
     {
       key: 'vault',
@@ -556,7 +568,7 @@ export function SuperAdminDashboardLayout({
           ik.imagekit.io/sokokuutz/
         </div>
         <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
-          Inatumiwa na Maduka: {totalStoreAdoptions.toLocaleString('en-US')}
+          Inatumiwa na Wafanyabiashara: {totalStoreAdoptions.toLocaleString('en-US')}
         </div>
       </div>
     </div>
@@ -703,7 +715,7 @@ export function SuperAdminDashboardLayout({
                   {totalStoreAdoptions.toLocaleString('en-US')}
                 </div>
                 <div className="text-xs font-mono text-slate-500">
-                  Inatumiwa na Maduka: {totalStoreAdoptions}
+                  Inatumiwa na Wafanyabiashara: {totalStoreAdoptions}
                 </div>
               </div>
             </section>
@@ -826,7 +838,7 @@ export function SuperAdminDashboardLayout({
                           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-emerald-200 bg-emerald-50 font-mono text-xs font-bold text-emerald-800 tabular-nums">
                             <TrendingUp className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
                             <span>
-                              Inatumiwa na Maduka: {entry.clonedByStoresCount.toLocaleString('en-US')}
+                              Inatumiwa na Wafanyabiashara: {entry.clonedByStoresCount.toLocaleString('en-US')}
                             </span>
                           </div>
                         </td>
@@ -906,6 +918,9 @@ export function SuperAdminDashboardLayout({
             </div>
           </section>
         )}
+
+        {/* VIEW 4A: CENTRALIZED UNITS & STANDARD PRICING ENGINE */}
+        {activeSection === 'units' && <AdminUnitsAndPricingPanel locale={locale} />}
 
         {/* VIEW 5: ARCHITECTURE VAULT */}
         {activeSection === 'vault' && (

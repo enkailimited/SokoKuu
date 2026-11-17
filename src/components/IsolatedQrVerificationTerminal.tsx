@@ -16,6 +16,8 @@ import {
   Truck,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
+import { SokoApiClient } from '../services/sokoApiClient';
+import { sokoRealtime } from '../services/sokoRealtimeClient';
 
 export type IsolatedDeviceOwner = 'RETAILER_PHONE' | 'DRIVER_PHONE';
 
@@ -108,29 +110,51 @@ export function IsolatedQrVerificationTerminal({
 
   const qrMatrix = useMemo(() => buildQrMatrix(activeQrToken), [activeQrToken]);
 
-  // Listen for STOMP-style BroadcastChannel triggers targeted at /topic/driver/reconciliation/{driverId}
+  // Listen for real-time WebSocket and BroadcastChannel triggers targeted at /topic/driver/reconciliation/{driverId}
   useEffect(() => {
-    if (typeof BroadcastChannel === 'undefined') return;
-    const channel = new BroadcastChannel(DRIVER_RECONCILIATION_CHANNEL);
-    channel.onmessage = (event) => {
-      const payload = event.data as {
-        orderRef8?: string;
-        topic?: string;
-        actionRequired?: string;
-        oneTimeQrToken?: string;
-      };
-      if (
-        payload?.topic === driverTopic &&
-        payload?.actionRequired === 'TRIGGER_DRIVER_PIN_MODAL_OPEN'
-      ) {
+    const handleSignal = (payload: {
+      orderRef8?: string;
+      actionRequired?: string;
+      oneTimeQrToken?: string;
+    }) => {
+      if (payload?.actionRequired === 'TRIGGER_DRIVER_PIN_MODAL_OPEN') {
         if (payload.oneTimeQrToken) setActiveQrToken(payload.oneTimeQrToken);
         setIsQrScannedAndVerified(true);
       }
     };
+
+    const unsubscribeRealtime = sokoRealtime.subscribeToReconciliation(
+      driverUserId,
+      handleSignal
+    );
+
+    let channel: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        channel = new BroadcastChannel(DRIVER_RECONCILIATION_CHANNEL);
+        channel.onmessage = (event) => {
+          const payload = event.data as {
+            topic?: string;
+            actionRequired?: string;
+            oneTimeQrToken?: string;
+          };
+          if (
+            payload?.topic === driverTopic &&
+            payload?.actionRequired === 'TRIGGER_DRIVER_PIN_MODAL_OPEN'
+          ) {
+            handleSignal(payload);
+          }
+        };
+      } catch {
+        // BroadcastChannel unavailable
+      }
+    }
+
     return () => {
-      channel.close();
+      unsubscribeRealtime();
+      channel?.close();
     };
-  }, [driverTopic]);
+  }, [driverTopic, driverUserId]);
 
   const completeAtomicTransaction = (token: string) => {
     setConsumedTokens((prev) => (prev.includes(token) ? prev : [...prev, token]));
@@ -236,16 +260,33 @@ export function IsolatedQrVerificationTerminal({
     if (fileName) setUploadedFileName(fileName);
     setIsQrScannedAndVerified(true);
 
+    sokoRealtime.emitReconciliationSignal(driverUserId, {
+      orderRef8,
+      actionRequired: 'TRIGGER_DRIVER_PIN_MODAL_OPEN',
+      oneTimeQrToken: activeQrToken,
+    });
+
+    void SokoApiClient.post('/orders/reconcile/retailer-qr-scan', {
+      orderId: orderRef8,
+      qrToken: activeQrToken,
+    }).catch(() => {
+      // Offline fallback
+    });
+
     if (typeof BroadcastChannel !== 'undefined') {
-      const channel = new BroadcastChannel(DRIVER_RECONCILIATION_CHANNEL);
-      channel.postMessage({
-        orderRef8,
-        topic: driverTopic,
-        actionRequired: 'TRIGGER_DRIVER_PIN_MODAL_OPEN',
-        oneTimeQrToken: activeQrToken,
-        timestamp: Date.now(),
-      });
-      channel.close();
+      try {
+        const channel = new BroadcastChannel(DRIVER_RECONCILIATION_CHANNEL);
+        channel.postMessage({
+          orderRef8,
+          topic: driverTopic,
+          actionRequired: 'TRIGGER_DRIVER_PIN_MODAL_OPEN',
+          oneTimeQrToken: activeQrToken,
+          timestamp: Date.now(),
+        });
+        channel.close();
+      } catch {
+        // Channel unavailable
+      }
     }
 
     setFeedback({
@@ -278,6 +319,13 @@ export function IsolatedQrVerificationTerminal({
       });
       return;
     }
+
+    void SokoApiClient.post('/orders/reconcile/buyer-pin', {
+      orderId: orderRef8,
+      buyerPin: localBuyerPin,
+    }).catch(() => {
+      // Offline fallback
+    });
 
     setBuyerPinConfirmed(true);
     if (driverPinConfirmed) {
@@ -314,6 +362,14 @@ export function IsolatedQrVerificationTerminal({
       });
       return;
     }
+
+    void SokoApiClient.post('/orders/reconcile/driver-pin', {
+      orderId: orderRef8,
+      driverPin: localDriverPin,
+      collectedCashTzs: expectedCashTzs,
+    }).catch(() => {
+      // Offline fallback
+    });
 
     setDriverPinConfirmed(true);
     if (buyerPinConfirmed) {

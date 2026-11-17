@@ -257,12 +257,12 @@ export function FullPageMarketplaceMap({
               <h2 className="text-sm sm:text-base font-bold text-slate-900">
                 {isSw
                   ? 'Ramani ya Maduka Yaliyothibitishwa (PostGIS & Google Maps)'
-                  : 'Verified Shops Proximity Map (PostGIS & Google Maps)'}
+                  : 'Verified Shops Map'}
               </h2>
               <p className="text-[11px] font-mono text-slate-500">
                 {isSw
-                  ? `Eneo: ${activeRegionConfig.labelSw} · Maduka ${visibleStores.length} yaliyowashwa & kuthibitishwa`
-                  : `Region: ${activeRegionConfig.labelEn} · ${visibleStores.length} converted & verified shops`}
+                  ? `Eneo: ${activeRegionConfig.labelSw} · Maduka ${visibleStores.length} kuthibitishwa`
+                  : `Region: ${activeRegionConfig.labelEn} · ${visibleStores.length} verified shops`}
               </p>
             </div>
           </div>
@@ -340,7 +340,7 @@ export function FullPageMarketplaceMap({
           <div className="text-xs text-slate-500 py-2">
             {isSw
               ? 'Hakuna maduka yaliyothibitishwa katika chaguo hili.'
-              : 'No converted & verified shops in this filter.'}
+              : 'No verified shops in this filter.'}
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">

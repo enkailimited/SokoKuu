@@ -23,6 +23,7 @@ import {
   formatRoutingLabel,
   recordOrderDispatchAuditTrace,
 } from '../lib/sokoManagedState';
+import { SokoApiClient } from '../services/sokoApiClient';
 import { SmartStoreCatalog } from './SmartStoreCatalog';
 import { SmartGridStoreCatalog } from './SmartGridStoreCatalog';
 import { IsolatedQrVerificationTerminal } from './IsolatedQrVerificationTerminal';
@@ -400,9 +401,36 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
         detail: `${smsString} · ${smsString.length}/160 chars`,
       });
     } else {
+      let finalOrderId = crypto.randomUUID();
+      let finalOrderRef8 = orderRef8;
+      let finalBuyerPin4 = buyerPin4;
+
+      try {
+        const resp = await SokoApiClient.post<{
+          orderId: string;
+          orderRef: string;
+          buyerPin4: string;
+        }>('/marketplace/orders/submit-request', {
+          sellerBusinessId: selectedStore.businessId,
+          deliveryFeeTzs: cartBreakdown.deliveryFeeTzs,
+          items: cartBreakdown.lines.map((l) => ({
+            productId: l.item.productId,
+            sku: l.item.sku,
+            quantity: l.quanta,
+            quarterQuanta: l.quanta,
+            unitPriceTzs: l.unitPricePerQuanta,
+          })),
+        });
+        if (resp?.orderId) finalOrderId = resp.orderId;
+        if (resp?.orderRef) finalOrderRef8 = resp.orderRef;
+        if (resp?.buyerPin4) finalBuyerPin4 = resp.buyerPin4;
+      } catch {
+        // Fallback to local trace
+      }
+
       const newOrder: DispatchedOrderRecord = {
-        orderId: crypto.randomUUID(),
-        orderRef8,
+        orderId: finalOrderId,
+        orderRef8: finalOrderRef8,
         sellerBusinessId: selectedStore.businessId,
         sellerName: selectedStore.name,
         subtotalTzs: cartBreakdown.subtotalTzs,
@@ -411,12 +439,12 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
         itemsSummary: cartBreakdown.lines
           .map((l) => `${l.item.sku} (${l.quanta} Quanta)`)
           .join(' + '),
-        buyerPin4,
+        buyerPin4: finalBuyerPin4,
         status: 'DISPATCHED',
       };
 
       const trace = recordOrderDispatchAuditTrace({
-        orderRef8,
+        orderRef8: finalOrderRef8,
         sellerBusinessId: selectedStore.businessId,
         sellerBusinessName: selectedStore.name,
         totalCashDueTzs: cartBreakdown.totalTzs,
@@ -426,7 +454,7 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
       setOrders((prev) => [newOrder, ...prev]);
       setFloatingToast({
         title: `Oda yako imetumwa (${selectedStore.name})!`,
-        detail: `Oda #${orderRef8} · ${formatRoutingLabel(trace.routingCode, locale)} · PIN: ${buyerPin4} · TZS ${cartBreakdown.totalTzs.toLocaleString('en-US')}`,
+        detail: `Oda #${finalOrderRef8} · ${formatRoutingLabel(trace.routingCode, locale)} · PIN: ${finalBuyerPin4} · TZS ${cartBreakdown.totalTzs.toLocaleString('en-US')}`,
       });
     }
 

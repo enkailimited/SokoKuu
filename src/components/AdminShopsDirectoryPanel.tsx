@@ -53,7 +53,7 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
     };
   }, []);
 
-  // Only list shops that are Converted & Verified
+  // Only list merchants that are Converted & Verified
   const convertedVerifiedShops = shops.filter(
     (s) => (s.isConverted ?? true) && (s.isVerified ?? true)
   );
@@ -65,10 +65,10 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
     setStatusNotice(
       isSw
         ? `${shop.businessName}: Mipangilio ya Oda sasa ni ${
-            nextManaged ? 'Kupokelewa na Admin (Helpdesk)' : 'Moja kwa Moja Dukani'
+            nextManaged ? 'Kupokelewa na Admin (Helpdesk)' : 'Moja kwa Moja kwa Mfanyabiashara'
           }.`
         : `${shop.businessName}: Order routing updated to ${
-            nextManaged ? 'Admin Helpdesk Queue' : 'Direct Shop Terminal'
+            nextManaged ? 'Admin Helpdesk Queue' : 'Direct Merchant Terminal'
           }.`
     );
   };
@@ -136,13 +136,13 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
             <div>
               <h2 className="text-sm font-bold text-slate-900">
                 {isSw
-                  ? 'Maduka Yaliyowashwa & Kuthibitishwa (Converted & Verified)'
-                  : 'Converted & Verified Shops Directory'}
+                  ? 'Wafanyabiashara & Mipangilio (Converted & Verified Merchants)'
+                  : 'Converted & Verified Merchants Directory'}
               </h2>
               <p className="text-xs text-slate-500">
                 {isSw
-                  ? `Maduka ${convertedVerifiedShops.length} yaliyothibitishwa · ${adminManagedCount} yanaelekeza oda kwa Admins`
-                  : `${convertedVerifiedShops.length} verified shops · ${adminManagedCount} routed to Admin Live Queue`}
+                  ? `Wafanyabiashara ${convertedVerifiedShops.length} waliothibitishwa · ${adminManagedCount} wanaelekeza oda kwa Admins`
+                  : `${convertedVerifiedShops.length} verified merchants · ${adminManagedCount} routed to Admin Live Queue`}
               </p>
             </div>
           </div>
@@ -204,8 +204,8 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
         {filteredShops.length === 0 ? (
           <div className="py-10 text-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-lg">
             {isSw
-              ? 'Hakuna maduka yaliyothibitishwa katika mkoa huu.'
-              : 'No converted & verified shops found for this region.'}
+              ? 'Hakuna wafanyabiashara waliothibitishwa katika mkoa huu.'
+              : 'No converted & verified merchants found for this region.'}
           </div>
         ) : (
           <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
@@ -287,8 +287,8 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
                             ? 'Admin Pekee'
                             : 'Admin Managed'
                           : isSw
-                            ? 'Duka Lenyewe'
-                            : 'Direct Shop'}
+                            ? 'Mfanyabiashara Mwenyewe'
+                            : 'Direct Merchant'}
                       </span>
                       {shop.isPlatformManaged ? (
                         <ToggleRight className="w-4 h-4 text-emerald-600" aria-hidden="true" />

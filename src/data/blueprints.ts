@@ -6366,96 +6366,208 @@ public class DoorstepQrVerificationController {
   {
     id: 'spring-isolated-websocket-qr-dispatcher',
     section: 'reconciliation',
-    title: 'WebSocketQrVerificationService.java + IsolatedDoorstepController.java',
+    title: 'WebSocketStompBrokerConfig.java + WebSocketQrVerificationService.java + IsolatedDoorstepController.java',
     titleSw: 'Huduma ya WebSocket ya Uthibitisho wa Simu Mbili (WebSocketQrVerificationService.java)',
     filename: 'src/main/java/tz/co/sokokuu/service/WebSocketQrVerificationService.java',
     language: 'java',
     summary:
-      'Device-isolated verification dispatcher validating one_time_qr_token on Retailer scan, pushing TRIGGER_DRIVER_PIN_MODAL_OPEN via STOMP (/topic/driver/reconciliation/{driverId}), collecting isolated Buyer/Driver PINs, and marking is_qr_token_consumed = TRUE.',
+      'Spring Boot 3.x @EnableWebSocketMessageBroker, Spring Data JPA @Lock(PESSIMISTIC_WRITE) ledger repository on SokoKuu Cloud SQL Database Cluster, and transactional WebSocketQrVerificationService dispatching SimpMessagingTemplate signals after commit.',
     summarySw:
-      'Huduma ya Spring Boot inayotenganisha PIN ya Mnunuzi na Dereva kwa simu zao, na kurusha signal ya STOMP (/topic/driver/reconciliation/{driverId}) kufungua modal ya dereva papo hapo.',
-    code: `package tz.co.sokokuu.dto;
+      'Usanidi wa @EnableWebSocketMessageBroker, Spring Data JPA yenye kufunga safu (PESSIMISTIC_WRITE), na WebSocketQrVerificationService inayorusha taarifa za STOMP kwenda simu ya dereva baada ya muamala kuthibitishwa.',
+    code: `// ----------------------------------------------------------------------------
+// WebSocketStompBrokerConfig.java
+// ----------------------------------------------------------------------------
+package tz.co.sokokuu.config;
 
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
+import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
+import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+
+@Configuration
+@EnableWebSocketMessageBroker
+public class WebSocketStompBrokerConfig implements WebSocketMessageBrokerConfigurer {
+
+    @Override
+    public void configureMessageBroker(MessageBrokerRegistry registry) {
+        registry.enableSimpleBroker("/topic", "/queue");
+        registry.setApplicationDestinationPrefixes("/app");
+        registry.setUserDestinationPrefix("/user");
+    }
+
+    @Override
+    public void registerStompEndpoints(StompEndpointRegistry registry) {
+        registry.addEndpoint("/ws/sokokuu")
+            .setAllowedOriginPatterns("https://*.sokokuu.tz", "http://localhost:*")
+            .withSockJS();
+    }
+}
+
+// ----------------------------------------------------------------------------
+// CashDeliveryLedgerEntity.java & CashDeliveryLedgerRepository.java (Spring Data JPA)
+// ----------------------------------------------------------------------------
+package tz.co.sokokuu.entity;
+
+import jakarta.persistence.*;
+import java.time.Instant;
 import java.util.UUID;
 
-public record RetailerQrScanRequest(
-    @NotNull UUID orderId,
-    @NotBlank String oneTimeQrToken
-) {}
+@Entity
+@Table(name = "cash_delivery_ledgers")
+public class CashDeliveryLedgerEntity {
 
-public record IsolatedPinSubmitRequest(
-    @NotNull UUID orderId,
-    @NotBlank String oneTimeQrToken,
-    @NotBlank @Pattern(regexp = "^\\\\d{4}$") String pin
-) {}
+    @Id
+    private UUID id;
+
+    @Column(name = "order_id", nullable = false, unique = true)
+    private UUID orderId;
+
+    @Column(name = "driver_user_id", nullable = false)
+    private UUID driverUserId;
+
+    @Column(name = "one_time_qr_token", nullable = false, unique = true)
+    private String oneTimeQrToken;
+
+    @Column(name = "is_qr_token_consumed", nullable = false)
+    private boolean qrTokenConsumed;
+
+    @Column(name = "buyer_confirmation_pin", nullable = false)
+    private String buyerConfirmationPin;
+
+    @Column(name = "driver_confirmation_pin", nullable = false)
+    private String driverConfirmationPin;
+
+    @Column(name = "is_buyer_confirmed", nullable = false)
+    private boolean buyerConfirmed;
+
+    @Column(name = "is_driver_confirmed", nullable = false)
+    private boolean driverConfirmed;
+
+    @Column(name = "expected_cash_amount", nullable = false)
+    private long expectedCashAmount;
+
+    @Column(name = "collected_cash_amount", nullable = false)
+    private long collectedCashAmount;
+
+    @Column(name = "verification_status", nullable = false)
+    private String verificationStatus;
+
+    @Column(name = "reconciled_at")
+    private Instant reconciledAt;
+
+    @Version
+    private long version;
+
+    public UUID getId() { return id; }
+    public UUID getOrderId() { return orderId; }
+    public UUID getDriverUserId() { return driverUserId; }
+    public String getOneTimeQrToken() { return oneTimeQrToken; }
+    public boolean isQrTokenConsumed() { return qrTokenConsumed; }
+    public String getBuyerConfirmationPin() { return buyerConfirmationPin; }
+    public String getDriverConfirmationPin() { return driverConfirmationPin; }
+    public boolean isBuyerConfirmed() { return buyerConfirmed; }
+    public boolean isDriverConfirmed() { return driverConfirmed; }
+    public long getExpectedCashAmount() { return expectedCashAmount; }
+    public void setBuyerConfirmed(boolean confirmed) { this.buyerConfirmed = confirmed; }
+    public void setDriverConfirmed(boolean confirmed) { this.driverConfirmed = confirmed; }
+    public void setQrTokenConsumed(boolean consumed) { this.qrTokenConsumed = consumed; }
+    public void setCollectedCashAmount(long amount) { this.collectedCashAmount = amount; }
+    public void setVerificationStatus(String status) { this.verificationStatus = status; }
+    public void setReconciledAt(Instant reconciledAt) { this.reconciledAt = reconciledAt; }
+}
+
+package tz.co.sokokuu.repository;
+
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import tz.co.sokokuu.entity.CashDeliveryLedgerEntity;
+
+import java.util.Optional;
+import java.util.UUID;
+
+public interface CashDeliveryLedgerRepository extends JpaRepository<CashDeliveryLedgerEntity, UUID> {
+
+    Optional<CashDeliveryLedgerEntity> findByOrderId(UUID orderId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT c FROM CashDeliveryLedgerEntity c WHERE c.orderId = :orderId")
+    Optional<CashDeliveryLedgerEntity> findByOrderIdForUpdate(@Param("orderId") UUID orderId);
+
+    @Modifying
+    @Query(
+        value = "UPDATE orders SET status = 'DELIVERED', delivered_at = NOW() WHERE id = :orderId",
+        nativeQuery = true
+    )
+    void markOrderDeliveredOnCluster(@Param("orderId") UUID orderId);
+}
 
 // ----------------------------------------------------------------------------
 // WebSocketQrVerificationService.java
 // ----------------------------------------------------------------------------
 package tz.co.sokokuu.service;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tz.co.sokokuu.entity.CashDeliveryLedgerEntity;
+import tz.co.sokokuu.repository.CashDeliveryLedgerRepository;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
 @Service
 public class WebSocketQrVerificationService {
 
+    private static final Logger log = LoggerFactory.getLogger(WebSocketQrVerificationService.class);
+
     private final SimpMessagingTemplate messagingTemplate;
-    private final JdbcTemplate jdbcTemplate;
+    private final CashDeliveryLedgerRepository ledgerRepository;
 
     public WebSocketQrVerificationService(
             SimpMessagingTemplate messagingTemplate,
-            JdbcTemplate jdbcTemplate) {
+            CashDeliveryLedgerRepository ledgerRepository) {
         this.messagingTemplate = messagingTemplate;
-        this.jdbcTemplate = jdbcTemplate;
+        this.ledgerRepository = ledgerRepository;
     }
 
-    @Transactional(readOnly = true, isolation = Isolation.SERIALIZABLE)
+    @Transactional(isolation = Isolation.REPEATABLE_READ, readOnly = true)
     public String processRetailerQrScan(UUID orderId, String scannedQrToken) {
-        String checkSql = """
-            SELECT cl.is_qr_token_consumed,
-                   cl.one_time_qr_token,
-                   o.driver_user_id
-            FROM cash_delivery_ledgers cl
-            JOIN orders o ON o.id = cl.order_id
-            WHERE cl.order_id = ?
-            """;
-        var ledgerRow = jdbcTemplate.queryForMap(checkSql, orderId);
+        CashDeliveryLedgerEntity ledger = ledgerRepository.findByOrderId(orderId)
+            .orElseThrow(() -> new IllegalArgumentException("ERROR_ORDER_LEDGER_NOT_FOUND"));
 
-        boolean isConsumed = Boolean.TRUE.equals(ledgerRow.get("is_qr_token_consumed"));
-        String expectedToken = (String) ledgerRow.get("one_time_qr_token");
-
-        if (isConsumed || expectedToken == null) {
+        if (ledger.isQrTokenConsumed() || ledger.getOneTimeQrToken() == null) {
             throw new IllegalStateException("ERROR_QR_CODE_ALREADY_CONSUMED");
         }
         if (!MessageDigest.isEqual(
-                expectedToken.getBytes(StandardCharsets.UTF_8),
+                ledger.getOneTimeQrToken().getBytes(StandardCharsets.UTF_8),
                 scannedQrToken.trim().getBytes(StandardCharsets.UTF_8))) {
             throw new SecurityException("ERROR_QR_TOKEN_MISMATCH");
         }
 
-        UUID driverUserId = (UUID) ledgerRow.get("driver_user_id");
-        String driverTopic = "/topic/driver/reconciliation/" + driverUserId;
-
+        String driverTopic = "/topic/driver/reconciliation/" + ledger.getDriverUserId();
         Map<String, Object> driverAlertPayload = Map.of(
             "orderId", orderId.toString(),
-            "oneTimeQrToken", expectedToken,
+            "oneTimeQrToken", ledger.getOneTimeQrToken(),
             "actionRequired", "TRIGGER_DRIVER_PIN_MODAL_OPEN",
+            "clusterSource", "SokoKuu Cloud SQL Database Cluster",
             "timestamp", System.currentTimeMillis()
         );
 
-        messagingTemplate.convertAndSend(driverTopic, driverAlertPayload);
+        dispatchAfterCommit(driverTopic, driverAlertPayload);
+        log.info("Queued STOMP driver PIN modal signal for order {} on SokoKuu Cloud SQL Database Cluster", orderId);
         return driverTopic;
     }
 
@@ -6471,68 +6583,71 @@ public class WebSocketQrVerificationService {
 
     private boolean submitPartyPin(
             UUID orderId, String qrToken, String pinInput, boolean isBuyerSide) {
-        var row = jdbcTemplate.queryForMap(
-            """
-            SELECT one_time_qr_token,
-                   is_qr_token_consumed,
-                   buyer_confirmation_pin,
-                   driver_confirmation_pin,
-                   is_buyer_confirmed,
-                   is_driver_confirmed
-            FROM cash_delivery_ledgers
-            WHERE order_id = ?
-            FOR UPDATE
-            """,
-            orderId
-        );
+        CashDeliveryLedgerEntity ledger = ledgerRepository.findByOrderIdForUpdate(orderId)
+            .orElseThrow(() -> new IllegalArgumentException("ERROR_ORDER_LEDGER_NOT_FOUND"));
 
-        if (Boolean.TRUE.equals(row.get("is_qr_token_consumed"))) {
+        if (ledger.isQrTokenConsumed()) {
             throw new IllegalStateException("ERROR_QR_CODE_ALREADY_CONSUMED");
         }
 
-        String storedToken = (String) row.get("one_time_qr_token");
+        String storedToken = ledger.getOneTimeQrToken();
         if (storedToken == null || !MessageDigest.isEqual(
                 storedToken.getBytes(StandardCharsets.UTF_8),
                 qrToken.trim().getBytes(StandardCharsets.UTF_8))) {
             throw new SecurityException("ERROR_QR_TOKEN_MISMATCH");
         }
 
-        String expectedPin = (String) row.get(
-            isBuyerSide ? "buyer_confirmation_pin" : "driver_confirmation_pin"
-        );
-        if (!MessageDigest.isEqual(
+        String expectedPin = isBuyerSide
+            ? ledger.getBuyerConfirmationPin()
+            : ledger.getDriverConfirmationPin();
+        if (expectedPin == null || !MessageDigest.isEqual(
                 expectedPin.getBytes(StandardCharsets.UTF_8),
                 pinInput.trim().getBytes(StandardCharsets.UTF_8))) {
             throw new IllegalArgumentException("ERROR_ISOLATED_PIN_MISMATCH");
         }
 
-        boolean buyerDone = isBuyerSide || Boolean.TRUE.equals(row.get("is_buyer_confirmed"));
-        boolean driverDone = !isBuyerSide || Boolean.TRUE.equals(row.get("is_driver_confirmed"));
-        boolean bothSettled = buyerDone && driverDone;
-
-        jdbcTemplate.update(
-            """
-            UPDATE cash_delivery_ledgers
-            SET is_buyer_confirmed = ?,
-                is_driver_confirmed = ?,
-                is_qr_token_consumed = ?,
-                verification_status = CASE WHEN ? THEN 'SUCCESSFUL' ELSE verification_status END,
-                collected_cash_amount = CASE WHEN ? THEN expected_cash_amount ELSE collected_cash_amount END,
-                reconciled_at = CASE WHEN ? THEN NOW() ELSE reconciled_at END,
-                version = version + 1,
-                updated_at = NOW()
-            WHERE order_id = ?
-            """,
-            buyerDone, driverDone, bothSettled, bothSettled, bothSettled, bothSettled, orderId
-        );
-
-        if (bothSettled) {
-            jdbcTemplate.update(
-                "UPDATE orders SET status = 'DELIVERED', delivered_at = NOW() WHERE id = ?",
-                orderId
-            );
+        if (isBuyerSide) {
+            ledger.setBuyerConfirmed(true);
+        } else {
+            ledger.setDriverConfirmed(true);
         }
+
+        boolean bothSettled = ledger.isBuyerConfirmed() && ledger.isDriverConfirmed();
+        if (bothSettled) {
+            ledger.setQrTokenConsumed(true);
+            ledger.setVerificationStatus("SUCCESSFUL");
+            ledger.setCollectedCashAmount(ledger.getExpectedCashAmount());
+            ledger.setReconciledAt(Instant.now());
+            ledgerRepository.save(ledger);
+            ledgerRepository.markOrderDeliveredOnCluster(orderId);
+        } else {
+            ledgerRepository.save(ledger);
+        }
+
+        String topic = "/topic/driver/reconciliation/" + ledger.getDriverUserId();
+        Map<String, Object> statePayload = Map.of(
+            "orderId", orderId.toString(),
+            "buyerConfirmed", ledger.isBuyerConfirmed(),
+            "driverConfirmed", ledger.isDriverConfirmed(),
+            "orderSettled", bothSettled,
+            "actionRequired", bothSettled ? "CLOSE_TERMINAL_SETTLED" : "AWAIT_COUNTERPARTY_PIN",
+            "timestamp", System.currentTimeMillis()
+        );
+        dispatchAfterCommit(topic, statePayload);
         return bothSettled;
+    }
+
+    private void dispatchAfterCommit(String destination, Map<String, Object> payload) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    messagingTemplate.convertAndSend(destination, payload);
+                }
+            });
+        } else {
+            messagingTemplate.convertAndSend(destination, payload);
+        }
     }
 }
 
@@ -6542,21 +6657,31 @@ public class WebSocketQrVerificationService {
 package tz.co.sokokuu.controller;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import tz.co.sokokuu.dto.IsolatedPinSubmitRequest;
-import tz.co.sokokuu.dto.RetailerQrScanRequest;
 import tz.co.sokokuu.service.WebSocketQrVerificationService;
 
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/orders/reconcile")
 public class IsolatedDoorstepController {
+
+    public record RetailerQrScanRequest(@NotNull UUID orderId, @NotBlank String oneTimeQrToken) {}
+
+    public record IsolatedPinSubmitRequest(
+        @NotNull UUID orderId,
+        @NotBlank String oneTimeQrToken,
+        @NotBlank @Pattern(regexp = "^\\\\d{4}$") String pin
+    ) {}
 
     private final WebSocketQrVerificationService wsVerificationService;
 
@@ -6607,15 +6732,15 @@ public class IsolatedDoorstepController {
   {
     id: 'spring-web-push-vapid-notification-engine',
     section: 'pwa',
-    title: 'WebPushNotificationController.java + sw.ts (VAPID Background Push)',
-    titleSw: 'Injini ya Web Push Notification & VAPID (WebPushNotificationController.java)',
+    title: 'WebPushDispatchService.java + WebPushNotificationController.java (Spring Data JPA + VAPID)',
+    titleSw: 'Injini ya Web Push Notification & VAPID (WebPushDispatchService.java)',
     filename: 'src/main/java/tz/co/sokokuu/controller/WebPushNotificationController.java',
     language: 'java',
     summary:
-      'PostgreSQL web_push_subscriptions DDL, Spring Boot VAPID PushController (/api/v1/notifications/push/subscribe), typed background sw.ts push/notificationclick interceptor, and browser VAPID registration utility.',
+      'SokoKuu Cloud SQL Database Cluster DDL, Spring Data JPA WebPushSubscriptionRepository, @Async Spring @Service WebPushDispatchService utilizing nl.martijndewildt:web-push, and Spring Security 6 @PreAuthorize controller.',
     summarySw:
-      'Jedwali la web_push_subscriptions, Spring Boot VAPID PushController, na Service Worker (sw.ts) inayopokea arifa na kufungua ukurasa wa oda hata kivinjari kikiwa kimefungwa.',
-    code: `-- Cloud Database Core DDL: Web Push Subscription Ledger
+      'Jedwali la web_push_subscriptions kwenye SokoKuu Cloud SQL Database Cluster, Spring Data JPA Repository, @Service ya WebPushDispatchService (@Async + VAPID), na Controller iliyolindwa na Spring Security 6.',
+    code: `-- SokoKuu Cloud SQL Database Cluster DDL: Web Push Subscription Ledger
 CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -6640,7 +6765,8 @@ import jakarta.validation.constraints.NotNull;
 
 public record PushSubscriptionDto(
     @NotBlank String endpoint,
-    @NotNull @Valid Keys keys
+    @NotNull @Valid Keys keys,
+    String deviceType
 ) {
     public record Keys(
         @NotBlank String p256dh,
@@ -6649,115 +6775,221 @@ public record PushSubscriptionDto(
 }
 
 // ----------------------------------------------------------------------------
-// WebPushNotificationController.java
+// WebPushSubscriptionEntity.java & WebPushSubscriptionRepository.java (Spring Data JPA)
 // ----------------------------------------------------------------------------
-package tz.co.sokokuu.controller;
+package tz.co.sokokuu.entity;
+
+import jakarta.persistence.*;
+import java.time.Instant;
+import java.util.UUID;
+
+@Entity
+@Table(name = "web_push_subscriptions")
+public class WebPushSubscriptionEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(name = "user_id", nullable = false)
+    private UUID userId;
+
+    @Column(name = "endpoint", nullable = false, unique = true, columnDefinition = "TEXT")
+    private String endpoint;
+
+    @Column(name = "p256dh_key", nullable = false, length = 255)
+    private String p256dhKey;
+
+    @Column(name = "auth_secret", nullable = false, length = 255)
+    private String authSecret;
+
+    @Column(name = "device_type", length = 64)
+    private String deviceType;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt = Instant.now();
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt = Instant.now();
+
+    public UUID getId() { return id; }
+    public UUID getUserId() { return userId; }
+    public void setUserId(UUID userId) { this.userId = userId; }
+    public String getEndpoint() { return endpoint; }
+    public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+    public String getP256dhKey() { return p256dhKey; }
+    public void setP256dhKey(String p256dhKey) { this.p256dhKey = p256dhKey; }
+    public String getAuthSecret() { return authSecret; }
+    public void setAuthSecret(String authSecret) { this.authSecret = authSecret; }
+    public String getDeviceType() { return deviceType; }
+    public void setDeviceType(String deviceType) { this.deviceType = deviceType; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+}
+
+package tz.co.sokokuu.repository;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import tz.co.sokokuu.entity.WebPushSubscriptionEntity;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+public interface WebPushSubscriptionRepository extends JpaRepository<WebPushSubscriptionEntity, UUID> {
+    Optional<WebPushSubscriptionEntity> findByEndpoint(String endpoint);
+    List<WebPushSubscriptionEntity> findAllByUserId(UUID userId);
+    void deleteByEndpoint(String endpoint);
+}
+
+// ----------------------------------------------------------------------------
+// WebPushDispatchService.java (@Service utilizing nl.martijndewildt:web-push)
+// ----------------------------------------------------------------------------
+package tz.co.sokokuu.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.validation.Valid;
 import nl.martijndewildt.webpush.Notification;
 import nl.martijndewildt.webpush.PushService;
 import nl.martijndewildt.webpush.Subscription;
 import org.apache.http.HttpResponse;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
 import tz.co.sokokuu.dto.PushSubscriptionDto;
+import tz.co.sokokuu.entity.WebPushSubscriptionEntity;
+import tz.co.sokokuu.repository.WebPushSubscriptionRepository;
 
 import java.security.Security;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.logging.Logger;
+import java.util.concurrent.CompletableFuture;
+
+@Service
+public class WebPushDispatchService {
+
+    private static final Logger log = LoggerFactory.getLogger(WebPushDispatchService.class);
+
+    private final WebPushSubscriptionRepository subscriptionRepository;
+    private final PushService pushService;
+    private final ObjectMapper objectMapper;
+
+    public WebPushDispatchService(
+            WebPushSubscriptionRepository subscriptionRepository,
+            ObjectMapper objectMapper,
+            @Value("\${sokokuu.vapid.public-key}") String publicKey,
+            @Value("\${sokokuu.vapid.private-key}") String privateKey) throws Exception {
+        this.subscriptionRepository = subscriptionRepository;
+        this.objectMapper = objectMapper;
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+            Security.addProvider(new BouncyCastleProvider());
+        }
+        this.pushService = new PushService(publicKey, privateKey, "mailto:alerts@sokokuu.tz");
+    }
+
+    @Transactional
+    public void registerSubscription(UUID authenticatedUserId, PushSubscriptionDto dto) {
+        WebPushSubscriptionEntity entity = subscriptionRepository
+            .findByEndpoint(dto.endpoint())
+            .orElseGet(WebPushSubscriptionEntity::new);
+
+        entity.setUserId(authenticatedUserId);
+        entity.setEndpoint(dto.endpoint());
+        entity.setP256dhKey(dto.keys().p256dh());
+        entity.setAuthSecret(dto.keys().auth());
+        entity.setDeviceType(dto.deviceType());
+        entity.setUpdatedAt(Instant.now());
+
+        subscriptionRepository.save(entity);
+        log.info("Registered Web Push token for user {} on SokoKuu Cloud SQL Database Cluster", authenticatedUserId);
+    }
+
+    @Async
+    @Transactional
+    public CompletableFuture<Integer> dispatchEncryptedPushAsync(
+            UUID targetUserId, String title, String body, String deepLinkUrl) {
+        List<WebPushSubscriptionEntity> subscriptions = subscriptionRepository.findAllByUserId(targetUserId);
+        if (subscriptions.isEmpty()) {
+            return CompletableFuture.completedFuture(0);
+        }
+
+        int deliveredCount = 0;
+        try {
+            String jsonPayload = objectMapper.writeValueAsString(Map.of(
+                "title", title,
+                "body", body,
+                "url", deepLinkUrl,
+                "cluster", "SokoKuu Cloud SQL Database Cluster"
+            ));
+
+            for (WebPushSubscriptionEntity subEntity : subscriptions) {
+                try {
+                    Subscription subscription = new Subscription(
+                        subEntity.getEndpoint(),
+                        new Subscription.Keys(subEntity.getP256dhKey(), subEntity.getAuthSecret())
+                    );
+                    HttpResponse response = pushService.send(new Notification(subscription, jsonPayload));
+                    int status = response.getStatusLine().getStatusCode();
+                    if (status == 201 || status == 202) {
+                        deliveredCount++;
+                    } else if (status == 410 || status == 404) {
+                        subscriptionRepository.deleteByEndpoint(subEntity.getEndpoint());
+                    }
+                } catch (Exception ex) {
+                    log.error("Encrypted VAPID dispatch failure for user {}: {}", targetUserId, ex.getMessage());
+                }
+            }
+        } catch (Exception jsonErr) {
+            log.error("Web Push JSON serialization failed: {}", jsonErr.getMessage());
+        }
+        return CompletableFuture.completedFuture(deliveredCount);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// WebPushNotificationController.java (Spring Security 6.x @PreAuthorize)
+// ----------------------------------------------------------------------------
+package tz.co.sokokuu.controller;
+
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import tz.co.sokokuu.dto.PushSubscriptionDto;
+import tz.co.sokokuu.service.WebPushDispatchService;
+
+import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/notifications/push")
 public class WebPushNotificationController {
 
-    private static final Logger LOGGER =
-        Logger.getLogger(WebPushNotificationController.class.getName());
+    private final WebPushDispatchService webPushDispatchService;
 
-    private final JdbcTemplate jdbcTemplate;
-    private final PushService pushService;
-    private final ObjectMapper objectMapper;
-
-    public WebPushNotificationController(
-            JdbcTemplate jdbcTemplate,
-            ObjectMapper objectMapper,
-            @Value("\${sokokuu.vapid.public-key}") String publicKey,
-            @Value("\${sokokuu.vapid.private-key}") String privateKey) throws Exception {
-        this.jdbcTemplate = jdbcTemplate;
-        this.objectMapper = objectMapper;
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.addProvider(new BouncyCastleProvider());
-        }
-        this.pushService = new PushService(publicKey, privateKey, "mailto:admin@sokokuutz.co.tz");
+    public WebPushNotificationController(WebPushDispatchService webPushDispatchService) {
+        this.webPushDispatchService = webPushDispatchService;
     }
 
     @PostMapping("/subscribe")
     @PreAuthorize("isAuthenticated()")
-    @Transactional
-    public ResponseEntity<Map<String, String>> saveSubscriptionKeys(
-            @RequestHeader("X-User-ID") UUID userId,
+    public ResponseEntity<Map<String, String>> subscribeDevice(
+            Authentication authentication,
             @Valid @RequestBody PushSubscriptionDto dto) {
-        String sql = """
-            INSERT INTO web_push_subscriptions (user_id, endpoint, p256dh_key, auth_secret)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (endpoint) DO UPDATE
-            SET user_id = EXCLUDED.user_id,
-                p256dh_key = EXCLUDED.p256dh_key,
-                auth_secret = EXCLUDED.auth_secret,
-                updated_at = NOW()
-            """;
-        jdbcTemplate.update(sql, userId, dto.endpoint(), dto.keys().p256dh(), dto.keys().auth());
-        return ResponseEntity.ok(Map.of("status", "SUBSCRIPTION_REGISTERED_SUCCESSFULLY"));
-    }
-
-    public void sendPushPayload(UUID targetUserId, String title, String body, String deepLinkUrl) {
-        String query = "SELECT endpoint, p256dh_key, auth_secret FROM web_push_subscriptions WHERE user_id = ?";
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(query, targetUserId);
-
-        try {
-            String jsonPayload = objectMapper.writeValueAsString(Map.of(
-                "title", title,
-                "body", body,
-                "url", deepLinkUrl
-            ));
-
-            for (var row : rows) {
-                try {
-                    Subscription sub = new Subscription(
-                        (String) row.get("endpoint"),
-                        new Subscription.Keys(
-                            (String) row.get("p256dh_key"),
-                            (String) row.get("auth_secret")
-                        )
-                    );
-                    HttpResponse response = pushService.send(new Notification(sub, jsonPayload));
-                    int status = response.getStatusLine().getStatusCode();
-                    if (status == 201 || status == 202) {
-                        LOGGER.info("[WebPush Success] Background notification delivered.");
-                    } else if (status == 410 || status == 404) {
-                        jdbcTemplate.update(
-                            "DELETE FROM web_push_subscriptions WHERE endpoint = ?",
-                            row.get("endpoint")
-                        );
-                    }
-                } catch (Exception ex) {
-                    LOGGER.severe("[WebPush Failure] Dispatch failed: " + ex.getMessage());
-                }
-            }
-        } catch (Exception jsonErr) {
-            LOGGER.severe("[WebPush Serialization Error] " + jsonErr.getMessage());
-        }
+        UUID authenticatedUserId = UUID.fromString(authentication.getName());
+        webPushDispatchService.registerSubscription(authenticatedUserId, dto);
+        return ResponseEntity.ok(Map.of(
+            "status", "SUBSCRIPTION_REGISTERED_SUCCESSFULLY",
+            "databaseCluster", "SokoKuu Cloud SQL Database Cluster"
+        ));
     }
 }`
   },

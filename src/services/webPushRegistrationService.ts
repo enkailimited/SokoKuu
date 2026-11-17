@@ -65,16 +65,18 @@ export async function initializeWebPushRegistration(
     };
 
     try {
+      const token = localStorage.getItem('sokokuu_access_token');
       await fetch('/api/v1/notifications/push/subscribe', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'X-User-ID': userId,
         },
         body: JSON.stringify(payload),
       });
     } catch {
-      // Static preview fallback when Spring Boot gateway is offline
+      // Offline or static preview fallback
     }
 
     localStorage.setItem(

@@ -16,6 +16,7 @@ import {
 import type { Locale } from '../data/i18n';
 import { useHardwareGeolocation } from '../hooks/useHardwareGeolocation';
 import { registerConvertedVerifiedShop } from '../lib/sokoManagedState';
+import { SokoApiClient } from '../services/sokoApiClient';
 
 export type LeadLifecycleStatus = 'Prospect' | 'Converted';
 export type LeadBusinessTier = 'Retailer' | 'Wholesaler';
@@ -222,7 +223,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
     });
   };
 
-  const handleConvertLead = (leadId: string, expectedVersion: number) => {
+  const handleConvertLead = async (leadId: string, expectedVersion: number) => {
     setNotice(null);
     const current = leads.find((l) => l.leadId === leadId);
     if (!current) return;
@@ -238,12 +239,32 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
       return;
     }
 
-    const pin4 = generateSecurePin4();
-    const smsText = buildCompactActivationSms(
+    let pin4 = generateSecurePin4();
+    let smsText = buildCompactActivationSms(
       current.shopName,
       current.ownerPhoneE164,
       pin4
     );
+
+    // Call backend API if available
+    try {
+      const serverResult = await SokoApiClient.post<{
+        leadId: string;
+        status: string;
+        version: number;
+        provisionedPin4?: string;
+        dispatchedSmsBody?: string;
+      }>(`/sales/leads/${leadId}/convert`, { expectedVersion });
+
+      if (serverResult?.provisionedPin4) {
+        pin4 = serverResult.provisionedPin4;
+      }
+      if (serverResult?.dispatchedSmsBody) {
+        smsText = serverResult.dispatchedSmsBody;
+      }
+    } catch {
+      // Graceful offline fallback with local PIN4 and NextSMS generation
+    }
 
     setLeads((prev) =>
       prev.map((item) =>
@@ -274,8 +295,8 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
     setNotice({
       kind: 'ok',
       text: isSw
-        ? `${current.shopName} amewashwa & kuthibitishwa (v${expectedVersion} -> v${expectedVersion + 1}). Duka limeongezwa kwenye Orodha ya Maduka & Ramani!`
-        : `${current.shopName} converted & verified (v${expectedVersion} -> v${expectedVersion + 1}). Added to Shops Directory & Map!`,
+        ? `${current.shopName} amewashwa & kuthibitishwa (v${expectedVersion} -> v${expectedVersion + 1}). Mfanyabiashara ameongezwa kwenye Orodha ya Wafanyabiashara & Ramani!`
+        : `${current.shopName} converted & verified (v${expectedVersion} -> v${expectedVersion + 1}). Added to Verified Merchants Directory & Map!`,
     });
   };
 

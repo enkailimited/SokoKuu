@@ -32,6 +32,7 @@ import {
   initializeWebPushRegistration,
   triggerLocalServiceWorkerPushTest,
 } from '../services/webPushRegistrationService';
+import { sokoRealtime } from '../services/sokoRealtimeClient';
 
 export type StompPacketType =
   | 'NEW_B2B_ORDER_REQUEST'
@@ -329,6 +330,32 @@ export function BrandedAppBarWithAlerts({
 
     window.addEventListener('sokokuu:managed-order-alert', handleManagedAlert);
     window.addEventListener('sokokuu:stomp-alert', handleStompAlert);
+
+    try {
+      sokoRealtime.connect();
+      if (activeProfile.role === 'SUPER_ADMIN') {
+        sokoRealtime.subscribeAdminAlerts();
+      }
+    } catch {
+      // fallback
+    }
+
+    const unsubRealtime = sokoRealtime.on('admin:managed-alert', (payload: any) => {
+      setStompStatus('SUBSCRIBED');
+      ingestPacket({
+        id: String(payload.orderId ?? payload.id ?? `ALERT-${Date.now()}`),
+        packetType:
+          payload.event === 'ROUTED_PLATFORM_MANAGED_HELPDESK'
+            ? 'ROUTED_PLATFORM_MANAGED_HELPDESK'
+            : 'NEW_B2B_ORDER_REQUEST',
+        title: String(payload.sellerBusinessName ?? payload.orderRef ?? 'SokoKuu Realtime Alert'),
+        message: `Oda #${payload.orderRef || ''} - TZS ${payload.expectedTotalTzs || 0}`,
+        orderRef: payload.orderRef,
+        amountTzs: payload.expectedTotalTzs,
+        receivedAt: new Date().toLocaleTimeString('sw-TZ'),
+        acknowledged: false,
+      });
+    });
 
     let bc: BroadcastChannel | null = null;
     if ('BroadcastChannel' in window) {

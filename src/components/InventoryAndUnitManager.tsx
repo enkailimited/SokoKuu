@@ -21,6 +21,7 @@ import {
   type GlobalCatalogEntry,
   type GlobalCloneSyncStatus,
 } from '../lib/sokoManagedState';
+import { SokoApiClient } from '../services/sokoApiClient';
 
 // ============================================================================
 // Types & Interfaces for Merchant Custom Units & Dynamic POS Terminal
@@ -316,6 +317,19 @@ export function InventoryAndUnitManager({
       synced: isOnline
     };
 
+    if (isOnline) {
+      void SokoApiClient.post('/retailer/pos/sales-receipt', {
+        receiptId,
+        inventoryId: selectedItemForSale.itemId,
+        sku: selectedItemForSale.sku,
+        quantaSold: promptQuantity,
+        paymentMethod: selectedPaymentMethod,
+        totalTzs,
+      }).catch(() => {
+        // Continue with local IndexedDB persistence
+      });
+    }
+
     setReceiptLedger((prev) => [newRecord, ...prev]);
     setToastNotice(
       isSw
@@ -374,6 +388,13 @@ export function InventoryAndUnitManager({
         stagedAtIso: new Date().toISOString(),
       });
     } else {
+      try {
+        await SokoApiClient.post('/marketplace/catalog/clone-standard', {
+          globalCatalogId: entry.globalCatalogId,
+        });
+      } catch {
+        // Fallback to local catalog increment
+      }
       setGlobalCatalog(incrementCatalogCloneCounter(entry.globalCatalogId));
     }
 

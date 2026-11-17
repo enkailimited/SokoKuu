@@ -17,6 +17,7 @@ import { SuperAdminDiagnosticsView } from './components/SuperAdminDiagnosticsVie
 import { ProfileEditView, SettingsView } from './components/AccountPages';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { isTenantGeospatialMapEnabled } from './lib/sokoManagedState';
+import { SokoApiClient } from './services/sokoApiClient';
 
 type ActiveAccountPage = 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
 
@@ -157,6 +158,30 @@ function SinglePlatformShell() {
     };
   }, []);
 
+  useEffect(() => {
+    async function hydrateSessionFromApi() {
+      if (!SokoApiClient.hasAccessToken()) return;
+      try {
+        const me = await SokoApiClient.get<{
+          userId: string;
+          phoneE164: string;
+          role: PlatformRole;
+        }>('/auth/me');
+        if (me?.role && me.role in SEED_PLATFORM_ACCOUNTS) {
+          setActiveRole(me.role);
+          try {
+            window.localStorage.setItem(SESSION_STORAGE_KEY, me.role);
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // Offline / fallback to current activeRole
+      }
+    }
+    void hydrateSessionFromApi();
+  }, []);
+
   const handleSignIn = (role: PlatformRole) => {
     setActiveRole(role);
     setActivePage('DASHBOARD');
@@ -170,7 +195,13 @@ function SinglePlatformShell() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await SokoApiClient.post('/auth/logout');
+    } catch {
+      // ignore offline errors
+    }
+    SokoApiClient.clearTokens();
     setActiveRole(null);
     setActivePage('DASHBOARD');
     setMobileMenuOpen(false);

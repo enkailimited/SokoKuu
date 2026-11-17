@@ -21,6 +21,7 @@ import {
 import { BrandLogo } from './BrandLogo';
 import { OfflineIndicator } from './OfflineIndicator';
 import { PWAInstallButton } from './PWAInstallButton';
+import { SokoApiClient } from '../services/sokoApiClient';
 
 const ACCOUNT_ORDER: PlatformRole[] = [
   'CONSUMER',
@@ -62,7 +63,25 @@ export function AuthPortalView({
     setAuthError(null);
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  const executeLoginAndEnter = async (role: PlatformRole, phoneVal: string, pinVal: string) => {
+    try {
+      const resp = await SokoApiClient.post<{
+        accessToken: string;
+        refreshToken: string;
+      }>('/auth/login', {
+        phoneE164: phoneVal,
+        password: pinVal,
+      });
+      if (resp?.accessToken) {
+        SokoApiClient.setTokens(resp.accessToken, resp.refreshToken);
+      }
+    } catch {
+      // Offline fallback: continue cleanly with local role profile
+    }
+    onSignIn(role);
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleaned = identifier.trim().toLowerCase();
 
@@ -93,7 +112,7 @@ export function AuthPortalView({
       return;
     }
 
-    onSignIn(matchedRole);
+    await executeLoginAndEnter(matchedRole, identifier, pinInput);
   };
 
   return (
@@ -170,7 +189,7 @@ export function AuthPortalView({
 
                       <button
                         type="button"
-                        onClick={() => onSignIn(role)}
+                        onClick={() => executeLoginAndEnter(role, profile.phone, profile.pinCode)}
                         className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                       >
                         <span>{isSw ? 'Ingia' : 'Enter Dashboard'}</span>

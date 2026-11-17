@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -11,6 +11,7 @@ import {
   formatExceptionFlagLabel,
   formatOrderStatusLabel,
 } from '../lib/sokoManagedState';
+import { SokoApiClient } from '../services/sokoApiClient';
 
 export type ExceptionFlag = 'PENDING_SMS_SYNC' | 'DISPUTED';
 
@@ -108,6 +109,24 @@ export function WholesalerEodReconciliation({ locale = 'en' }: { locale?: Locale
 
   const isSw = locale === 'sw';
 
+  useEffect(() => {
+    let active = true;
+    async function loadEodDrivers() {
+      try {
+        const liveDrivers = await SokoApiClient.get<DriverEodSummary[]>('/wholesale/eod/drivers');
+        if (active && Array.isArray(liveDrivers) && liveDrivers.length > 0) {
+          setDrivers(liveDrivers);
+        }
+      } catch {
+        // Graceful offline fallback to INITIAL_DRIVERS
+      }
+    }
+    void loadEodDrivers();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const totalExpected = drivers.reduce((acc, d) => acc + d.expectedCashTzs, 0);
   const totalSettled = drivers
     .filter((d) => d.isSettled)
@@ -174,6 +193,11 @@ export function WholesalerEodReconciliation({ locale = 'en' }: { locale?: Locale
         d.driverId === driverId ? { ...d, isSettled: true, settledAt: nowTime } : d
       )
     );
+
+    void SokoApiClient.post(`/wholesale/eod-settle/${driverId}`).catch(() => {
+      // Offline fallback: state preserved locally
+    });
+
     setStatusBanner(
       isSw
         ? `Hesabu ya ${target.driverName} (${formatTzs(target.expectedCashTzs)}) imethibitishwa na kufungwa.`
