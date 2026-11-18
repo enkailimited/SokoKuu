@@ -391,6 +391,21 @@ export class IdentityService {
         preferredLocale: true,
         isActive: true,
         createdAt: true,
+        ownedMerchants: {
+          select: {
+            id: true,
+            smsShortCode: true,
+            businessName: true,
+            tier: true,
+            ward: true,
+            district: true,
+            streetAddress: true,
+            geospatialMapEnabled: true,
+            isPlatformManaged: true,
+          },
+          take: 1,
+          orderBy: { createdAt: 'asc' },
+        },
       },
     });
 
@@ -398,8 +413,12 @@ export class IdentityService {
       throw new UnauthorizedException('Authenticated user profile no longer exists.');
     }
 
+    const { ownedMerchants, ...userSummary } = user;
+    const businessProfile = ownedMerchants?.[0] ?? null;
+
     return {
-      user,
+      user: userSummary,
+      businessProfile,
       tenantContext: tenantContext ?? null,
     };
   }

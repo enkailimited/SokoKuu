@@ -1,488 +1,345 @@
-import { useState } from 'react';
-import { Play, RotateCcw, Send, Download, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Download, RefreshCw, Send } from 'lucide-react';
 import type { Locale } from '../data/i18n';
+import { SokoApiClient, isSokoNetworkError } from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
-interface StressRunResult {
-  workers: number;
-  poolSize: number;
-  initialQuanta: number;
-  succeededRequests: number;
-  serializationRetries: number;
-  insufficientStockRejects: number;
-  sacksAutoBroken: number;
-  finalSealedSacks: number;
-  finalLooseQuanta: number;
-  leakedConnections: number;
-  durationMs: number;
-  massConserved: boolean;
+interface RetentionStats {
+  totalIdempotencyKeys: number;
+  pendingOutboxCount: number;
+  deadLetterOutboxCount: number;
+  disputedLedgersCount: number;
+  coldArchiveLedgersCount: number;
 }
 
-interface CsvLedgerRow {
-  orderRef: string;
-  businessTypeSw: string;
-  wholesaleTzs: number;
-  retailTzs: number;
-  reconciledAtEat: string;
+interface SmsDeliveryRow {
+  id: string;
+  recipientPhoneE164: string;
+  status: string;
+  attemptCount: number;
+  maxAttempts: number;
+  lastError: string | null;
+  createdAt: string;
 }
 
-const SAMPLE_LEDGER_ROWS: CsvLedgerRow[] = [
-  {
-    orderRef: 'SK-K92A41F0',
-    businessTypeSw: 'Duka Mseto (B2B Jumla)',
-    wholesaleTzs: 1450000,
-    retailTzs: 0,
-    reconciledAtEat: '2026-11-15 09:14 EAT',
-  },
-  {
-    orderRef: 'SK-M38B10C4',
-    businessTypeSw: 'Duka Mseto (B2C Rejareja)',
-    wholesaleTzs: 0,
-    retailTzs: 18500,
-    reconciledAtEat: '2026-11-15 09:42 EAT',
-  },
-  {
-    orderRef: 'SK-T71D90E2',
-    businessTypeSw: 'Duka Mseto (B2B Jumla)',
-    wholesaleTzs: 2380000,
-    retailTzs: 0,
-    reconciledAtEat: '2026-11-15 11:05 EAT',
-  },
-  {
-    orderRef: 'SK-R55F22A9',
-    businessTypeSw: 'Duka Mseto (B2C Rejareja)',
-    wholesaleTzs: 0,
-    retailTzs: 42000,
-    reconciledAtEat: '2026-11-15 13:28 EAT',
-  },
-];
+interface FinancialLogRow {
+  id: string;
+  orderId: string | null;
+  eventType: string;
+  amountTzs: number;
+  previousState: string | null;
+  newState: string | null;
+  createdAt: string;
+}
 
 export function ConcurrencySmsCsvPanel({ locale = 'en' }: { locale?: Locale }) {
   const isSw = locale === 'sw';
+  const [retention, setRetention] = useState<RetentionStats | null>(null);
+  const [smsLogs, setSmsLogs] = useState<SmsDeliveryRow[]>([]);
+  const [financialLogs, setFinancialLogs] = useState<FinancialLogRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [retryingSms, setRetryingSms] = useState(false);
+  const [downloadingCsv, setDownloadingCsv] = useState(false);
+  const [backendOffline, setBackendOffline] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
 
-  // 1. Concurrency Stress Simulator State
-  const [workerCount, setWorkerCount] = useState<number>(100);
-  const [initialSacks, setInitialSacks] = useState<number>(5);
-  const [initialLooseQuanta, setInitialLooseQuanta] = useState<number>(12);
-  const [quantaPerRequest] = useState<number>(8); // 2KG (8 Robo) per concurrent order
-  const [hikariPoolMax] = useState<number>(32);
-  const [stressResult, setStressResult] = useState<StressRunResult | null>(null);
-
-  // 2. Async NextSMS Bulk-Break Notification State
-  const [smsOrderRef, setSmsOrderRef] = useState<string>('REF8A41C');
-  const [productLabel, setProductLabel] = useState<string>('Sukari 50KG');
-  const [newLooseRobo, setNewLooseRobo] = useState<number>(204);
-  const [merchantPhone, setMerchantPhone] = useState<string>('+255713882910');
-  const [smsDispatchedAt, setSmsDispatchedAt] = useState<string | null>(null);
-
-  const smsPayload = `SokoKuu: Gunia 1 la ${productLabel} limevunjwa sasa hivi kupitia oda namba ${smsOrderRef}. Hisa mpya ya mezani ni Robo ${newLooseRobo}.`;
-  const smsCharCount = smsPayload.length;
-  const isSingleSms = smsCharCount <= 160;
-
-  const runConcurrencySimulation = () => {
-    const quantaPerSack = 200; // 50KG = 200 quarter-quanta
-    const totalAvailable = initialSacks * quantaPerSack + initialLooseQuanta;
-
-    let loose = initialLooseQuanta;
-    let sacks = initialSacks;
-    let succeeded = 0;
-    let rejected = 0;
-    let broken = 0;
-
-    // Simulate serialized CountDownLatch + FOR UPDATE lock acquisition across N parallel threads
-    for (let i = 0; i < workerCount; i++) {
-      let tempLoose = loose;
-      let tempSacks = sacks;
-      let neededBreak = 0;
-
-      while (tempLoose < quantaPerRequest && tempSacks > 0) {
-        tempSacks -= 1;
-        tempLoose += quantaPerSack;
-        neededBreak += 1;
-      }
-
-      if (tempLoose >= quantaPerRequest) {
-        loose = tempLoose - quantaPerRequest;
-        sacks = tempSacks;
-        broken += neededBreak;
-        succeeded += 1;
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const [retRes, smsRes, finRes] = await Promise.all([
+        SokoApiClient.get<RetentionStats>('/admin/retention/stats'),
+        SokoApiClient.get<{ logs: SmsDeliveryRow[] }>('/notifications/sms/logs'),
+        SokoApiClient.get<{ logs: FinancialLogRow[] }>('/audit/financial-logs'),
+      ]);
+      setRetention(retRes);
+      setSmsLogs(smsRes.logs ?? []);
+      setFinancialLogs(finRes.logs ?? []);
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
       } else {
-        rejected += 1;
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to load logs');
       }
+    } finally {
+      setLoading(false);
     }
+  }, []);
 
-    const finalTotal = sacks * quantaPerSack + loose + succeeded * quantaPerRequest;
-    // Under SERIALIZABLE contention with 100 workers sharing 32 HikariCP connections on 1 hot row,
-    // deterministic serialization retries occur and resolve cleanly via exponential backoff.
-    const estimatedRetries = Math.max(0, Math.round(workerCount * 0.18));
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
 
-    setStressResult({
-      workers: workerCount,
-      poolSize: hikariPoolMax,
-      initialQuanta: totalAvailable,
-      succeededRequests: succeeded,
-      serializationRetries: estimatedRetries,
-      insufficientStockRejects: rejected,
-      sacksAutoBroken: broken,
-      finalSealedSacks: sacks,
-      finalLooseQuanta: loose,
-      leakedConnections: 0,
-      durationMs: Math.round(145 + workerCount * 1.4),
-      massConserved: finalTotal === totalAvailable,
-    });
-
-    if (broken > 0) {
-      setNewLooseRobo(loose);
-      setSmsDispatchedAt(null);
+  const handleRetryDueSms = async () => {
+    setRetryingSms(true);
+    setErrorMsg(null);
+    try {
+      const res = await SokoApiClient.post<{
+        processed: number;
+        sent: number;
+        deadLettered: number;
+      }>('/notifications/sms/retry-due');
+      setRetryNotice(
+        `Processed ${res.processed} due SMS jobs (${res.sent} sent, ${res.deadLettered} dead-lettered).`,
+      );
+      await loadAll();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to process SMS retries');
+      }
+    } finally {
+      setRetryingSms(false);
     }
   };
 
-  const resetStress = () => {
-    setStressResult(null);
-  };
-
-  const handleSimulateAsyncSms = () => {
-    const stamp = new Date().toLocaleTimeString('en-GB', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-    setSmsDispatchedAt(`${stamp} EAT`);
-  };
-
-  const buildSwahiliCsvContent = (): string => {
-    const headers = [
-      'Namba ya Oda',
-      'Aina ya Biashara',
-      'Mapato ya Jumla (TZS)',
-      'Mapato ya Rejareja (TZS)',
-      'Muda wa Makabidhiano',
-    ];
-
-    const escapeCell = (val: string | number): string => {
-      const raw = String(val);
-      const safe = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
-      return `"${safe.replace(/"/g, '""')}"`;
-    };
-
-    const lines = [
-      headers.map(escapeCell).join(','),
-      ...SAMPLE_LEDGER_ROWS.map((row) =>
-        [
-          row.orderRef,
-          row.businessTypeSw,
-          row.wholesaleTzs,
-          row.retailTzs,
-          row.reconciledAtEat,
-        ]
-          .map(escapeCell)
-          .join(',')
-      ),
-    ];
-
-    // Prepend UTF-8 BOM (\uFEFF) so Microsoft Excel & mobile spreadsheets preserve Swahili text cleanly
-    return `\uFEFF${lines.join('\r\n')}\r\n`;
-  };
-
-  const handleDownloadCsv = () => {
-    const csvBody = buildSwahiliCsvContent();
-    const blob = new Blob([csvBody], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'sokokuu-mapato-mseto-2026-11-15.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  const handleDownloadCsv = async () => {
+    setDownloadingCsv(true);
+    setErrorMsg(null);
+    try {
+      const blob = await SokoApiClient.downloadBlob('/hybrid/analytics/export-csv');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `sokokuu-financial-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : 'CSV export failed');
+      }
+    } finally {
+      setDownloadingCsv(false);
+    }
   };
 
   return (
     <div className="space-y-6">
-      {/* 1. Multi-Threaded Concurrency & HikariCP Stress Simulator */}
+      {backendOffline && (
+        <BackendOfflineBanner locale={locale} onRetry={() => void loadAll()} retrying={loading} />
+      )}
+
+      {errorMsg && (
+        <div
+          role="alert"
+          className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs font-medium text-red-900"
+        >
+          {errorMsg}
+        </div>
+      )}
+
+      {/* 1. Live Outbox & Idempotency Telemetry */}
       <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
               {isSw
-                ? 'Jaribio la Nguvu: Nyuzi 100+ Sambamba & HikariCP Lock Simulator'
-                : 'Bulk-Breaking Concurrency & HikariCP Stress Test Simulator'}
+                ? 'Hali ya Outbox, Idempotency & Mizozo (PostgreSQL)'
+                : 'PostgreSQL Transactional Outbox & Idempotency Telemetry'}
             </h2>
             <p className="text-sm text-slate-600 mt-0.5">
               {isSw
-                ? 'Huiga nyuzi zinazogombania bidhaa moja kwa wakati mmoja chini ya CountDownLatch + PostgreSQL FOR UPDATE.'
-                : 'Simulates concurrent worker threads hitting a single hot SKU row via CountDownLatch, HikariCP pooling, and PostgreSQL FOR UPDATE.'}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={runConcurrencySimulation}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap cursor-pointer"
-            >
-              <Play className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isSw ? 'Endesha Jaribio' : 'Fire Thread Latch'}</span>
-            </button>
-            {stressResult && (
-              <button
-                type="button"
-                onClick={resetStress}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{isSw ? 'Weka Upya' : 'Reset'}</span>
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 border-b border-slate-200 bg-slate-50/60">
-          <label className="block space-y-1">
-            <span className="text-xs font-medium text-slate-700">
-              {isSw ? 'Idadi ya Nyuzi (Threads)' : 'Concurrent Worker Threads'}
-            </span>
-            <select
-              value={workerCount}
-              onChange={(e) => setWorkerCount(Number(e.target.value))}
-              className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900"
-            >
-              <option value={100}>100 Threads (Standard JUnit Latch)</option>
-              <option value={500}>500 Threads (Morning Kariakoo Rush)</option>
-              <option value={10000}>10,000 Burst Wave (Virtual / Pooled)</option>
-            </select>
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-xs font-medium text-slate-700">
-              {isSw ? 'Magunia Yaliyofungwa (50KG)' : 'Initial Sealed Sacks (50KG = 200 Quanta)'}
-            </span>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={initialSacks}
-              onChange={(e) => setInitialSacks(Math.max(1, Number(e.target.value) || 1))}
-              className="w-full px-3 py-2 text-xs font-mono tabular-nums bg-white border border-slate-300 rounded-md text-slate-900"
-            />
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-xs font-medium text-slate-700">
-              {isSw ? 'Hisa ya Mezani (Robo Quanta)' : 'Initial Loose Quanta (250g units)'}
-            </span>
-            <input
-              type="number"
-              min={0}
-              max={199}
-              value={initialLooseQuanta}
-              onChange={(e) => setInitialLooseQuanta(Math.max(0, Number(e.target.value) || 0))}
-              className="w-full px-3 py-2 text-xs font-mono tabular-nums bg-white border border-slate-300 rounded-md text-slate-900"
-            />
-          </label>
-        </div>
-
-        {stressResult ? (
-          <div className="p-5 space-y-4">
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="border border-slate-200 rounded-md p-3.5">
-                <div className="text-xs text-slate-500">
-                  {isSw ? 'Maombi Yaliyofaulu' : 'Committed Deductions'}
-                </div>
-                <div className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
-                  {stressResult.succeededRequests.toLocaleString('en-US')}
-                </div>
-                <div className="text-xs font-mono text-slate-500 mt-0.5 tabular-nums">
-                  {stressResult.insufficientStockRejects.toLocaleString('en-US')} P0002 stock-out
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3.5">
-                <div className="text-xs text-slate-500">
-                  {isSw ? 'Magunia Yaliyovunjwa' : 'Sacks Auto-Broken'}
-                </div>
-                <div className="text-xl font-bold font-mono tabular-nums text-emerald-800 mt-1">
-                  {stressResult.sacksAutoBroken}
-                </div>
-                <div className="text-xs font-mono text-slate-500 mt-0.5 tabular-nums">
-                  {stressResult.finalSealedSacks} sealed · {stressResult.finalLooseQuanta} loose left
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3.5">
-                <div className="text-xs text-slate-500">
-                  {isSw ? 'Majaribio ya 40001' : '40001 Serialization Retries'}
-                </div>
-                <div className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
-                  {stressResult.serializationRetries.toLocaleString('en-US')}
-                </div>
-                <div className="text-xs font-mono text-slate-500 mt-0.5 tabular-nums">
-                  HikariPool max={stressResult.poolSize} · {stressResult.durationMs}ms
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3.5">
-                <div className="text-xs text-slate-500">
-                  {isSw ? 'Uvujaji wa Muunganisho' : 'HikariCP Leaked Handles'}
-                </div>
-                <div className="text-xl font-bold font-mono tabular-nums text-emerald-800 mt-1">
-                  {stressResult.leakedConnections}
-                </div>
-                <div className="text-xs font-mono text-emerald-800 mt-0.5 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>{stressResult.massConserved ? 'Quanta Conserved' : 'Drift Detected'}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="p-5 text-xs text-slate-500 font-mono">
-            {isSw
-              ? 'Bonyeza "Endesha Jaribio" kuthibitisha uhifadhi wa quanta na kutokuwepo kwa deadlock.'
-              : 'Click "Fire Thread Latch" to verify zero-leak HikariCP pooling and atomic quarter-quanta conservation.'}
-          </div>
-        )}
-      </section>
-
-      {/* 2. Asynchronous NextSMS Bulk-Break Notification Dispatcher */}
-      <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              {isSw
-                ? 'Arifa ya NextSMS kwa Uvunjaji wa Gunia (@Async SmsNotificationListener)'
-                : 'Asynchronous NextSMS Bulk-Break Dispatcher (<= 160 Chars)'}
-            </h2>
-            <p className="text-sm text-slate-600 mt-0.5">
-              {isSw
-                ? 'Hutuma ujumbe mfupi kwa mmiliki wa duka mara tu mfumo unapofungua gunia jipya baada ya uthibitisho.'
-                : 'Dispatches a non-blocking NextSMS alert strictly after transaction commit when bulk-breaking opens a sack.'}
+                ? 'Takwimu halisi za domain_outbox_events, idempotency_keys na leja zenye mizozo.'
+                : 'Live database row counts across domain_outbox_events, idempotency_keys, and disputed ledgers.'}
             </p>
           </div>
           <button
             type="button"
-            onClick={handleSimulateAsyncSms}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-800 rounded-md hover:bg-emerald-900 whitespace-nowrap cursor-pointer"
+            onClick={() => void loadAll()}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            <span>{isSw ? 'Onyesha Upya' : 'Refresh'}</span>
+          </button>
+        </div>
+
+        <div className="p-5 grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="border border-slate-200 rounded-md p-3.5">
+            <div className="text-xs text-slate-500">Idempotency Keys</div>
+            <div className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+              {retention ? retention.totalIdempotencyKeys.toLocaleString('en-US') : '—'}
+            </div>
+          </div>
+          <div className="border border-slate-200 rounded-md p-3.5">
+            <div className="text-xs text-slate-500">Pending Outbox</div>
+            <div className="text-xl font-bold font-mono tabular-nums text-emerald-800 mt-1">
+              {retention ? retention.pendingOutboxCount.toLocaleString('en-US') : '—'}
+            </div>
+          </div>
+          <div className="border border-slate-200 rounded-md p-3.5">
+            <div className="text-xs text-slate-500">Dead-Letter Outbox</div>
+            <div className="text-xl font-bold font-mono tabular-nums text-red-700 mt-1">
+              {retention ? retention.deadLetterOutboxCount.toLocaleString('en-US') : '—'}
+            </div>
+          </div>
+          <div className="border border-slate-200 rounded-md p-3.5">
+            <div className="text-xs text-slate-500">Disputed Cash Ledgers</div>
+            <div className="text-xl font-bold font-mono tabular-nums text-amber-800 mt-1">
+              {retention ? retention.disputedLedgersCount.toLocaleString('en-US') : '—'}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* 2. Live Outbound NextSMS Delivery Queue */}
+      <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              {isSw
+                ? 'Kumbukumbu ya Utumaji wa NextSMS (sms_delivery_logs)'
+                : 'Outbound NextSMS Delivery Queue (sms_delivery_logs)'}
+            </h2>
+            <p className="text-sm text-slate-600 mt-0.5">
+              {isSw
+                ? 'Orodha halisi ya jumbe fupi zilizotumwa au zinazosubiri marudio.'
+                : 'Live delivery tracking and exponential backoff retry queue from PostgreSQL.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleRetryDueSms()}
+            disabled={retryingSms}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-800 rounded-md hover:bg-emerald-900 disabled:opacity-50 whitespace-nowrap cursor-pointer"
           >
             <Send className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{isSw ? 'Tuma Arifa ya NextSMS' : 'Dispatch @Async NextSMS'}</span>
+            <span>
+              {retryingSms
+                ? isSw
+                  ? 'Inarudia...'
+                  : 'Retrying...'
+                : isSw
+                  ? 'Rudia SMS Zilizoshindwa'
+                  : 'Process Due SMS Retries'}
+            </span>
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <label className="block space-y-1">
-              <span className="text-xs font-medium text-slate-700">Order Ref (8-Char)</span>
-              <input
-                type="text"
-                maxLength={10}
-                value={smsOrderRef}
-                onChange={(e) => setSmsOrderRef(e.target.value.toUpperCase())}
-                className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900"
-              />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-xs font-medium text-slate-700">Broken Product Package</span>
-              <input
-                type="text"
-                maxLength={28}
-                value={productLabel}
-                onChange={(e) => setProductLabel(e.target.value)}
-                className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900"
-              />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-xs font-medium text-slate-700">Merchant Owner MSISDN</span>
-              <input
-                type="text"
-                value={merchantPhone}
-                onChange={(e) => setMerchantPhone(e.target.value)}
-                className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900"
-              />
-            </label>
+        {retryNotice && (
+          <div className="px-5 py-2.5 bg-emerald-50 border-b border-emerald-200 text-xs font-mono text-emerald-900">
+            {retryNotice}
           </div>
+        )}
 
-          <div className="border border-slate-200 rounded-md p-4 bg-slate-50 space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-mono font-medium text-slate-700">
-                POST https://messaging-service.co.tz/api/sms/v1/text/single → {merchantPhone}
-              </span>
-              <span
-                className={`font-mono font-semibold tabular-nums ${
-                  isSingleSms ? 'text-emerald-800' : 'text-amber-800'
-                }`}
-              >
-                {smsCharCount}/160 GSM-7 {isSingleSms ? '(1 SMS Unit)' : '(Multi-Part Warning)'}
-              </span>
+        <div className="p-4">
+          {smsLogs.length === 0 ? (
+            <EmptyStateCard
+              locale={locale}
+              titleSw="Hakuna kumbukumbu za NextSMS bado"
+              titleEn="No NextSMS delivery logs recorded yet"
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                    <th className="py-2 px-3">MSISDN</th>
+                    <th className="py-2 px-3">Status</th>
+                    <th className="py-2 px-3">Attempts</th>
+                    <th className="py-2 px-3">Last Error</th>
+                    <th className="py-2 px-3">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 font-mono">
+                  {smsLogs.map((row) => (
+                    <tr key={row.id} className="hover:bg-slate-50/70">
+                      <td className="py-2 px-3 text-slate-900">{row.recipientPhoneE164}</td>
+                      <td className="py-2 px-3 font-semibold text-emerald-800">{row.status}</td>
+                      <td className="py-2 px-3">
+                        {row.attemptCount}/{row.maxAttempts}
+                      </td>
+                      <td className="py-2 px-3 text-slate-500">{row.lastError ?? '—'}</td>
+                      <td className="py-2 px-3 text-slate-500">
+                        {new Date(row.createdAt).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <p className="text-sm font-mono text-slate-900 bg-white border border-slate-200 rounded px-3 py-2.5">
-              {smsPayload}
-            </p>
-            {!isSingleSms && (
-              <div className="flex items-center gap-1.5 text-xs text-amber-800">
-                <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Payload exceeds 160 chars; SmsNotificationListener auto-compacts product name before POST.</span>
-              </div>
-            )}
-            {smsDispatchedAt && (
-              <div className="text-xs font-mono text-emerald-800">
-                HTTP 200 OK queued asynchronously on smsDispatchExecutor at {smsDispatchedAt}
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </section>
 
-      {/* 3. Localized Swahili Performance CSV Exporter */}
+      {/* 3. Financial Audit Logs & Authentic UTF-8 BOM Swahili CSV Exporter */}
       <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
               {isSw
-                ? 'Uhamishaji wa Leja ya Mapato kwa Kiswahili (UTF-8 CSV)'
-                : 'Localized Swahili Split Revenue CSV Exporter (/export-csv)'}
+                ? 'Leja ya Ukaguzi wa Fedha & CSV ya Kiswahili'
+                : 'Financial Audit Ledger & Swahili Split Revenue CSV Exporter'}
             </h2>
             <p className="text-sm text-slate-600 mt-0.5">
               {isSw
-                ? 'Huzalisha faili la .csv lenye alama ya UTF-8 BOM na namba kamili za TZS tayari kwa Excel za wahasibu wa maduka.'
-                : 'Streams a UTF-8 BOM CSV file with localized Swahili accounting headers and whole-integer TZS values.'}
+                ? 'Hupakua faili halisi la UTF-8 BOM CSV moja kwa moja kutoka seva ya NestJS.'
+                : 'Streams an authoritative UTF-8 BOM CSV directly from PostgreSQL via GET /hybrid/analytics/export-csv.'}
             </p>
           </div>
           <button
             type="button"
-            onClick={handleDownloadCsv}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap cursor-pointer"
+            disabled={downloadingCsv}
+            onClick={() => void handleDownloadCsv()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{isSw ? 'Pakua CSV ya Kiswahili' : 'Download Swahili CSV'}</span>
+            <span>
+              {downloadingCsv
+                ? isSw
+                  ? 'Inapakua...'
+                  : 'Downloading...'
+                : isSw
+                  ? 'Pakua CSV ya Kiswahili'
+                  : 'Download Swahili CSV'}
+            </span>
           </button>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
-                <th className="py-2.5 px-4 whitespace-nowrap">Namba ya Oda</th>
-                <th className="py-2.5 px-4 whitespace-nowrap">Aina ya Biashara</th>
-                <th className="py-2.5 px-4 text-right whitespace-nowrap">Mapato ya Jumla (TZS)</th>
-                <th className="py-2.5 px-4 text-right whitespace-nowrap">Mapato ya Rejareja (TZS)</th>
-                <th className="py-2.5 px-4 whitespace-nowrap">Muda wa Makabidhiano</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 font-mono">
-              {SAMPLE_LEDGER_ROWS.map((row) => (
-                <tr key={row.orderRef} className="hover:bg-slate-50/70">
-                  <td className="py-2.5 px-4 font-semibold text-slate-900 whitespace-nowrap">{row.orderRef}</td>
-                  <td className="py-2.5 px-4 font-sans text-slate-700 whitespace-nowrap">{row.businessTypeSw}</td>
-                  <td className="py-2.5 px-4 text-right tabular-nums text-slate-900 whitespace-nowrap">
-                    {row.wholesaleTzs.toLocaleString('en-US')}
-                  </td>
-                  <td className="py-2.5 px-4 text-right tabular-nums text-emerald-800 whitespace-nowrap">
-                    {row.retailTzs.toLocaleString('en-US')}
-                  </td>
-                  <td className="py-2.5 px-4 tabular-nums text-slate-600 whitespace-nowrap">{row.reconciledAtEat}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="p-4">
+          {financialLogs.length === 0 ? (
+            <EmptyStateCard
+              locale={locale}
+              titleSw="Hakuna kumbukumbu za ukaguzi wa fedha bado"
+              titleEn="No financial audit logs recorded yet"
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                    <th className="py-2 px-3">Event Type</th>
+                    <th className="py-2 px-3">Transition</th>
+                    <th className="py-2 px-3 text-right">Amount (TZS)</th>
+                    <th className="py-2 px-3">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 font-mono">
+                  {financialLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-slate-50/70">
+                      <td className="py-2 px-3 font-semibold text-slate-900">{log.eventType}</td>
+                      <td className="py-2 px-3 text-slate-600">
+                        {log.previousState ?? 'INIT'} → {log.newState ?? 'OK'}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums text-emerald-800">
+                        {log.amountTzs.toLocaleString('en-US')}
+                      </td>
+                      <td className="py-2 px-3 text-slate-500">
+                        {new Date(log.createdAt).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </section>
     </div>

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Locale } from './data/i18n';
 import { DataSaverProvider } from './context/DataSaverContext';
 import { HybridModeProvider } from './context/HybridModeContext';
 import {
-  SEED_PLATFORM_ACCOUNTS,
+  ROLE_LABELS,
+  mapTierToAccountMode,
   type PlatformRole,
   type UserProfile,
 } from './types/auth';
@@ -15,14 +16,13 @@ import { WholesalerOperationsView } from './components/WholesalerOperationsView'
 import { MobileDriverReceiptCard } from './components/MobileDriverReceiptCard';
 import { SuperAdminDiagnosticsView } from './components/SuperAdminDiagnosticsView';
 import { ProfileEditView, SettingsView } from './components/AccountPages';
+import { BackendOfflineBanner } from './components/DatabaseStateBanner';
 import { OfflineIndicator } from './components/OfflineIndicator';
-import { isTenantGeospatialMapEnabled } from './lib/sokoManagedState';
-import { SokoApiClient } from './services/sokoApiClient';
+import { SokoApiClient, isSokoNetworkError } from './services/sokoApiClient';
 
 type ActiveAccountPage = 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
 
-const SESSION_STORAGE_KEY = 'sokokuu_active_role_v1';
-const ACCOUNTS_STORAGE_KEY = 'sokokuu_accounts_v1';
+const ACTIVE_USER_STORAGE_KEY = 'sokokuu_active_user_v1';
 const LOCALE_STORAGE_KEY = 'sokokuu_locale_v1';
 const RETAILER_TAB_STORAGE_KEY = 'sokokuu_retailer_tab_v1';
 
@@ -65,23 +65,12 @@ function SinglePlatformShell() {
     document.documentElement.lang = locale;
   }, [locale]);
 
-  const [accounts, setAccounts] = useState<Record<PlatformRole, UserProfile>>(() => {
+  const [activeProfile, setActiveProfile] = useState<UserProfile | null>(() => {
+    if (!SokoApiClient.hasAccessToken()) return null;
     try {
-      const saved = window.localStorage.getItem(ACCOUNTS_STORAGE_KEY);
-      if (saved) {
-        return { ...SEED_PLATFORM_ACCOUNTS, ...JSON.parse(saved) };
-      }
-    } catch {
-      // ignore storage errors
-    }
-    return SEED_PLATFORM_ACCOUNTS;
-  });
-
-  const [activeRole, setActiveRole] = useState<PlatformRole | null>(() => {
-    try {
-      const savedRole = window.localStorage.getItem(SESSION_STORAGE_KEY) as PlatformRole | null;
-      if (savedRole && savedRole in SEED_PLATFORM_ACCOUNTS) {
-        return savedRole;
+      const raw = window.localStorage.getItem(ACTIVE_USER_STORAGE_KEY);
+      if (raw) {
+        return JSON.parse(raw) as UserProfile;
       }
     } catch {
       // ignore storage errors
@@ -99,9 +88,6 @@ function SinglePlatformShell() {
         savedTab === 'core_engine' ||
         savedTab === 'proximity_map'
       ) {
-        if (savedTab === 'proximity_map' && !isTenantGeospatialMapEnabled('ret-sinza-01')) {
-          return 'pos_register';
-        }
         return savedTab;
       }
     } catch {
@@ -122,29 +108,148 @@ function SinglePlatformShell() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [adminMobileSidebarOpen, setAdminMobileSidebarOpen] = useState<boolean>(false);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState<boolean>(false);
-  const [retailerMapEnabled, setRetailerMapEnabled] = useState<boolean>(() =>
-    isTenantGeospatialMapEnabled('ret-sinza-01')
-  );
+  const [retailerMapEnabled, setRetailerMapEnabled] = useState<boolean>(false);
+  const [sessionBackendOffline, setSessionBackendOffline] = useState<boolean>(false);
+  const [hydratingSession, setHydratingSession] = useState<boolean>(false);
+
+  const persistActiveProfile = (profile: UserProfile | null) => {
+    setActiveProfile(profile);
+    try {
+      if (profile) {
+        window.localStorage.setItem(ACTIVE_USER_STORAGE_KEY, JSON.stringify(profile));
+      } else {
+        window.localStorage.removeItem(ACTIVE_USER_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const hydrateSessionFromApi = useCallback(async () => {
+    if (!SokoApiClient.hasAccessToken()) {
+      persistActiveProfile(null);
+      return;
+    }
+
+    setHydratingSession(true);
+    try {
+      const me = await SokoApiClient.get<{
+        user?: {
+          id: string;
+          phoneE164: string;
+          fullName: string;
+          role: PlatformRole;
+        };
+        businessProfile?: {
+          id: string;
+          smsShortCode: string;
+          businessName: string;
+          tier: string;
+          ward: string;
+          district: string;
+          streetAddress: string;
+          geospatialMapEnabled: boolean;
+          isPlatformManaged: boolean;
+        } | null;
+        tenantContext?: {
+          businessId?: string | null;
+          tier?: string | null;
+        } | null;
+      }>('/auth/me');
+
+      setSessionBackendOffline(false);
+
+      if (!me?.user?.role) {
+        SokoApiClient.clearTokens();
+        persistActiveProfile(null);
+        return;
+      }
+
+      const role = me.user.role;
+      const bp = me.businessProfile;
+      const tier = bp?.tier ?? me.tenantContext?.tier ?? null;
+      const geoEnabled = Boolean(bp?.geospatialMapEnabled);
+
+      setRetailerMapEnabled(geoEnabled);
+      if (role === 'RETAILER' && !geoEnabled && retailerTab === 'proximity_map') {
+        setRetailerTab('core_engine');
+      }
+
+      setActiveProfile((prev) => {
+        const next: UserProfile = {
+          userId: me.user!.id,
+          businessId: bp?.id ?? me.tenantContext?.businessId ?? null,
+          smsShortCode: bp?.smsShortCode ?? null,
+          tier,
+          geospatialMapEnabled: geoEnabled,
+          isPlatformManaged: Boolean(bp?.isPlatformManaged),
+          fullName: me.user!.fullName,
+          phone: me.user!.phoneE164,
+          email: prev?.email ?? '',
+          businessLabel:
+            bp?.businessName ??
+            (locale === 'sw' ? ROLE_LABELS[role].sw : ROLE_LABELS[role].en),
+          ward: bp?.ward ?? prev?.ward ?? '',
+          streetAddress: bp?.streetAddress ?? prev?.streetAddress ?? '',
+          role,
+          mode: mapTierToAccountMode(role, tier),
+          smsAlertsEnabled: prev?.smsAlertsEnabled ?? true,
+          offlineSmsFallbackEnabled: prev?.offlineSmsFallbackEnabled ?? true,
+        };
+        try {
+          window.localStorage.setItem(ACTIVE_USER_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setSessionBackendOffline(true);
+      } else {
+        // Unauthorized / expired refresh session -> force clean login
+        SokoApiClient.clearTokens();
+        persistActiveProfile(null);
+      }
+    } finally {
+      setHydratingSession(false);
+    }
+  }, [locale, retailerTab]);
+
+  useEffect(() => {
+    void hydrateSessionFromApi();
+  }, [hydrateSessionFromApi]);
 
   useEffect(() => {
     const handleQuotaExceeded = () => setMapsQuotaExceeded(true);
-    const handleGeoToggle = () => {
-      const enabled = isTenantGeospatialMapEnabled('ret-sinza-01');
-      setRetailerMapEnabled(enabled);
-      if (!enabled && retailerTab === 'proximity_map') {
-        setRetailerTab('core_engine');
+    const syncGeoPermission = async () => {
+      if (activeProfile?.role !== 'RETAILER' || !SokoApiClient.hasAccessToken()) {
+        return;
+      }
+      try {
+        await SokoApiClient.get(
+          '/geospatial/stores-map-matrix?originLat=-6.809&originLng=39.255&maxDistanceMeters=1000'
+        );
+        setRetailerMapEnabled(true);
+      } catch (err) {
+        if (!isSokoNetworkError(err)) {
+          setRetailerMapEnabled(false);
+          if (retailerTab === 'proximity_map') {
+            setRetailerTab('core_engine');
+          }
+        }
       }
     };
 
+    void syncGeoPermission();
+
     window.addEventListener('gmp-quota-exceeded', handleQuotaExceeded);
-    window.addEventListener('sokokuu:geospatial-toggle-updated', handleGeoToggle);
-    window.addEventListener('storage', handleGeoToggle);
+    window.addEventListener('sokokuu:geospatial-toggle-updated', syncGeoPermission);
     return () => {
       window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded);
-      window.removeEventListener('sokokuu:geospatial-toggle-updated', handleGeoToggle);
-      window.removeEventListener('storage', handleGeoToggle);
+      window.removeEventListener('sokokuu:geospatial-toggle-updated', syncGeoPermission);
     };
-  }, [retailerTab]);
+  }, [activeProfile?.role, retailerTab]);
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -158,41 +263,14 @@ function SinglePlatformShell() {
     };
   }, []);
 
-  useEffect(() => {
-    async function hydrateSessionFromApi() {
-      if (!SokoApiClient.hasAccessToken()) return;
-      try {
-        const me = await SokoApiClient.get<{
-          userId: string;
-          phoneE164: string;
-          role: PlatformRole;
-        }>('/auth/me');
-        if (me?.role && me.role in SEED_PLATFORM_ACCOUNTS) {
-          setActiveRole(me.role);
-          try {
-            window.localStorage.setItem(SESSION_STORAGE_KEY, me.role);
-          } catch {
-            // ignore
-          }
-        }
-      } catch {
-        // Offline / fallback to current activeRole
-      }
-    }
-    void hydrateSessionFromApi();
-  }, []);
-
-  const handleSignIn = (role: PlatformRole) => {
-    setActiveRole(role);
+  const handleSignIn = (profile: UserProfile) => {
+    persistActiveProfile(profile);
+    setRetailerMapEnabled(Boolean(profile.geospatialMapEnabled));
+    setSessionBackendOffline(false);
     setActivePage('DASHBOARD');
     setRetailerTab('pos_register');
     setMobileMenuOpen(false);
     setAdminMobileSidebarOpen(false);
-    try {
-      window.localStorage.setItem(SESSION_STORAGE_KEY, role);
-    } catch {
-      // ignore storage errors
-    }
   };
 
   const handleLogout = async () => {
@@ -202,41 +280,25 @@ function SinglePlatformShell() {
       // ignore offline errors
     }
     SokoApiClient.clearTokens();
-    setActiveRole(null);
+    persistActiveProfile(null);
     setActivePage('DASHBOARD');
     setMobileMenuOpen(false);
     setAdminMobileSidebarOpen(false);
-    try {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
-    } catch {
-      // ignore storage errors
-    }
   };
 
   const handleSaveProfile = (updated: UserProfile) => {
-    setAccounts((prev) => {
-      const next = { ...prev, [updated.role]: updated };
-      try {
-        window.localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore storage errors
-      }
-      return next;
-    });
+    persistActiveProfile(updated);
   };
 
-  if (!activeRole) {
+  if (!activeProfile) {
     return (
       <AuthPortalView
         locale={locale}
         onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
-        accounts={accounts}
         onSignIn={handleSignIn}
       />
     );
   }
-
-  const activeProfile = accounts[activeRole];
 
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col">
@@ -256,7 +318,7 @@ function SinglePlatformShell() {
           </span>
         </div>
       )}
-      {/* ONE Single Top AppBar with integrated Notification Bell, STOMP Audio Engine, and Profile Matrix */}
+
       <BrandedAppBarWithAlerts
         locale={locale}
         onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
@@ -273,7 +335,16 @@ function SinglePlatformShell() {
         onToggleAdminMobileSidebar={() => setAdminMobileSidebarOpen((prev) => !prev)}
       />
 
-      {/* Main Single-Role Dashboard Page or Account Subpage (Clean, without redundant title banners) */}
+      {sessionBackendOffline && (
+        <div className="px-4 sm:px-6 pt-4 max-w-6xl w-full mx-auto">
+          <BackendOfflineBanner
+            locale={locale}
+            onRetry={() => void hydrateSessionFromApi()}
+            retrying={hydratingSession}
+          />
+        </div>
+      )}
+
       <main
         className={
           activeProfile.role === 'SUPER_ADMIN' && activePage === 'DASHBOARD'
@@ -291,11 +362,12 @@ function SinglePlatformShell() {
                 locale={locale}
                 activeTab={retailerTab}
                 userRole="RETAILER"
+                businessId={activeProfile.businessId}
                 onRedirectToWorkspace={() => setRetailerTab('core_engine')}
               />
             )}
             {activeProfile.role === 'WHOLESALER' && (
-              <WholesalerOperationsView locale={locale} />
+              <WholesalerOperationsView locale={locale} businessId={activeProfile.businessId} />
             )}
             {activeProfile.role === 'DRIVER' && (
               <MobileDriverReceiptCard locale={locale} />

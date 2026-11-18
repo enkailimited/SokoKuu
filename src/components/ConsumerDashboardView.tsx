@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   KeyRound,
   Lock,
   Minus,
   Plus,
+  RefreshCw,
   ShoppingBag,
   ShoppingCart,
   Store,
@@ -16,13 +18,32 @@ import {
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import { formatOrderStatusLabel } from '../lib/sokoManagedState';
+import { putQueuedOrder } from '../lib/indexedDbDemo';
 import { useDataSaver } from '../context/DataSaverContext';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import azaniaFlourImg from '../assets/images/azania_wheat_flour_1794734183041.jpg';
 import korieOilImg from '../assets/images/korie_cooking_oil_1794734183539.jpg';
 import kilomberoSugarImg from '../assets/images/kilombero_brown_sugar_1794734184028.jpg';
 import mbeyaRiceImg from '../assets/images/mbeya_super_rice_1794734184118.jpg';
 
 type ConsumerScreen = 'HOME' | 'DUKAS' | 'SHOP' | 'PIN_VERIFY';
+
+type PackagingUnit =
+  | 'CARTON'
+  | 'DOZEN'
+  | 'PACK'
+  | 'UNIT'
+  | 'SACK_50KG'
+  | 'SACK_25KG'
+  | 'QUARTER_KILO_LITRE'
+  | 'HALF_KILO_LITRE'
+  | 'THREE_QUARTER_KILO'
+  | 'SINGLE_KILO_LITRE';
 
 interface NeighborhoodDuka {
   dukaId: string;
@@ -36,14 +57,16 @@ interface NeighborhoodDuka {
 }
 
 interface ConsumerLooseProduct {
+  cartKey: string;
   productId: string;
+  unitType: PackagingUnit;
   dukaId: string;
   sku: string;
   nameSw: string;
   nameEn: string;
   unitMeasureSw: string;
   unitMeasureEn: string;
-  quarterQuantaPerUnit: number; // 1=Robo (250g/250mL), 2=Nusu (500g), 3=Tatu-Robo (750g), 4=1KG/1L
+  quarterQuantaPerUnit: number;
   pricePerUnitTzs: number;
   imageSrc: string;
 }
@@ -54,123 +77,77 @@ interface ConsumerOrder {
   dukaName: string;
   itemsSummary: string;
   totalCashDueTzs: number;
-  buyerPin4: string;
-  status: 'DISPATCHED' | 'DELIVERED';
+  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
 }
 
-const NEIGHBORHOOD_DUKAS: NeighborhoodDuka[] = [
-  {
-    dukaId: 'duka-sinza-01',
-    name: 'Sinza Corner Duka',
-    initials: 'SCD',
-    ward: 'Sinza Mori, Dar es Salaam',
-    distanceMeters: 120,
-    deliveryFeeTzs: 1_000,
-    modeTagSw: 'Duka la Rejareja · Robo / Nusu / Lita',
-    modeTagEn: 'Retail Duka · Loose Household Fractions',
-  },
-  {
-    dukaId: 'duka-kinondoni-02',
-    name: 'Kinondoni Mama Lishe Mart',
-    initials: 'KML',
-    ward: 'Kinondoni Studio, Dar es Salaam',
-    distanceMeters: 280,
-    deliveryFeeTzs: 1_500,
-    modeTagSw: 'Duka Mseto (Rejareja B2C)',
-    modeTagEn: 'Hybrid Storefront (Walk-in Retail Mode)',
-  },
-];
+interface BackendMerchantDto {
+  merchantId: string;
+  smsShortCode: string;
+  merchantName: string;
+  tier: string;
+  ward: string;
+  district: string;
+}
 
-const DUKA_LOOSE_PRODUCTS: Record<string, ConsumerLooseProduct[]> = {
-  'duka-sinza-01': [
-    {
-      productId: 'con-rice-nusu',
-      dukaId: 'duka-sinza-01',
-      sku: 'MBY-NUSU',
-      nameSw: 'Mchele wa Mbeya Super (Nusu Kilo)',
-      nameEn: 'Mbeya Super Rice (Nusu 1/2 KG)',
-      unitMeasureSw: 'Nusu Kilo (500g · 2 Quanta)',
-      unitMeasureEn: 'Nusu 1/2 KG (500g · 2 Quanta)',
-      quarterQuantaPerUnit: 2,
-      pricePerUnitTzs: 1_600,
-      imageSrc: mbeyaRiceImg,
-    },
-    {
-      productId: 'con-sugar-robo',
-      dukaId: 'duka-sinza-01',
-      sku: 'KLM-ROBO',
-      nameSw: 'Sukari ya Kilombero (Robo Kilo)',
-      nameEn: 'Kilombero Brown Sugar (Robo 1/4 KG)',
-      unitMeasureSw: 'Robo Kilo (250g · 1 Quantum)',
-      unitMeasureEn: 'Robo 1/4 KG (250g · 1 Quantum)',
-      quarterQuantaPerUnit: 1,
-      pricePerUnitTzs: 850,
-      imageSrc: kilomberoSugarImg,
-    },
-    {
-      productId: 'con-oil-robo',
-      dukaId: 'duka-sinza-01',
-      sku: 'KOR-250ML',
-      nameSw: 'Mafuta ya Korie (Robo Lita)',
-      nameEn: 'Korie Cooking Oil (Robo 250mL)',
-      unitMeasureSw: 'Robo Lita (250mL · 1 Quantum)',
-      unitMeasureEn: 'Robo 1/4 Litre (250mL · 1 Quantum)',
-      quarterQuantaPerUnit: 1,
-      pricePerUnitTzs: 1_650,
-      imageSrc: korieOilImg,
-    },
-    {
-      productId: 'con-flour-1kg',
-      dukaId: 'duka-sinza-01',
-      sku: 'AZN-1KG',
-      nameSw: 'Unga wa Ngano Azania (Kilo 1)',
-      nameEn: 'Azania Wheat Flour (1 KG)',
-      unitMeasureSw: 'Kilo 1 (1,000g · 4 Quanta)',
-      unitMeasureEn: '1 KG Pack (1,000g · 4 Quanta)',
-      quarterQuantaPerUnit: 4,
-      pricePerUnitTzs: 2_300,
-      imageSrc: azaniaFlourImg,
-    },
-  ],
-  'duka-kinondoni-02': [
-    {
-      productId: 'con-kin-sugar-tatu',
-      dukaId: 'duka-kinondoni-02',
-      sku: 'KLM-750G',
-      nameSw: 'Sukari ya Kilombero (Tatu-Robo 3/4 KG)',
-      nameEn: 'Kilombero Sugar (Tatu-Robo 3/4 KG)',
-      unitMeasureSw: 'Tatu-Robo Kilo (750g · 3 Quanta)',
-      unitMeasureEn: 'Tatu-Robo 3/4 KG (750g · 3 Quanta)',
-      quarterQuantaPerUnit: 3,
-      pricePerUnitTzs: 2_450,
-      imageSrc: kilomberoSugarImg,
-    },
-    {
-      productId: 'con-kin-oil-1l',
-      dukaId: 'duka-kinondoni-02',
-      sku: 'KOR-1L',
-      nameSw: 'Mafuta ya Korie (Lita 1)',
-      nameEn: 'Korie Cooking Oil (1 Litre)',
-      unitMeasureSw: 'Lita 1 (1,000mL · 4 Quanta)',
-      unitMeasureEn: '1 Litre (1,000mL · 4 Quanta)',
-      quarterQuantaPerUnit: 4,
-      pricePerUnitTzs: 5_800,
-      imageSrc: korieOilImg,
-    },
-  ],
-};
+interface BackendProductDto {
+  productId: string;
+  sellerBusinessId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  unitPriceTzs: number;
+  priceTiers?: Array<{
+    id: string;
+    unitType: PackagingUnit;
+    quarterQuantaPerUnit: number;
+    priceTzs: number;
+    isWholesaleTier: boolean;
+  }>;
+}
 
-const INITIAL_CONSUMER_ORDERS: ConsumerOrder[] = [
-  {
-    orderId: 'con-ord-01',
-    orderRef8: 'CN3910A4',
-    dukaName: 'Sinza Corner Duka',
-    itemsSummary: 'Mchele Nusu (2x) + Mafuta Robo (1x)',
-    totalCashDueTzs: 5_850,
-    buyerPin4: '5192',
-    status: 'DISPATCHED',
-  },
-];
+interface BackendOrderDto {
+  orderId: string;
+  orderRef: string;
+  sellerBusinessName: string;
+  expectedTotalTzs: number;
+  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
+  items: Array<{
+    smsItemCode?: string;
+    nameSw?: string;
+    unitType: string;
+    quantity: number;
+  }>;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(val?: string | null): val is string {
+  return Boolean(val && UUID_REGEX.test(val));
+}
+
+function resolveImage(sku: string, name: string): string {
+  const hay = `${sku} ${name}`.toUpperCase();
+  if (hay.includes('KOR') || hay.includes('OIL') || hay.includes('MAFUTA')) return korieOilImg;
+  if (hay.includes('KLM') || hay.includes('SUG') || hay.includes('SUKARI')) return kilomberoSugarImg;
+  if (hay.includes('MBY') || hay.includes('RIC') || hay.includes('MCHELE')) return mbeyaRiceImg;
+  return azaniaFlourImg;
+}
+
+function formatLooseMeasure(unit: PackagingUnit, quanta: number, isSw: boolean): string {
+  switch (unit) {
+    case 'QUARTER_KILO_LITRE':
+      return isSw ? `Robo 1/4 (${quanta}Q)` : `Robo 1/4 (${quanta}Q)`;
+    case 'HALF_KILO_LITRE':
+      return isSw ? `Nusu 1/2 (${quanta}Q)` : `Nusu 1/2 (${quanta}Q)`;
+    case 'THREE_QUARTER_KILO':
+      return isSw ? `Tatu-Robo 3/4 (${quanta}Q)` : `Tatu-Robo 3/4 (${quanta}Q)`;
+    case 'SINGLE_KILO_LITRE':
+      return isSw ? `1KG / 1L (${quanta}Q)` : `1KG / 1L (${quanta}Q)`;
+    case 'PACK':
+      return isSw ? `Pakiti (${quanta}Q)` : `Pack (${quanta}Q)`;
+    default:
+      return `${unit} (${quanta}Q)`;
+  }
+}
 
 export function ConsumerDashboardView({
   locale = 'en',
@@ -184,47 +161,214 @@ export function ConsumerDashboardView({
 
   const [screen, setScreen] = useState<ConsumerScreen>('HOME');
   const [isOnline, setIsOnline] = useState<boolean>(
-    typeof window !== 'undefined' ? window.navigator.onLine : true
+    typeof window !== 'undefined' ? window.navigator.onLine : true,
   );
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [dukas, setDukas] = useState<NeighborhoodDuka[]>([]);
   const [selectedDuka, setSelectedDuka] = useState<NeighborhoodDuka | null>(null);
-  const [cartByProduct, setCartByProduct] = useState<Record<string, number>>({});
+  const [liveDukaCatalog, setLiveDukaCatalog] = useState<ConsumerLooseProduct[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  const [cartByKey, setCartByKey] = useState<Record<string, number>>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const [orders, setOrders] = useState<ConsumerOrder[]>(INITIAL_CONSUMER_ORDERS);
+  const [orders, setOrders] = useState<ConsumerOrder[]>([]);
   const [pinOrderId, setPinOrderId] = useState<string | null>(null);
   const [pinInput, setPinInput] = useState('');
+  const [qrTokenInput, setQrTokenInput] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
+  const [verifyingPin, setVerifyingPin] = useState(false);
   const [toast, setToast] = useState<{ title: string; detail: string } | null>(null);
 
+  const loadLiveConsumerState = useCallback(async () => {
+    if (!navigator.onLine) {
+      setIsOnline(false);
+      setBackendOffline(true);
+      return;
+    }
+
+    setLoading(true);
+    setApiError(null);
+    setBackendOffline(false);
+    try {
+      const [merchantsRes, ordersRes] = await Promise.all([
+        SokoApiClient.get<BackendMerchantDto[]>('/marketplace/merchants'),
+        SokoApiClient.hasAccessToken()
+          ? SokoApiClient.get<{ count: number; orders: BackendOrderDto[] }>(
+              '/orders/my-orders?scope=buying',
+            )
+          : Promise.resolve({ count: 0, orders: [] as BackendOrderDto[] }),
+      ]);
+
+      const retailMerchants = (Array.isArray(merchantsRes) ? merchantsRes : []).filter(
+        (m) => m.tier === 'RETAIL_DUKA' || m.tier === 'HYBRID_STORE',
+      );
+      setDukas(
+        retailMerchants.map((m, idx) => ({
+          dukaId: m.merchantId,
+          name: m.merchantName,
+          initials:
+            m.smsShortCode ||
+            m.merchantName
+              .split(/\s+/)
+              .slice(0, 2)
+              .map((w) => w[0])
+              .join('')
+              .toUpperCase(),
+          ward: `${m.ward}, ${m.district}`,
+          distanceMeters: 150 + idx * 190,
+          deliveryFeeTzs: 1_000,
+          modeTagSw:
+            m.tier === 'HYBRID_STORE'
+              ? 'Duka Mseto (Rejareja B2C)'
+              : 'Duka la Rejareja · Robo / Nusu / Lita',
+          modeTagEn:
+            m.tier === 'HYBRID_STORE'
+              ? 'Hybrid Storefront (Walk-in Retail Mode)'
+              : 'Retail Duka · Loose Household Fractions',
+        })),
+      );
+
+      setOrders(
+        (ordersRes?.orders ?? []).map((o) => ({
+          orderId: o.orderId,
+          orderRef8: o.orderRef,
+          dukaName: o.sellerBusinessName,
+          itemsSummary: o.items
+            .map((i) => `${i.smsItemCode ?? i.nameSw ?? 'SKU'} (${i.quantity}x ${i.unitType})`)
+            .join(' + '),
+          totalCashDueTzs: Number(o.expectedTotalTzs ?? 0),
+          status: o.status,
+        })),
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia maduka na oda.'
+              : 'Failed to load dukas and orders.',
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [isSw]);
+
   useEffect(() => {
-    const goUp = () => setIsOnline(true);
-    const goDown = () => setIsOnline(false);
+    const goUp = () => {
+      setIsOnline(true);
+      void loadLiveConsumerState();
+    };
+    const goDown = () => {
+      setIsOnline(false);
+      setBackendOffline(true);
+    };
     window.addEventListener('online', goUp);
     window.addEventListener('offline', goDown);
     return () => {
       window.removeEventListener('online', goUp);
       window.removeEventListener('offline', goDown);
     };
-  }, []);
+  }, [loadLiveConsumerState]);
+
+  useEffect(() => {
+    void loadLiveConsumerState();
+  }, [loadLiveConsumerState]);
 
   const cashReadyTodayTzs = useMemo(
     () =>
       orders
-        .filter((o) => o.status === 'DISPATCHED')
+        .filter((o) => o.status === 'DISPATCHED' || o.status === 'PLACED')
         .reduce((sum, o) => sum + o.totalCashDueTzs, 0),
-    [orders]
+    [orders],
   );
 
-  const openDuka = (duka: NeighborhoodDuka) => {
+  const openDuka = async (duka: NeighborhoodDuka) => {
     setSelectedDuka(duka);
-    setCartByProduct({});
+    setCartByKey({});
     setDrawerOpen(false);
+    setApiError(null);
     setScreen('SHOP');
+
+    if (!navigator.onLine || !isUuid(duka.dukaId)) {
+      setBackendOffline(true);
+      setLiveDukaCatalog([]);
+      return;
+    }
+
+    setLoadingCatalog(true);
+    setBackendOffline(false);
+    try {
+      const products = await SokoApiClient.get<BackendProductDto[]>(
+        `/products/active?businessId=${encodeURIComponent(duka.dukaId)}`,
+      );
+      const flattened: ConsumerLooseProduct[] = [];
+      for (const p of Array.isArray(products) ? products : []) {
+        const retailTiers = (p.priceTiers ?? []).filter((t) => !t.isWholesaleTier);
+        const tiersToUse =
+          retailTiers.length > 0
+            ? retailTiers
+            : p.priceTiers && p.priceTiers.length > 0
+              ? [p.priceTiers[0]]
+              : [
+                  {
+                    id: 'unit-default',
+                    unitType: 'SINGLE_KILO_LITRE' as PackagingUnit,
+                    quarterQuantaPerUnit: 4,
+                    priceTzs: Number(p.unitPriceTzs || 0),
+                    isWholesaleTier: false,
+                  },
+                ];
+
+        for (const t of tiersToUse) {
+          const measureSw = formatLooseMeasure(t.unitType, t.quarterQuantaPerUnit, true);
+          const measureEn = formatLooseMeasure(t.unitType, t.quarterQuantaPerUnit, false);
+          flattened.push({
+            cartKey: `${p.productId}:${t.unitType}`,
+            productId: p.productId,
+            unitType: t.unitType,
+            dukaId: p.sellerBusinessId,
+            sku: p.sku,
+            nameSw: `${p.nameSw} (${measureSw})`,
+            nameEn: `${p.nameEn} (${measureEn})`,
+            unitMeasureSw: measureSw,
+            unitMeasureEn: measureEn,
+            quarterQuantaPerUnit: t.quarterQuantaPerUnit,
+            pricePerUnitTzs: Number(t.priceTzs),
+            imageSrc: resolveImage(p.sku, p.nameEn),
+          });
+        }
+      }
+      setLiveDukaCatalog(flattened);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setLiveDukaCatalog([]);
+      } else {
+        setLiveDukaCatalog([]);
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia bidhaa za duka.'
+              : 'Failed to load duka catalog.',
+        );
+      }
+    } finally {
+      setLoadingCatalog(false);
+    }
   };
 
   const dukaCatalog = useMemo(
-    () => (selectedDuka ? DUKA_LOOSE_PRODUCTS[selectedDuka.dukaId] ?? [] : []),
-    [selectedDuka]
+    () => (selectedDuka ? liveDukaCatalog.filter((i) => i.dukaId === selectedDuka.dukaId) : []),
+    [selectedDuka, liveDukaCatalog],
   );
 
   const cartSummary = useMemo(() => {
@@ -236,7 +380,7 @@ export function ConsumerDashboardView({
     let totalQuanta = 0;
 
     for (const item of dukaCatalog) {
-      const qty = cartByProduct[item.productId] ?? 0;
+      const qty = cartByKey[item.cartKey] ?? 0;
       if (qty <= 0) continue;
       const lineTzs = qty * item.pricePerUnitTzs;
       subtotalTzs += lineTzs;
@@ -252,79 +396,154 @@ export function ConsumerDashboardView({
       totalTzs: subtotalTzs + deliveryFeeTzs,
       totalQuanta,
     };
-  }, [selectedDuka, dukaCatalog, cartByProduct]);
+  }, [selectedDuka, dukaCatalog, cartByKey]);
 
-  const submitConsumerOrder = () => {
+  const queueOfflineConsumerOrder = async () => {
     if (!selectedDuka || cartSummary.lines.length === 0) return;
-    const orderRef8 = 'CN' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    const buyerPin4 = String(Math.floor(1000 + Math.random() * 9000));
-
-    if (!isOnline) {
-      const compact = cartSummary.lines.map((l, idx) => `C${idx + 1}:${l.qty}`).join(',');
-      setToast({
-        title: isSw
-          ? `Oda ya Nyumbani Imetumwa kwa SMS (${selectedDuka.name})`
-          : `Consumer NextSMS Order Sent (${selectedDuka.name})`,
-        detail: `SK#${orderRef8}#${selectedDuka.initials}#${compact} · CoD TZS ${cartSummary.totalTzs.toLocaleString('en-US')}`,
-      });
-    } else {
-      const newOrder: ConsumerOrder = {
-        orderId: crypto.randomUUID(),
-        orderRef8,
-        dukaName: selectedDuka.name,
-        itemsSummary: cartSummary.lines
-          .map((l) => `${l.item.sku} (${l.qty}x)`)
-          .join(' + '),
-        totalCashDueTzs: cartSummary.totalTzs,
-        buyerPin4,
-        status: 'DISPATCHED',
-      };
-      setOrders((prev) => [newOrder, ...prev]);
-      setToast({
-        title: isSw
-          ? `Oda yako inatoka ${selectedDuka.name}!`
-          : `Order dispatched from ${selectedDuka.name}!`,
-        detail: `Oda #${orderRef8} · PIN ya Kupokea Mlangoni: ${buyerPin4} · TZS ${cartSummary.totalTzs.toLocaleString('en-US')}`,
-      });
-    }
-
-    setCartByProduct({});
+    const compact = cartSummary.lines.map((l) => `${l.item.sku}:${l.qty}`).join(',');
+    await putQueuedOrder({
+      idempotencyKey: crypto.randomUUID(),
+      sellerBusinessId: selectedDuka.dukaId,
+      sellerHub: selectedDuka.name,
+      compactSmsBody: compact,
+      totalTzs: cartSummary.totalTzs,
+      items: cartSummary.lines.map((l) => ({
+        productId: l.item.productId,
+        unitType: l.item.unitType,
+        quantity: l.qty,
+      })),
+      clientCreatedAt: new Date().toISOString(),
+      syncStatus: 'QUEUED_OFFLINE',
+      retryCount: 0,
+    });
+    setToast({
+      title: isSw
+        ? `Oda Imehifadhiwa Foleni (QUEUED_OFFLINE · ${selectedDuka.name})`
+        : `Order Queued Offline (QUEUED_OFFLINE · ${selectedDuka.name})`,
+      detail: `${compact} · CoD TZS ${cartSummary.totalTzs.toLocaleString('en-US')}`,
+    });
+    setCartByKey({});
     setDrawerOpen(false);
     setScreen('HOME');
   };
 
-  const activePinOrder = orders.find((o) => o.orderId === pinOrderId) ?? null;
+  const submitConsumerOrder = async () => {
+    if (!selectedDuka || cartSummary.lines.length === 0) return;
+    setApiError(null);
 
-  const verifyDoorstepPin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activePinOrder) return;
-    if (pinInput.trim() !== activePinOrder.buyerPin4) {
-      setPinError(
-        isSw
-          ? `PIN si sahihi. Tumia PIN (${activePinOrder.buyerPin4}) kuthibitisha.`
-          : `Incorrect PIN. Enter ${activePinOrder.buyerPin4} to confirm receipt.`
-      );
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      await queueOfflineConsumerOrder();
       return;
     }
 
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.orderId === activePinOrder.orderId ? { ...o, status: 'DELIVERED' } : o
-      )
-    );
-    setToast({
-      title: isSw
-        ? `Mzigo ${activePinOrder.orderRef8} Umepokelewa (DELIVERED)`
-        : `Delivery ${activePinOrder.orderRef8} Confirmed (DELIVERED)`,
-      detail: `TZS ${activePinOrder.totalCashDueTzs.toLocaleString('en-US')} settled at doorstep.`,
-    });
-    setPinOrderId(null);
-    setScreen('HOME');
+    setSubmitting(true);
+    try {
+      const resp = await SokoApiClient.post<{
+        orderId: string;
+        orderRef: string;
+        expectedTotalTzs: number;
+      }>('/marketplace/orders/submit-request', {
+        sellerBusinessId: selectedDuka.dukaId,
+        originChannel: 'PWA_ONLINE',
+        paymentMethod: 'CASH',
+        deliveryFeeTzs: cartSummary.deliveryFeeTzs,
+        items: cartSummary.lines.map((l) => ({
+          productId: l.item.productId,
+          unitType: l.item.unitType,
+          quantity: l.qty,
+        })),
+      });
+
+      setToast({
+        title: isSw
+          ? `Oda #${resp.orderRef} Imetumwa kwa ${selectedDuka.name}!`
+          : `Order #${resp.orderRef} Placed at ${selectedDuka.name}!`,
+        detail: `TZS ${Number(resp.expectedTotalTzs).toLocaleString('en-US')} CoD`,
+      });
+      setCartByKey({});
+      setDrawerOpen(false);
+      setScreen('HOME');
+      await loadLiveConsumerState();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        await queueOfflineConsumerOrder();
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kutuma oda.'
+              : 'Order submission rejected.',
+        );
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const activePinOrder = orders.find((o) => o.orderId === pinOrderId) ?? null;
+
+  const verifyDoorstepPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activePinOrder || !isUuid(activePinOrder.orderId)) return;
+    setPinError(null);
+
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      return;
+    }
+
+    setVerifyingPin(true);
+    try {
+      const payload: { buyerPin: string; qrToken?: string } = {
+        buyerPin: pinInput.trim(),
+      };
+      if (qrTokenInput.trim()) {
+        payload.qrToken = qrTokenInput.trim();
+      }
+      const res = await SokoApiClient.post<{
+        reconciled: boolean;
+        verificationStatus: string;
+      }>(`/ledgers/${activePinOrder.orderId}/buyer-confirm`, payload);
+
+      setToast({
+        title: res.reconciled
+          ? isSw
+            ? `Mzigo ${activePinOrder.orderRef8} Umepokelewa (DELIVERED)`
+            : `Delivery ${activePinOrder.orderRef8} Confirmed (DELIVERED)`
+          : isSw
+            ? `PIN ya Mnunuzi Imethibitishwa (${activePinOrder.orderRef8})`
+            : `Buyer PIN Verified (${activePinOrder.orderRef8})`,
+        detail: res.reconciled
+          ? `TZS ${activePinOrder.totalCashDueTzs.toLocaleString('en-US')} reconciled.`
+          : isSw
+            ? 'Inasubiri uthibitisho wa dereva.'
+            : 'Awaiting Driver PIN confirmation.',
+      });
+      setPinOrderId(null);
+      setScreen('HOME');
+      await loadLiveConsumerState();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setPinError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Uhakiki wa PIN umeshindikana.'
+              : 'Buyer PIN confirmation failed.',
+        );
+      }
+    } finally {
+      setVerifyingPin(false);
+    }
   };
 
   return (
     <div className="space-y-5">
-      {/* Consumer Screen Step Bar + Network & Data Saver */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-slate-100 rounded-lg px-4 py-3">
         <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-lg">
           {(
@@ -352,17 +571,23 @@ export function ConsumerDashboardView({
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsOnline((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 whitespace-nowrap cursor-pointer"
-          >
-            {isOnline ? (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700">
+            {isOnline && !backendOffline ? (
               <Wifi className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
             ) : (
               <WifiOff className="w-3.5 h-3.5 text-amber-600" aria-hidden="true" />
             )}
-            <span>{isOnline ? 'Online' : 'Offline SMS'}</span>
+            <span>{isOnline && !backendOffline ? 'Online' : 'Offline'}</span>
+          </span>
+
+          <button
+            type="button"
+            onClick={() => void loadLiveConsumerState()}
+            disabled={loading}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>{isSw ? 'Onyesha Upya' : 'Refresh'}</span>
           </button>
 
           <button
@@ -384,6 +609,33 @@ export function ConsumerDashboardView({
           </button>
         </div>
       </div>
+
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          retrying={loading}
+          onRetry={() => void loadLiveConsumerState()}
+        />
+      )}
+
+      {apiError && (
+        <div
+          role="alert"
+          className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs text-red-900 flex items-start justify-between gap-3"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <span>{apiError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setApiError(null)}
+            className="text-red-700 hover:text-red-900 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {toast && (
         <div
@@ -414,9 +666,7 @@ export function ConsumerDashboardView({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-white border border-slate-100 rounded-lg p-5 space-y-1.5">
               <div className="text-xs font-medium text-slate-500">
-                {isSw
-                  ? 'Taslimu ya Kulipa Mlangoni Leo'
-                  : 'Cash Needed for Home Deliveries'}
+                {isSw ? 'Taslimu ya Kulipa Mlangoni Leo' : 'Cash Needed for Home Deliveries'}
               </div>
               <div className="text-3xl font-bold font-mono tabular-nums text-emerald-600">
                 TZS {cashReadyTodayTzs.toLocaleString('en-US')}
@@ -453,61 +703,84 @@ export function ConsumerDashboardView({
                   : 'Your Active Home Deliveries (Doorstep PIN)'}
               </h2>
               <span className="text-xs font-mono text-slate-500">
-                {orders.filter((o) => o.status === 'DISPATCHED').length} active
+                {orders.filter((o) => o.status === 'DISPATCHED' || o.status === 'PLACED').length}{' '}
+                active
               </span>
             </div>
 
-            <div className="divide-y divide-slate-100">
-              {orders.map((order) => (
-                <div
-                  key={order.orderId}
-                  className="p-4 sm:px-5 flex flex-wrap items-center justify-between gap-4"
-                >
-                  <div className="space-y-1 min-w-0">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="font-mono font-bold text-slate-900">{order.orderRef8}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-medium text-slate-700">{order.dukaName}</span>
-                      <span aria-hidden="true">·</span>
-                      <span
-                        className={`font-semibold ${
-                          order.status === 'DELIVERED' ? 'text-emerald-600' : 'text-amber-700'
-                        }`}
+            {loading && orders.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500">
+                {isSw ? 'Inapakia oda...' : 'Loading orders...'}
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="p-4">
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna rekodi bado"
+                  titleEn="No records yet"
+                  descriptionSw="Huna oda ya nyumbani iliyohifadhiwa kwenye PostgreSQL bado."
+                  descriptionEn="No consumer orders exist in PostgreSQL yet."
+                />
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {orders.map((order) => (
+                  <div
+                    key={order.orderId}
+                    className="p-4 sm:px-5 flex flex-wrap items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="font-mono font-bold text-slate-900">
+                          {order.orderRef8}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-medium text-slate-700">{order.dukaName}</span>
+                        <span aria-hidden="true">·</span>
+                        <span
+                          className={`font-semibold ${
+                            order.status === 'DELIVERED' ? 'text-emerald-600' : 'text-amber-700'
+                          }`}
+                        >
+                          {formatOrderStatusLabel(order.status, locale)}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500">{order.itemsSummary}</div>
+                      <div className="text-xs font-mono text-slate-700">
+                        <span className="font-bold text-emerald-600">
+                          TZS {order.totalCashDueTzs.toLocaleString('en-US')}
+                        </span>
+                      </div>
+                    </div>
+
+                    {order.status === 'DISPATCHED' ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPinOrderId(order.orderId);
+                          setPinInput('');
+                          setQrTokenInput('');
+                          setPinError(null);
+                          setScreen('PIN_VERIFY');
+                        }}
+                        className="min-h-[44px] px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                       >
+                        <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{isSw ? 'Thibitisha kwa PIN' : 'Confirm Delivery PIN'}</span>
+                      </button>
+                    ) : order.status === 'DELIVERED' ? (
+                      <span className="text-xs font-semibold text-emerald-600">
+                        {formatOrderStatusLabel('DELIVERED', locale)}
+                      </span>
+                    ) : (
+                      <span className="text-xs font-mono text-slate-500">
                         {formatOrderStatusLabel(order.status, locale)}
                       </span>
-                    </div>
-                    <div className="text-xs text-slate-500">{order.itemsSummary}</div>
-                    <div className="text-xs font-mono text-slate-700">
-                      Buyer PIN: <span className="font-bold text-slate-900">{order.buyerPin4}</span> ·{' '}
-                      <span className="font-bold text-emerald-600">
-                        TZS {order.totalCashDueTzs.toLocaleString('en-US')}
-                      </span>
-                    </div>
+                    )}
                   </div>
-
-                  {order.status === 'DISPATCHED' ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPinOrderId(order.orderId);
-                        setPinInput('');
-                        setPinError(null);
-                        setScreen('PIN_VERIFY');
-                      }}
-                      className="min-h-[44px] px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-                    >
-                      <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>{isSw ? 'Thibitisha kwa PIN' : 'Confirm Delivery PIN'}</span>
-                    </button>
-                  ) : (
-                    <span className="text-xs font-semibold text-emerald-600">
-                      {formatOrderStatusLabel('DELIVERED', locale)}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -525,42 +798,56 @@ export function ConsumerDashboardView({
               <span>{isSw ? 'Rudi Nyumbani' : 'Back Home'}</span>
             </button>
             <span className="text-xs font-mono text-emerald-600 font-medium">
-              {isSw ? 'Maduka ya Rejareja Karibu Nawe' : 'Retail Dukas Near You'}
+              {dukas.length} {isSw ? 'Maduka ya Rejareja' : 'Retail Dukas Available'}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {NEIGHBORHOOD_DUKAS.map((duka) => (
-              <article
-                key={duka.dukaId}
-                className="bg-white border border-slate-100 rounded-lg p-5 flex items-center justify-between gap-4"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-12 h-12 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center font-mono font-bold text-sm text-emerald-700 shrink-0">
-                    {duka.initials}
-                  </div>
-                  <div className="min-w-0 space-y-1">
-                    <h3 className="text-sm font-bold text-slate-900 truncate">{duka.name}</h3>
-                    <div className="text-xs text-slate-500 truncate">
-                      {isSw ? duka.modeTagSw : duka.modeTagEn}
-                    </div>
-                    <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
-                      📍 Mita {duka.distanceMeters} karibu
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => openDuka(duka)}
-                  className="min-h-[44px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+          {loading && dukas.length === 0 ? (
+            <div className="bg-white border border-slate-100 rounded-lg p-6 text-center text-xs text-slate-500">
+              {isSw ? 'Inapakia maduka ya rejareja...' : 'Loading retail dukas...'}
+            </div>
+          ) : dukas.length === 0 ? (
+            <EmptyStateCard
+              locale={locale}
+              titleSw="Hakuna rekodi bado"
+              titleEn="No records yet"
+              descriptionSw="Hakuna duka la rejareja lililosajiliwa kwenye PostgreSQL kwa sasa."
+              descriptionEn="No retail dukas exist in PostgreSQL yet."
+            />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {dukas.map((duka) => (
+                <article
+                  key={duka.dukaId}
+                  className="bg-white border border-slate-100 rounded-lg p-5 flex items-center justify-between gap-4"
                 >
-                  <Store className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>{isSw ? 'Ingia Dukani' : 'Open Duka'}</span>
-                </button>
-              </article>
-            ))}
-          </div>
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center font-mono font-bold text-sm text-emerald-700 shrink-0">
+                      {duka.initials}
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <h3 className="text-sm font-bold text-slate-900 truncate">{duka.name}</h3>
+                      <div className="text-xs text-slate-500 truncate">
+                        {isSw ? duka.modeTagSw : duka.modeTagEn}
+                      </div>
+                      <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
+                        📍 {duka.ward} · {duka.distanceMeters}m
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => void openDuka(duka)}
+                    className="min-h-[44px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Store className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{isSw ? 'Ingia Dukani' : 'Open Duka'}</span>
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
@@ -572,7 +859,7 @@ export function ConsumerDashboardView({
               type="button"
               onClick={() => {
                 setSelectedDuka(null);
-                setCartByProduct({});
+                setCartByKey({});
                 setScreen('DUKAS');
               }}
               className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-900 hover:text-emerald-600 cursor-pointer"
@@ -594,81 +881,95 @@ export function ConsumerDashboardView({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {dukaCatalog.map((item) => {
-              const qty = cartByProduct[item.productId] ?? 0;
-              return (
-                <article
-                  key={item.productId}
-                  className="bg-white border border-slate-100 rounded-lg overflow-hidden flex flex-col justify-between"
-                >
-                  <div className="p-4 space-y-3">
-                    {!isLowDataModeActive ? (
-                      <div className="h-36 w-full rounded-md bg-white border border-slate-100 overflow-hidden flex items-center justify-center p-2">
-                        <img
-                          src={item.imageSrc}
-                          alt={isSw ? item.nameSw : item.nameEn}
-                          referrerPolicy="no-referrer"
-                          className="h-full w-full object-contain"
-                        />
-                      </div>
-                    ) : (
-                      <div className="h-16 rounded-md bg-slate-50 border border-slate-100 flex items-center justify-center text-xs font-mono text-slate-500">
-                        {item.sku} · LOW-DATA ASSET SKIPPED
-                      </div>
-                    )}
+          {loadingCatalog ? (
+            <div className="bg-white border border-slate-100 rounded-lg p-6 text-center text-xs text-slate-500">
+              {isSw ? 'Inapakia bidhaa za rejareja...' : 'Loading retail shelf...'}
+            </div>
+          ) : dukaCatalog.length === 0 ? (
+            <EmptyStateCard
+              locale={locale}
+              titleSw="Hakuna rekodi bado"
+              titleEn="No records yet"
+              descriptionSw="Duka hili halijaweka bidhaa za rejareja katika PostgreSQL bado."
+              descriptionEn="No loose retail items exist in PostgreSQL for this duka yet."
+            />
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {dukaCatalog.map((item) => {
+                const qty = cartByKey[item.cartKey] ?? 0;
+                return (
+                  <article
+                    key={item.cartKey}
+                    className="bg-white border border-slate-100 rounded-lg overflow-hidden flex flex-col justify-between"
+                  >
+                    <div className="p-4 space-y-3">
+                      {!isLowDataModeActive ? (
+                        <div className="h-36 w-full rounded-md bg-white border border-slate-100 overflow-hidden flex items-center justify-center p-2">
+                          <img
+                            src={item.imageSrc}
+                            alt={isSw ? item.nameSw : item.nameEn}
+                            referrerPolicy="no-referrer"
+                            className="h-full w-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="h-16 rounded-md bg-slate-50 border border-slate-100 flex items-center justify-center text-xs font-mono text-slate-500">
+                          {item.sku} · LOW-DATA ASSET SKIPPED
+                        </div>
+                      )}
 
-                    <div className="space-y-1">
-                      <div className="text-xs font-mono text-slate-500">
-                        {isSw ? item.unitMeasureSw : item.unitMeasureEn}
+                      <div className="space-y-1">
+                        <div className="text-xs font-mono text-slate-500">
+                          {isSw ? item.unitMeasureSw : item.unitMeasureEn}
+                        </div>
+                        <h3 className="text-sm font-semibold text-slate-900">
+                          {isSw ? item.nameSw : item.nameEn}
+                        </h3>
                       </div>
-                      <h3 className="text-sm font-semibold text-slate-900">
-                        {isSw ? item.nameSw : item.nameEn}
-                      </h3>
-                    </div>
-                  </div>
-
-                  <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between gap-3">
-                    <div className="text-sm font-bold font-mono tabular-nums text-slate-900">
-                      TZS {item.pricePerUnitTzs.toLocaleString('en-US')}
                     </div>
 
-                    <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setCartByProduct((p) => ({
-                            ...p,
-                            [item.productId]: Math.max(0, (p[item.productId] ?? 0) - 1),
-                          }))
-                        }
-                        className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
-                        aria-label={`Remove ${item.sku}`}
-                      >
-                        <Minus className="w-4 h-4" aria-hidden="true" />
-                      </button>
-                      <span className="w-9 text-center text-sm font-bold font-mono tabular-nums">
-                        {qty}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setCartByProduct((p) => ({
-                            ...p,
-                            [item.productId]: (p[item.productId] ?? 0) + 1,
-                          }))
-                        }
-                        className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-emerald-600 text-white hover:bg-emerald-700 rounded-r-md cursor-pointer"
-                        aria-label={`Add ${item.sku}`}
-                      >
-                        <Plus className="w-4 h-4" aria-hidden="true" />
-                      </button>
+                    <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between gap-3">
+                      <div className="text-sm font-bold font-mono tabular-nums text-slate-900">
+                        TZS {item.pricePerUnitTzs.toLocaleString('en-US')}
+                      </div>
+
+                      <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCartByKey((p) => ({
+                              ...p,
+                              [item.cartKey]: Math.max(0, (p[item.cartKey] ?? 0) - 1),
+                            }))
+                          }
+                          className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
+                          aria-label={`Remove ${item.sku}`}
+                        >
+                          <Minus className="w-4 h-4" aria-hidden="true" />
+                        </button>
+                        <span className="w-9 text-center text-sm font-bold font-mono tabular-nums">
+                          {qty}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCartByKey((p) => ({
+                              ...p,
+                              [item.cartKey]: (p[item.cartKey] ?? 0) + 1,
+                            }))
+                          }
+                          className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-emerald-600 text-white hover:bg-emerald-700 rounded-r-md cursor-pointer"
+                          aria-label={`Add ${item.sku}`}
+                        >
+                          <Plus className="w-4 h-4" aria-hidden="true" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
 
@@ -700,7 +1001,7 @@ export function ConsumerDashboardView({
               <div className="divide-y divide-slate-100">
                 {cartSummary.lines.map(({ item, qty, lineTzs }) => (
                   <div
-                    key={item.productId}
+                    key={item.cartKey}
                     className="py-2.5 flex items-center justify-between gap-3 text-xs"
                   >
                     <div>
@@ -744,18 +1045,17 @@ export function ConsumerDashboardView({
 
               <button
                 type="button"
-                onClick={submitConsumerOrder}
-                className={`w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md cursor-pointer ${
-                  isOnline
-                    ? 'bg-emerald-600 hover:bg-emerald-700'
-                    : 'bg-orange-600 hover:bg-orange-700'
-                }`}
+                disabled={submitting}
+                onClick={() => void submitConsumerOrder()}
+                className="w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md cursor-pointer disabled:opacity-60 bg-emerald-600 hover:bg-emerald-700"
               >
-                {isOnline
+                {submitting
                   ? isSw
+                    ? 'Inatuma Oda...'
+                    : 'Submitting Order...'
+                  : isSw
                     ? 'Agiza Sasa (Lipa Mlangoni)'
-                    : 'Confirm Cash-on-Delivery Order'
-                  : 'Tuma Oda kwa SMS 📡'}
+                    : 'Confirm Cash-on-Delivery Order'}
               </button>
             </div>
           </div>
@@ -774,25 +1074,40 @@ export function ConsumerDashboardView({
             </div>
           </div>
 
-          <form onSubmit={verifyDoorstepPin} className="p-5 space-y-4">
+          <form onSubmit={(e) => void verifyDoorstepPin(e)} className="p-5 space-y-4">
             <label className="block space-y-1.5">
               <span className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
                 <span>
                   {isSw
-                    ? `Ingiza PIN yako ya Mlangoni (Jaribio: ${activePinOrder.buyerPin4})`
-                    : `Enter Your 4-Digit Buyer PIN (Demo: ${activePinOrder.buyerPin4})`}
+                    ? 'Ingiza PIN yako ya Mlangoni (4-digit)'
+                    : 'Enter Your 4-Digit Buyer PIN'}
                 </span>
               </span>
               <input
                 type="password"
                 inputMode="numeric"
-                maxLength={4}
+                maxLength={6}
                 required
                 value={pinInput}
                 onChange={(e) => setPinInput(e.target.value)}
                 placeholder="••••"
                 className="w-full min-h-[48px] px-4 text-xl font-mono tracking-widest bg-white border-2 border-slate-300 rounded-md focus:border-emerald-600 focus:outline-none"
+              />
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-slate-600">
+                {isSw
+                  ? 'Tokeni ya QR ya Dereva (Hiari — ikiwa dereva ameshahakiki)'
+                  : 'Driver Arrival QR Token (Optional — if Driver already confirmed)'}
+              </span>
+              <input
+                type="text"
+                value={qrTokenInput}
+                onChange={(e) => setQrTokenInput(e.target.value)}
+                placeholder="SKQR-..."
+                className="w-full px-3.5 py-2 text-xs font-mono bg-white border border-slate-200 rounded-md focus:border-emerald-600 focus:outline-none"
               />
             </label>
 
@@ -808,9 +1123,16 @@ export function ConsumerDashboardView({
               </button>
               <button
                 type="submit"
-                className="flex-1 min-h-[48px] px-4 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md cursor-pointer"
+                disabled={verifyingPin}
+                className="flex-1 min-h-[48px] px-4 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md cursor-pointer disabled:opacity-60"
               >
-                {isSw ? 'Hakiki PIN & Pokea Bidhaa' : 'Confirm Receipt & Pay CoD'}
+                {verifyingPin
+                  ? isSw
+                    ? 'Inahakiki...'
+                    : 'Verifying...'
+                  : isSw
+                    ? 'Hakiki PIN & Pokea Bidhaa'
+                    : 'Confirm Receipt & Pay CoD'}
               </button>
             </div>
           </form>

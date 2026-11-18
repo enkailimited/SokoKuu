@@ -1,3 +1,5 @@
+import { SokoApiClient, isSokoNetworkError } from './sokoApiClient';
+
 const VAPID_PUBLIC_KEY =
   (import.meta as unknown as { env?: Record<string, string | undefined> }).env
     ?.VITE_VAPID_PUBLIC_KEY ||
@@ -65,18 +67,14 @@ export async function initializeWebPushRegistration(
     };
 
     try {
-      const token = localStorage.getItem('sokokuu_access_token');
-      await fetch('/api/v1/notifications/push/subscribe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          'X-User-ID': userId,
-        },
-        body: JSON.stringify(payload),
-      });
-    } catch {
-      // Offline or static preview fallback
+      await SokoApiClient.post('/notifications/push/subscribe', payload);
+    } catch (err) {
+      if (!isSokoNetworkError(err)) {
+        return {
+          status: 'ERROR',
+          message: err instanceof Error ? err.message : 'Failed to register Web Push on backend.',
+        };
+      }
     }
 
     localStorage.setItem(

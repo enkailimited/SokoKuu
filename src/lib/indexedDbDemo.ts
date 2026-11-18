@@ -1,21 +1,35 @@
-export type DemoSyncStatus = 'QUEUED_OFFLINE' | 'SYNCING' | 'SYNCED' | 'SENT_VIA_SMS';
+export type OfflineQueueSyncStatus =
+  | 'QUEUED_OFFLINE'
+  | 'SYNCING'
+  | 'SYNCED'
+  | 'SENT_VIA_SMS';
 
-export interface DemoQueuedOrder {
-  idempotencyKey: string; // 8-char compact REF8 for CoD & NextSMS parity
+export type DemoSyncStatus = OfflineQueueSyncStatus;
+
+export interface OfflineQueuedOrder {
+  idempotencyKey: string;
+  sellerBusinessId: string;
   sellerHub: string;
   compactSmsBody: string;
   totalTzs: number;
+  items?: Array<{
+    productId: string;
+    unitType: string;
+    quantity: number;
+  }>;
   clientCreatedAt: string;
-  syncStatus: DemoSyncStatus;
+  syncStatus: OfflineQueueSyncStatus;
   retryCount: number;
   serverNote?: string;
 }
 
-const DB_NAME = 'sokokuu_tz_cod_demo';
+export type DemoQueuedOrder = OfflineQueuedOrder;
+
+const DB_NAME = 'sokokuu_tz_offline_outbox';
 const STORE_NAME = 'pending_cod_orders';
 const DB_VERSION = 1;
 
-function openDemoDb(): Promise<IDBDatabase> {
+function openOutboxDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -29,14 +43,15 @@ function openDemoDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function listQueuedOrders(): Promise<DemoQueuedOrder[]> {
-  const db = await openDemoDb();
+export async function listQueuedOrders(): Promise<OfflineQueuedOrder[]> {
+  if (typeof window === 'undefined' || !window.indexedDB) return [];
+  const db = await openOutboxDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
     const store = tx.objectStore(STORE_NAME);
     const req = store.getAll();
     req.onsuccess = () => {
-      const items = (req.result as DemoQueuedOrder[]) || [];
+      const items = (req.result as OfflineQueuedOrder[]) || [];
       items.sort((a, b) => b.clientCreatedAt.localeCompare(a.clientCreatedAt));
       resolve(items);
     };
@@ -44,8 +59,9 @@ export async function listQueuedOrders(): Promise<DemoQueuedOrder[]> {
   });
 }
 
-export async function putQueuedOrder(order: DemoQueuedOrder): Promise<void> {
-  const db = await openDemoDb();
+export async function putQueuedOrder(order: OfflineQueuedOrder): Promise<void> {
+  if (typeof window === 'undefined' || !window.indexedDB) return;
+  const db = await openOutboxDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     tx.objectStore(STORE_NAME).put(order);
@@ -55,8 +71,9 @@ export async function putQueuedOrder(order: DemoQueuedOrder): Promise<void> {
 }
 
 export async function clearSyncedOrders(): Promise<void> {
+  if (typeof window === 'undefined' || !window.indexedDB) return;
   const all = await listQueuedOrders();
-  const db = await openDemoDb();
+  const db = await openOutboxDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);

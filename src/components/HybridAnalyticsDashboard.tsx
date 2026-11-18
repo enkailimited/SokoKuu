@@ -1,7 +1,19 @@
-import { useState } from 'react';
-import { AlertTriangle, Layers, ChevronDown, ChevronRight, ArrowUpRight } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  RefreshCw,
+} from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import { formatUnitTypeLabel } from '../lib/sokoManagedState';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
 interface LowStockSkuItem {
   productId: string;
@@ -15,113 +27,205 @@ interface LowStockSkuItem {
   dailyVelocityQuanta: number;
 }
 
-interface DeconstructionLogEntry {
-  id: string;
-  sku: string;
-  parentUnit: string;
-  creditedQuanta: number;
-  timestamp: string;
+interface DailyRevenueAnalytics {
+  sellerBusinessId: string;
+  currency: string;
+  deliveredOrdersCount: number;
+  posReceiptsCount: number;
+  b2bWholesaleRevenueTzs: number;
+  b2cRetailRevenueTzs: number;
+  posWalkinRevenueTzs: number;
+  totalCollectedTzs: number;
+  totalOutstandingTzs: number;
+  byPaymentMethod: {
+    CASH: number;
+    'M-PESA': number;
+    'TIGO-PESA': number;
+  };
 }
 
-const INITIAL_LOW_STOCK_ITEMS: LowStockSkuItem[] = [
-  {
-    productId: 'prod-sugar-50',
-    sku: 'SK-KLM-50',
-    nameSw: 'Sukari ya Kilombero (Robo / Nusu)',
-    nameEn: 'Kilombero Sugar (Loose Fractions)',
-    parentUnit: 'SACK_50KG',
-    quantaPerBulkPackage: 200,
-    sealedBulkStock: 14,
-    looseQuantaStock: 18, // 4.5 KG left vs 64 Quanta (16 KG) daily velocity
-    dailyVelocityQuanta: 64,
-  },
-  {
-    productId: 'prod-oil-20',
-    sku: 'MF-KOR-20',
-    nameSw: 'Mafuta ya Korie (Robo / Lita 1)',
-    nameEn: 'Korie Cooking Oil (Loose Litres)',
-    parentUnit: 'CARTON',
-    quantaPerBulkPackage: 80,
-    sealedBulkStock: 22,
-    looseQuantaStock: 12, // 3L left vs 40 Quanta (10L) daily velocity
-    dailyVelocityQuanta: 40,
-  },
-  {
-    productId: 'prod-rice-50',
-    sku: 'MC-MBY-50',
-    nameSw: 'Mchele wa Mbeya Super',
-    nameEn: 'Mbeya Super Grade Rice',
-    parentUnit: 'SACK_50KG',
-    quantaPerBulkPackage: 200,
-    sealedBulkStock: 9,
-    looseQuantaStock: 148, // Healthy shelf stock
-    dailyVelocityQuanta: 48,
-  },
-];
+interface BackendProductDto {
+  productId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  availableQuarterQuanta: number;
+  sealedBulkPackagesStock: number;
+  wholesaleThresholdUnits: number;
+  priceTiers?: Array<{
+    unitType: string;
+    quarterQuantaPerUnit: number;
+    isWholesaleTier: boolean;
+  }>;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(val?: string | null): val is string {
+  return Boolean(val && UUID_REGEX.test(val));
+}
 
 function formatTzs(amount: number): string {
   return `TZS ${amount.toLocaleString('en-US')}`;
 }
 
-export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale }) {
+export function HybridAnalyticsDashboard({
+  locale = 'en',
+  businessId,
+}: {
+  locale?: Locale;
+  businessId?: string | null;
+}) {
   const isSw = locale === 'sw';
-  const [stockItems, setStockItems] = useState<LowStockSkuItem[]>(INITIAL_LOW_STOCK_ITEMS);
-  const [drawerOpen, setDrawerOpen] = useState<boolean>(true);
-  const [logs, setLogs] = useState<DeconstructionLogEntry[]>([
-    {
-      id: 'log-1',
-      sku: 'MC-MBY-50',
-      parentUnit: 'SACK_50KG',
-      creditedQuanta: 200,
-      timestamp: '08:14 EAT',
-    },
-  ]);
 
-  // Comparative split revenue metrics (stored as integer TZS `long` on Spring Boot backend)
-  const wholesaleRevenueTzs = 4_860_000;
-  const wholesaleOrdersCount = 26;
-  const retailRevenueTzs = 1_624_500;
-  const retailOrdersCount = 148;
-  const totalRevenueTzs = wholesaleRevenueTzs + retailRevenueTzs;
-  const wholesaleSharePct = Math.round((wholesaleRevenueTzs / totalRevenueTzs) * 100);
-  const retailSharePct = 100 - wholesaleSharePct;
+  const [stockItems, setStockItems] = useState<LowStockSkuItem[]>([]);
+  const [analytics, setAnalytics] = useState<DailyRevenueAnalytics | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  const loadAnalytics = useCallback(async () => {
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      return;
+    }
+
+    setLoading(true);
+    setApiError(null);
+    setBackendOffline(false);
+
+    try {
+      let targetBusinessId = isUuid(businessId)
+        ? businessId
+        : SokoApiClient.getActiveUser()?.businessId ?? null;
+
+      if (!isUuid(targetBusinessId) && SokoApiClient.hasAccessToken()) {
+        const me = await SokoApiClient.get<{ businessId?: string | null }>('/auth/me');
+        targetBusinessId = me?.businessId ?? null;
+      }
+
+      if (!isUuid(targetBusinessId)) {
+        setAnalytics(null);
+        setStockItems([]);
+        return;
+      }
+
+      const [revRes, prodRes] = await Promise.all([
+        SokoApiClient.get<DailyRevenueAnalytics>(
+          `/hybrid/analytics/${encodeURIComponent(targetBusinessId)}/daily-revenue`,
+        ),
+        SokoApiClient.get<BackendProductDto[]>(
+          `/products/active?businessId=${encodeURIComponent(targetBusinessId)}`,
+        ),
+      ]);
+
+      setAnalytics(revRes);
+      setStockItems(
+        (Array.isArray(prodRes) ? prodRes : []).map((p) => {
+          const bulkTier =
+            p.priceTiers?.find((t) => t.isWholesaleTier) ?? p.priceTiers?.[0];
+          return {
+            productId: p.productId,
+            sku: p.sku,
+            nameSw: p.nameSw,
+            nameEn: p.nameEn,
+            parentUnit: bulkTier?.unitType ?? 'SACK_50KG',
+            quantaPerBulkPackage: bulkTier?.quarterQuantaPerUnit ?? 200,
+            sealedBulkStock: Number(p.sealedBulkPackagesStock ?? 0),
+            looseQuantaStock: Number(p.availableQuarterQuanta ?? 0),
+            dailyVelocityQuanta: 40,
+          };
+        }),
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia takwimu za mapato.'
+              : 'Failed to load daily revenue analytics.',
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [businessId, isSw]);
+
+  useEffect(() => {
+    void loadAnalytics();
+  }, [loadAnalytics]);
+
+  const wholesaleRevenueTzs = analytics ? Number(analytics.b2bWholesaleRevenueTzs ?? 0) : 0;
+  const wholesaleOrdersCount = analytics ? Number(analytics.deliveredOrdersCount ?? 0) : 0;
+  const retailRevenueTzs = analytics ? Number(analytics.b2cRetailRevenueTzs ?? 0) : 0;
+  const retailOrdersCount = analytics ? Number(analytics.posReceiptsCount ?? 0) : 0;
+  const totalRevenueTzs = analytics ? Number(analytics.totalCollectedTzs ?? 0) : 0;
+
+  const combinedChannelTzs = wholesaleRevenueTzs + retailRevenueTzs;
+  const wholesaleSharePct =
+    combinedChannelTzs === 0
+      ? 0
+      : Math.round((wholesaleRevenueTzs / combinedChannelTzs) * 100);
+  const retailSharePct = combinedChannelTzs === 0 ? 0 : 100 - wholesaleSharePct;
 
   const lowStockAlerts = stockItems.filter(
-    (item) => item.looseQuantaStock < item.dailyVelocityQuanta * 0.5
+    (item) => item.looseQuantaStock < item.dailyVelocityQuanta * 0.5,
   );
 
-  const handleBreakOnePackage = (productId: string) => {
-    const target = stockItems.find((i) => i.productId === productId);
-    if (!target || target.sealedBulkStock < 1) return;
-
-    setStockItems((prev) =>
-      prev.map((item) =>
-        item.productId === productId
-          ? {
-              ...item,
-              sealedBulkStock: item.sealedBulkStock - 1,
-              looseQuantaStock: item.looseQuantaStock + item.quantaPerBulkPackage,
-            }
-          : item
-      )
-    );
-
-    const time =
-      new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + ' EAT';
-    setLogs((prev) => [
-      {
-        id: crypto.randomUUID(),
-        sku: target.sku,
-        parentUnit: target.parentUnit,
-        creditedQuanta: target.quantaPerBulkPackage,
-        timestamp: time,
-      },
-      ...prev.slice(0, 4),
-    ]);
+  const handleExportCsv = async () => {
+    setApiError(null);
+    setBackendOffline(false);
+    try {
+      const targetId = isUuid(businessId)
+        ? businessId
+        : SokoApiClient.getActiveUser()?.businessId ?? null;
+      const query = isUuid(targetId) ? `?businessId=${encodeURIComponent(targetId)}` : '';
+      const blob = await SokoApiClient.downloadBlob(`/hybrid/analytics/export-csv${query}`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'sokokuu-mauzo.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakua CSV.'
+              : 'Failed to export analytics CSV.',
+        );
+      }
+    }
   };
 
   return (
     <div className="space-y-6">
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          retrying={loading}
+          onRetry={() => void loadAnalytics()}
+        />
+      )}
+
+      {apiError && (
+        <div
+          role="alert"
+          className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs text-red-900"
+        >
+          {apiError}
+        </div>
+      )}
+
       {/* 1. Side-by-Side Split Revenue Comparative Panel */}
       <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
@@ -133,16 +237,35 @@ export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale })
             </h2>
             <p className="text-sm text-slate-600 mt-0.5">
               {isSw
-                ? 'Mgawanyo wa fedha halisi zilizokusanywa kwa Dual-PIN leo katika vitengo kamili vya TZS.'
-                : 'Discrete daily CoD revenue reconciled via Dual-PIN, partitioned cleanly across Wholesale and Retail channels.'}
+                ? 'Mgawanyo wa fedha halisi zilizokusanywa kwa Dual-PIN na POS leo katika vitengo kamili vya TZS.'
+                : 'Discrete daily revenue reconciled via Dual-PIN and POS, partitioned across Wholesale and Retail channels.'}
             </p>
           </div>
-          <div className="text-right">
-            <div className="text-xs text-slate-500">
-              {isSw ? 'Jumla ya Mapato ya Leo' : 'Combined Daily Revenue'}
-            </div>
-            <div className="text-lg font-bold font-mono tabular-nums text-slate-900">
-              {formatTzs(totalRevenueTzs)}
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void loadAnalytics()}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>{isSw ? 'Onyesha Upya' : 'Refresh'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExportCsv()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>CSV</span>
+            </button>
+            <div className="text-right">
+              <div className="text-xs text-slate-500">
+                {isSw ? 'Jumla Iliyokusanywa' : 'Total Collected'}
+              </div>
+              <div className="text-lg font-bold font-mono tabular-nums text-slate-900">
+                {formatTzs(totalRevenueTzs)}
+              </div>
             </div>
           </div>
         </div>
@@ -155,7 +278,7 @@ export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale })
                 B2B_WHOLESALE · {wholesaleSharePct}%
               </span>
               <span className="text-xs text-slate-500 font-mono tabular-nums">
-                {wholesaleOrdersCount} {isSw ? 'oda za magunia/katoni' : 'bulk orders'}
+                {wholesaleOrdersCount} {isSw ? 'oda zilizowasilishwa' : 'delivered orders'}
               </span>
             </div>
             <div>
@@ -164,14 +287,15 @@ export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale })
               </div>
               <div className="text-xs text-slate-500 mt-1 font-mono tabular-nums">
                 {isSw ? 'Wastani wa oda:' : 'Avg order value:'}{' '}
-                {formatTzs(Math.round(wholesaleRevenueTzs / wholesaleOrdersCount))}
+                {formatTzs(
+                  wholesaleOrdersCount > 0
+                    ? Math.round(wholesaleRevenueTzs / wholesaleOrdersCount)
+                    : 0,
+                )}
               </div>
             </div>
             <div className="h-2 w-full bg-slate-100 rounded-sm overflow-hidden">
-              <div
-                className="h-full bg-slate-900"
-                style={{ width: `${wholesaleSharePct}%` }}
-              />
+              <div className="h-full bg-slate-900" style={{ width: `${wholesaleSharePct}%` }} />
             </div>
           </div>
 
@@ -182,7 +306,7 @@ export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale })
                 B2C_RETAIL · {retailSharePct}%
               </span>
               <span className="text-xs text-slate-500 font-mono tabular-nums">
-                {retailOrdersCount} {isSw ? 'mauzo ya Robo/Nusu' : 'loose fraction sales'}
+                {retailOrdersCount} {isSw ? 'risiti za POS' : 'POS walk-in receipts'}
               </span>
             </div>
             <div>
@@ -191,20 +315,33 @@ export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale })
               </div>
               <div className="text-xs text-slate-500 mt-1 font-mono tabular-nums">
                 {isSw ? 'Wastani wa mauzo:' : 'Avg ticket size:'}{' '}
-                {formatTzs(Math.round(retailRevenueTzs / retailOrdersCount))}
+                {formatTzs(
+                  retailOrdersCount > 0 ? Math.round(retailRevenueTzs / retailOrdersCount) : 0,
+                )}
               </div>
             </div>
             <div className="h-2 w-full bg-slate-100 rounded-sm overflow-hidden">
-              <div
-                className="h-full bg-emerald-700"
-                style={{ width: `${retailSharePct}%` }}
-              />
+              <div className="h-full bg-emerald-700" style={{ width: `${retailSharePct}%` }} />
             </div>
           </div>
         </div>
+
+        {analytics && (
+          <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-slate-700">
+            <span>
+              CASH: <strong>{formatTzs(analytics.byPaymentMethod.CASH)}</strong> · M-PESA:{' '}
+              <strong>{formatTzs(analytics.byPaymentMethod['M-PESA'])}</strong> · TIGO-PESA:{' '}
+              <strong>{formatTzs(analytics.byPaymentMethod['TIGO-PESA'])}</strong>
+            </span>
+            <span className="text-amber-800">
+              {isSw ? 'Salio Baki:' : 'Outstanding:'}{' '}
+              <strong>{formatTzs(analytics.totalOutstandingTzs)}</strong>
+            </span>
+          </div>
+        )}
       </section>
 
-      {/* 2. "Hisa ya Bidhaa Inayoisha" Low-Stock & Bulk-Breaking Drawer */}
+      {/* 2. Low-Stock & Bulk-Breaking Drawer */}
       <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
         <button
           type="button"
@@ -223,84 +360,68 @@ export function HybridAnalyticsDashboard({ locale = 'en' }: { locale?: Locale })
             </span>
           </div>
           <span className="text-xs font-mono font-medium text-amber-800 tabular-nums whitespace-nowrap">
-            {lowStockAlerts.length} {isSw ? 'zinahitaji kuvunja gunia' : 'require bulk breakdown'}
+            {lowStockAlerts.length} {isSw ? 'zinahitaji uvunjaji' : 'low shelf stock'}
           </span>
         </button>
 
         {drawerOpen && (
           <div className="divide-y divide-slate-200">
-            {stockItems.map((item) => {
-              const isLow = item.looseQuantaStock < item.dailyVelocityQuanta * 0.5;
-              return (
-                <div
-                  key={item.productId}
-                  className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-4"
-                >
-                  <div className="space-y-0.5 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="font-mono font-semibold text-slate-900">{item.sku}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-medium text-slate-900">
-                        {isSw ? item.nameSw : item.nameEn}
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span
-                        className={`font-medium ${
-                          isLow ? 'text-amber-800' : 'text-emerald-800'
-                        }`}
-                      >
-                        {isLow
-                          ? isSw
-                            ? 'Hisa ya Chini'
-                            : 'Low Loose Stock'
-                          : isSw
-                            ? 'Hali Nzuri'
-                            : 'Nominal'}
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-600 font-mono tabular-nums">
-                      Loose shelf: {item.looseQuantaStock} quanta ({(item.looseQuantaStock * 0.25).toFixed(2)} kg/L) ·
-                      Sealed {formatUnitTypeLabel(item.parentUnit, locale)}: {item.sealedBulkStock} · Daily velocity: {item.dailyVelocityQuanta} quanta/day
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    disabled={item.sealedBulkStock < 1}
-                    onClick={() => handleBreakOnePackage(item.productId)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-45 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <Layers className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>
-                      {isSw
-                        ? `Vunja 1 ${formatUnitTypeLabel(item.parentUnit, locale)} (+${item.quantaPerBulkPackage})`
-                        : `Break 1 ${formatUnitTypeLabel(item.parentUnit, locale)} (+${item.quantaPerBulkPackage} quanta)`}
-                    </span>
-                  </button>
-                </div>
-              );
-            })}
-
-            {/* Recent Deconstruction Audit Trail */}
-            <div className="px-5 py-3 bg-slate-50/70 space-y-1.5">
-              <div className="text-xs font-medium text-slate-700">
-                {isSw ? 'Kumbukumbu za Uvunjaji wa Magunia' : 'Recent Bulk-Breaking Ledger'}
+            {loading && stockItems.length === 0 ? (
+              <div className="px-5 py-6 text-center text-xs text-slate-500">
+                {isSw ? 'Inapakia orodha ya hisa...' : 'Loading product inventory...'}
               </div>
-              {logs.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="text-xs font-mono text-slate-600 flex items-center justify-between gap-2"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <ArrowUpRight className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
-                    <span>
-                      {entry.sku}: -1 {formatUnitTypeLabel(entry.parentUnit, locale)} → +{entry.creditedQuanta} loose quarter-quanta
+            ) : stockItems.length === 0 ? (
+              <div className="p-4">
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna rekodi bado"
+                  titleEn="No records yet"
+                  descriptionSw="Hakuna bidhaa zilizosajiliwa kwenye rafu kwa duka hili katika PostgreSQL."
+                  descriptionEn="No active catalog SKUs exist in PostgreSQL for this store yet."
+                />
+              </div>
+            ) : (
+              stockItems.map((item) => {
+                const isLow = item.looseQuantaStock < item.dailyVelocityQuanta * 0.5;
+                return (
+                  <div
+                    key={item.productId}
+                    className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-4"
+                  >
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-mono font-semibold text-slate-900">{item.sku}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-medium text-slate-900">
+                          {isSw ? item.nameSw : item.nameEn}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span className={`font-medium ${isLow ? 'text-amber-800' : 'text-emerald-800'}`}>
+                          {isLow
+                            ? isSw
+                              ? 'Hisa ya Chini'
+                              : 'Low Loose Stock'
+                            : isSw
+                              ? 'Hali Nzuri'
+                              : 'Nominal'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-600 font-mono tabular-nums">
+                        Loose shelf: {item.looseQuantaStock} quanta (
+                        {(item.looseQuantaStock * 0.25).toFixed(2)} kg/L) · Sealed{' '}
+                        {formatUnitTypeLabel(item.parentUnit, locale)}: {item.sealedBulkStock}
+                      </div>
+                    </div>
+
+                    <span className="text-[11px] font-mono text-slate-600 bg-slate-100 px-2.5 py-1.5 rounded">
+                      {isSw
+                        ? 'Huvunjwa kiotomatiki mauzo yakipungua'
+                        : 'Auto-deconstructs on POS / Order'}
                     </span>
-                  </span>
-                  <span className="tabular-nums text-slate-500">{entry.timestamp}</span>
-                </div>
-              ))}
-            </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
       </section>

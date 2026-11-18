@@ -29,6 +29,13 @@ import {
 export class CatalogController {
   constructor(private readonly catalogService: CatalogService) {}
 
+  @Get('admin/marketplace/catalog/categories')
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.CONSUMER)
+  @ApiOperation({ summary: 'List all SokoKuu catalog categories' })
+  listCategories() {
+    return this.catalogService.listCategories();
+  }
+
   @Post('admin/marketplace/catalog/categories')
   @Roles(Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Create locked soko_catalog_categories entry with ImageKit folder' })
@@ -59,6 +66,30 @@ export class CatalogController {
     @Query('q') q?: string,
   ) {
     return this.catalogService.listGlobalCatalog(categoryCode, q);
+  }
+
+  @Get('marketplace/merchants')
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.CONSUMER, Role.DRIVER)
+  @ApiOperation({
+    summary: 'List open verified Merchants for Sokoni B2B wholesale & neighborhood retail ordering',
+  })
+  @ApiQuery({ name: 'tier', required: false })
+  listMarketplaceMerchants(@Query('tier') tier?: string) {
+    return this.catalogService.listMarketplaceMerchants(tier);
+  }
+
+  @Get('merchant/catalog/clones')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiQuery({ name: 'businessId', required: false })
+  @ApiOperation({
+    summary: 'List tenant-scoped cloned global catalog items with buying cost and price overrides',
+  })
+  listMerchantClones(
+    @CurrentTenant() tenantContext?: TenantContext,
+    @Query('businessId') businessId?: string,
+  ) {
+    return this.catalogService.listMerchantClones(tenantContext, businessId);
   }
 
   @Post('marketplace/catalog/clone-standard')

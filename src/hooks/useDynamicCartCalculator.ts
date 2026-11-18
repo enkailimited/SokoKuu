@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
 
 export type BusinessTierMode = 'WHOLESALE_HUB' | 'RETAIL_DUKA' | 'HYBRID_STORE';
 
@@ -11,7 +16,6 @@ export interface LocalCatalogProduct {
   unitType: string;
   unitLabelSw: string;
   unitLabelEn: string;
-  // Vipimo vinahifadhiwa kwa namba kamili za Robo (1 Robo = 1, 1L/1KG = 4) kuzuia makosa ya desimali
   quarterQuantaPerUnit: number;
   wholesaleMinUnitsThreshold: number;
   wholesaleMinQuarterQuanta: number;
@@ -24,94 +28,142 @@ export interface DynamicCartLine extends LocalCatalogProduct {
   quantity: number;
   totalQuarterQuanta: number;
   isWholesaleApplied: boolean;
-  appliedTierLabel: string; // "Bei ya Rejareja" au "Bei ya Jumla 🎉"
+  appliedTierLabel: string;
   activeUnitPriceTzs: number;
   lineTotalTzs: number;
   savingsTzs: number;
 }
 
-const IDB_NAME = 'sokokuu_dynamic_pricing_cache';
-const IDB_STORE = 'hybrid_price_sheets';
-
-export const DEFAULT_HYBRID_PRODUCTS: LocalCatalogProduct[] = [
-  {
-    productId: 'prod-azania-unga-1kg',
-    sku: 'AZN-UNGA-1KG',
-    nameSw: 'Unga wa Ngano Azania (Pakiti 1KG)',
-    nameEn: 'Azania Wheat Flour (1KG Pack)',
-    sellerTier: 'HYBRID_STORE',
-    unitType: 'SINGLE_KILO_LITRE',
-    unitLabelSw: 'Pakiti (1KG)',
-    unitLabelEn: 'Pack (1KG)',
-    quarterQuantaPerUnit: 4,
-    wholesaleMinUnitsThreshold: 25, // Kuanzia pakiti 25 -> Bei ya Jumla
-    wholesaleMinQuarterQuanta: 100, // 25KG
-    retailUnitPriceTzs: 2_100,
-    wholesaleUnitPriceTzs: 1_850,
-    availableQuarterQuanta: 800,
-  },
-  {
-    productId: 'prod-korie-oil-robo',
-    sku: 'KOR-OIL-ROBO',
-    nameSw: 'Mafuta ya Kupikia Korie (Kipimo cha Robo 250mL)',
-    nameEn: 'Korie Cooking Oil (Robo 250mL)',
-    sellerTier: 'HYBRID_STORE',
-    unitType: 'QUARTER_KILO_LITRE',
-    unitLabelSw: 'Robo Lita (250mL)',
-    unitLabelEn: 'Quarter Litre (250mL)',
-    quarterQuantaPerUnit: 1,
-    wholesaleMinUnitsThreshold: 4, // Chini ya Lita 1 = Rejareja; kuanzia Robo 4 (Lita 1+) = Bei ya Jumla
-    wholesaleMinQuarterQuanta: 4,
-    retailUnitPriceTzs: 1_400,
-    wholesaleUnitPriceTzs: 1_200,
-    availableQuarterQuanta: 400,
-  },
-];
-
-async function cacheAndReadPriceSheets(): Promise<LocalCatalogProduct[]> {
-  if (typeof window === 'undefined' || !('indexedDB' in window)) {
-    return DEFAULT_HYBRID_PRODUCTS;
-  }
-  return new Promise((resolve) => {
-    const req = window.indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        db.createObjectStore(IDB_STORE, { keyPath: 'productId' });
-      }
-    };
-    req.onsuccess = () => {
-      const db = req.result;
-      const writeTx = db.transaction(IDB_STORE, 'readwrite');
-      const store = writeTx.objectStore(IDB_STORE);
-      DEFAULT_HYBRID_PRODUCTS.forEach((p) => store.put(p));
-      writeTx.oncomplete = () => {
-        const readTx = db.transaction(IDB_STORE, 'readonly');
-        const allReq = readTx.objectStore(IDB_STORE).getAll();
-        allReq.onsuccess = () => resolve((allReq.result as LocalCatalogProduct[]) || DEFAULT_HYBRID_PRODUCTS);
-        allReq.onerror = () => resolve(DEFAULT_HYBRID_PRODUCTS);
-      };
-    };
-    req.onerror = () => resolve(DEFAULT_HYBRID_PRODUCTS);
-  });
+interface MerchantDto {
+  businessId: string;
+  businessName: string;
+  tier: BusinessTierMode;
 }
 
-export function useDynamicCartCalculator() {
-  const [catalog, setCatalog] = useState<LocalCatalogProduct[]>(DEFAULT_HYBRID_PRODUCTS);
-  const [quantities, setQuantities] = useState<Record<string, number>>({
-    'prod-azania-unga-1kg': 1,
-    'prod-korie-oil-robo': 2,
-  });
+interface ActiveProductDto {
+  productId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  unitPriceTzs: number;
+  cartonPriceTzs: number;
+  wholesaleThresholdUnits: number;
+  availableQuarterQuanta: number;
+  priceTiers: Array<{
+    unitType: string;
+    quarterQuantaPerUnit: number;
+    priceTzs: number;
+    isWholesaleTier: boolean;
+  }>;
+}
+
+export function useDynamicCartCalculator(sellerBusinessId?: string | null) {
+  const [catalog, setCatalog] = useState<LocalCatalogProduct[]>([]);
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState<boolean>(false);
+  const [backendOffline, setBackendOffline] = useState<boolean>(
+    typeof window !== 'undefined' ? !window.navigator.onLine : false
+  );
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.navigator.onLine) {
+      setBackendOffline(true);
+      return;
+    }
+
+    setLoading(true);
+    setBackendOffline(false);
+    setApiError(null);
+
+    try {
+      let targetSellerId = sellerBusinessId || null;
+      let targetTier: BusinessTierMode = 'HYBRID_STORE';
+
+      const merchants = await SokoApiClient.get<MerchantDto[]>(
+        '/marketplace/merchants',
+        false
+      );
+      const list = Array.isArray(merchants) ? merchants : [];
+
+      if (targetSellerId) {
+        const match = list.find((m) => m.businessId === targetSellerId);
+        if (match) targetTier = match.tier;
+      } else {
+        const hybrid =
+          list.find((m) => m.tier === 'HYBRID_STORE') ??
+          list.find((m) => m.tier === 'WHOLESALE_HUB') ??
+          list[0];
+        if (hybrid) {
+          targetSellerId = hybrid.businessId;
+          targetTier = hybrid.tier;
+        }
+      }
+
+      if (!targetSellerId) {
+        setCatalog([]);
+        return;
+      }
+
+      const products = await SokoApiClient.get<ActiveProductDto[]>(
+        `/products/active?businessId=${encodeURIComponent(targetSellerId)}`,
+        false
+      );
+
+      const mapped: LocalCatalogProduct[] = (Array.isArray(products) ? products : []).map(
+        (p) => {
+          const retailTier =
+            p.priceTiers?.find((t) => !t.isWholesaleTier) ?? p.priceTiers?.[0];
+          const wholesaleTier =
+            p.priceTiers?.find(
+              (t) => t.isWholesaleTier && t.unitType === retailTier?.unitType
+            ) ??
+            p.priceTiers?.find((t) => t.isWholesaleTier) ??
+            retailTier;
+
+          const unitType = retailTier?.unitType ?? wholesaleTier?.unitType ?? 'SINGLE_KILO_LITRE';
+          const quarterQuantaPerUnit = Number(retailTier?.quarterQuantaPerUnit ?? 4);
+          const wholesaleMinUnitsThreshold = Math.max(
+            1,
+            Number(p.wholesaleThresholdUnits ?? 10)
+          );
+          const retailUnitPriceTzs = Number(retailTier?.priceTzs ?? p.unitPriceTzs ?? 0);
+          const wholesaleUnitPriceTzs = Number(wholesaleTier?.priceTzs ?? retailUnitPriceTzs);
+
+          return {
+            productId: p.productId,
+            sku: p.sku,
+            nameSw: p.nameSw,
+            nameEn: p.nameEn,
+            sellerTier: targetTier,
+            unitType,
+            unitLabelSw: unitType,
+            unitLabelEn: unitType,
+            quarterQuantaPerUnit,
+            wholesaleMinUnitsThreshold,
+            wholesaleMinQuarterQuanta: wholesaleMinUnitsThreshold * quarterQuantaPerUnit,
+            retailUnitPriceTzs,
+            wholesaleUnitPriceTzs,
+            availableQuarterQuanta: Number(p.availableQuarterQuanta ?? 0),
+          };
+        }
+      );
+
+      setCatalog(mapped);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else if (err instanceof SokoHttpError) {
+        setApiError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [sellerBusinessId]);
 
   useEffect(() => {
-    let active = true;
-    cacheAndReadPriceSheets().then((rows) => {
-      if (active && rows.length > 0) setCatalog(rows);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
+    void reload();
+  }, [reload]);
 
   const updateQuantity = useCallback((productId: string, nextQty: number) => {
     setQuantities((prev) => ({
@@ -125,9 +177,6 @@ export function useDynamicCartCalculator() {
       const qty = quantities[product.productId] ?? 0;
       const totalQuarterQuanta = qty * product.quarterQuantaPerUnit;
 
-      // Mantiki ya Bei Kulingana na Kiasi (Dynamic Volume Routing):
-      // Ikiwa duka ni HYBRID_STORE na kiasi au uzito umevuka kiwango cha chini cha jumla,
-      // mfumo unahamisha bei moja kwa moja kutoka Rejareja kwenda Jumla.
       const crossesThreshold =
         product.sellerTier === 'WHOLESALE_HUB' ||
         (product.sellerTier === 'HYBRID_STORE' &&
@@ -147,7 +196,7 @@ export function useDynamicCartCalculator() {
         quantity: qty,
         totalQuarterQuanta,
         isWholesaleApplied: crossesThreshold,
-        appliedTierLabel: crossesThreshold ? 'Bei ya Jumla 🎉' : 'Bei ya Rejareja',
+        appliedTierLabel: crossesThreshold ? 'Bei ya Jumla' : 'Bei ya Rejareja',
         activeUnitPriceTzs,
         lineTotalTzs,
         savingsTzs: Math.max(0, retailBaselineTzs - lineTotalTzs),
@@ -170,5 +219,9 @@ export function useDynamicCartCalculator() {
     grandTotalTzs,
     totalSavingsTzs,
     updateQuantity,
+    loading,
+    backendOffline,
+    apiError,
+    reload,
   };
 }

@@ -92,7 +92,8 @@ export class DispatchService {
 
       const isAuthorized =
         user.role === Role.SUPER_ADMIN ||
-        (user.role === Role.WHOLESALER && tenantContext?.businessId === order.seller_business_id) ||
+        ((user.role === Role.WHOLESALER || user.role === Role.RETAILER) &&
+          tenantContext?.businessId === order.seller_business_id) ||
         (user.role === Role.DRIVER &&
           (!order.driver_user_id || order.driver_user_id === user.sub));
 

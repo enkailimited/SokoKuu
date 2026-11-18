@@ -629,6 +629,140 @@ export class OrdersService {
     };
   }
 
+  async listMyOrders(
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+    scope: 'buying' | 'selling' | 'all' = 'all',
+  ) {
+    let where: Prisma.OrderWhereInput;
+
+    if (scope === 'buying') {
+      where = { buyerUserId: user.sub };
+    } else if (scope === 'selling') {
+      if (user.role === Role.SUPER_ADMIN) {
+        where = {};
+      } else if (tenantContext?.businessId) {
+        where = { sellerBusinessId: tenantContext.businessId };
+      } else {
+        throw new ForbiddenException(
+          'Authenticated Merchant tenant context is required for selling order queue.',
+        );
+      }
+    } else if (user.role === Role.SUPER_ADMIN) {
+      where = {};
+    } else if (user.role === Role.DRIVER) {
+      where = { driverUserId: user.sub };
+    } else if (tenantContext?.businessId) {
+      where = {
+        OR: [
+          { buyerUserId: user.sub },
+          { sellerBusinessId: tenantContext.businessId },
+        ],
+      };
+    } else {
+      where = { buyerUserId: user.sub };
+    }
+
+    const orders = await this.prismaService.order.findMany({
+      where,
+      orderBy: { placedAt: 'desc' },
+      take: 100,
+      include: {
+        seller: {
+          select: {
+            id: true,
+            businessName: true,
+            tier: true,
+            smsShortCode: true,
+            isPlatformManaged: true,
+          },
+        },
+        buyer: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneE164: true,
+          },
+        },
+        items: {
+          include: {
+            product: {
+              select: {
+                id: true,
+                smsItemCode: true,
+                nameSw: true,
+                nameEn: true,
+              },
+            },
+          },
+        },
+        cashLedger: {
+          select: {
+            verificationStatus: true,
+            isBuyerConfirmed: true,
+            isDriverConfirmed: true,
+            isQrTokenConsumed: true,
+            expectedCashAmount: true,
+            collectedCashAmount: true,
+            paymentMethod: true,
+            reconciledAt: true,
+          },
+        },
+      },
+    });
+
+    return {
+      count: orders.length,
+      orders: orders.map((order) => ({
+        orderId: order.id,
+        orderRef: order.orderRef,
+        buyerUserId: order.buyerUserId,
+        buyerName: order.buyer.fullName,
+        buyerPhoneE164: order.buyer.phoneE164,
+        sellerBusinessId: order.sellerBusinessId,
+        sellerBusinessName: order.seller.businessName,
+        sellerTier: order.seller.tier,
+        sellerShortCode: order.seller.smsShortCode,
+        driverUserId: order.driverUserId,
+        status: order.status,
+        originChannel: order.originChannel,
+        routingTargetPipeline: order.routingTargetPipeline,
+        expectedTotalTzs: Number(order.expectedTotalTzs),
+        deliveryFeeTzs: Number(order.deliveryFeeTzs),
+        paymentMethod: order.paymentMethod,
+        paidAmountTzs: Number(order.paidAmountTzs),
+        placedAt: order.placedAt.toISOString(),
+        dispatchedAt: order.dispatchedAt?.toISOString() ?? null,
+        deliveredAt: order.deliveredAt?.toISOString() ?? null,
+        items: order.items.map((item) => ({
+          id: item.id,
+          productId: item.productId,
+          smsItemCode: item.product.smsItemCode,
+          nameSw: item.product.nameSw,
+          nameEn: item.product.nameEn,
+          unitType: item.unitType,
+          quantity: item.quantity,
+          baseUnitsTotal: item.baseUnitsTotal,
+          unitPriceTzs: Number(item.unitPriceTzs),
+          lineTotalTzs: Number(item.lineTotalTzs),
+          isWholesaleTierApplied: item.isWholesaleTierApplied,
+        })),
+        cashLedger: order.cashLedger
+          ? {
+              verificationStatus: order.cashLedger.verificationStatus,
+              isBuyerConfirmed: order.cashLedger.isBuyerConfirmed,
+              isDriverConfirmed: order.cashLedger.isDriverConfirmed,
+              isQrTokenConsumed: order.cashLedger.isQrTokenConsumed,
+              expectedCashAmount: Number(order.cashLedger.expectedCashAmount),
+              collectedCashAmount: Number(order.cashLedger.collectedCashAmount),
+              paymentMethod: order.cashLedger.paymentMethod,
+              reconciledAt: order.cashLedger.reconciledAt?.toISOString() ?? null,
+            }
+          : null,
+      })),
+    };
+  }
+
   private async tryAcquireRedisLock(
     key: string,
     token: string,

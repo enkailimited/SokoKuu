@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   APILoadingStatus,
   APIProvider,
@@ -15,6 +15,7 @@ import {
   Lock,
   MapPin,
   Navigation,
+  RefreshCw,
   ShieldAlert,
   ShieldCheck,
   Store,
@@ -23,13 +24,35 @@ import {
 import type { Locale } from '../data/i18n';
 import {
   TANZANIA_REGIONS,
-  isTenantGeospatialMapEnabled,
-  loadVerifiedStoreGeoNodes,
+  extractRegionFromWard,
   type SokoStoreGeoNode,
   type TanzaniaRegion,
 } from '../lib/sokoManagedState';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
 const MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim() ?? '';
+
+interface BackendMapMatrixResponse {
+  nodeCount: number;
+  nodes: Array<{
+    merchantId: string;
+    smsShortCode: string;
+    merchantName: string;
+    tier: string;
+    ward: string;
+    district: string;
+    latitude: number;
+    longitude: number;
+    distanceMeters: number;
+    logoUrl: string;
+    isPlatformManaged: boolean;
+  }>;
+}
 
 function MapViewportController({
   center,
@@ -77,7 +100,7 @@ function MapSdkCanvas({
             : 'Unable to load interactive map canvas. Please check your network or API quota.'}
         </p>
         <p className="text-[11px] font-mono text-slate-500">
-          Verified Store Nodes: {stores.length}
+          Verified Merchant Nodes: {stores.length}
         </p>
       </div>
     );
@@ -120,20 +143,19 @@ function MapSdkCanvas({
 
 // ============================================================================
 // FullPageMarketplaceMap.tsx
-// Ramani ya Maduka Yaliyowashwa & Kuthibitishwa (Converted & Verified)
-// Inaruhusu kuchagua Mkoa (Dar es Salaam au Mikoa Mingine) na kuona maduka yake.
+// Ramani ya Wafanyabiashara Waliothibitishwa (PostGIS & Google Maps)
 // ============================================================================
 export function FullPageMarketplaceMap({
   locale = 'sw',
   authority,
-  tenantBusinessId = 'ret-sinza-01',
+  tenantBusinessId,
   onRedirectToWorkspace,
   onSelectMerchantStorefront,
   onOpenShopsSettings,
 }: {
   locale?: Locale;
   authority: 'SUPER_ADMIN' | 'WHOLESALER' | 'RETAILER' | 'DRIVER' | 'CONSUMER';
-  tenantBusinessId?: string;
+  tenantBusinessId?: string | null;
   onRedirectToWorkspace?: () => void;
   onSelectMerchantStorefront?: (store: SokoStoreGeoNode) => void;
   onOpenShopsSettings?: () => void;
@@ -141,41 +163,90 @@ export function FullPageMarketplaceMap({
   const isSw = locale === 'sw';
   const isAdmin = authority === 'SUPER_ADMIN';
 
-  const [allVerifiedStores, setAllVerifiedStores] = useState<SokoStoreGeoNode[]>(() =>
-    loadVerifiedStoreGeoNodes()
-  );
-  const [tenantAllowed, setTenantAllowed] = useState<boolean>(() =>
-    isAdmin ? true : isTenantGeospatialMapEnabled(tenantBusinessId)
-  );
+  const [allVerifiedStores, setAllVerifiedStores] = useState<SokoStoreGeoNode[]>([]);
+  const [tenantAllowed, setTenantAllowed] = useState<boolean>(isAdmin);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
   const [selectedRegion, setSelectedRegion] = useState<'ALL' | TanzaniaRegion>('Dar es Salaam');
   const [tierFilter, setTierFilter] = useState<'ALL' | 'Wholesale Hub' | 'Retail Duka'>('ALL');
-  const [selectedStore, setSelectedStore] = useState<SokoStoreGeoNode | null>(
-    () =>
-      loadVerifiedStoreGeoNodes().find((s) => s.region === 'Dar es Salaam') ??
-      loadVerifiedStoreGeoNodes()[0] ??
-      null
-  );
-  const [drawerOpen, setDrawerOpen] = useState<boolean>(true);
+  const [selectedStore, setSelectedStore] = useState<SokoStoreGeoNode | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [actionToast, setActionToast] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+
+  const loadMatrixFromApi = useCallback(async () => {
+    if (!SokoApiClient.hasAccessToken()) {
+      setIsLoading(false);
+      setAllVerifiedStores([]);
+      return;
+    }
+    setIsLoading(true);
+    setErrorBanner(null);
+    setBackendOffline(false);
+    try {
+      const res = await SokoApiClient.get<BackendMapMatrixResponse>(
+        '/geospatial/stores-map-matrix?originLat=-6.809&originLng=39.255&maxDistanceMeters=200000'
+      );
+
+      const mapped: SokoStoreGeoNode[] = (res.nodes || []).map((n) => ({
+        businessId: n.merchantId,
+        smsShortCode: n.smsShortCode,
+        businessName: n.merchantName,
+        ward: n.district ? `${n.ward}, ${n.district}` : n.ward,
+        region: extractRegionFromWard(`${n.ward} ${n.district}`),
+        tierLabel: n.tier === 'WHOLESALE_HUB' ? 'Wholesale Hub' : 'Retail Duka',
+        latitude: n.latitude,
+        longitude: n.longitude,
+        distanceMeters: Number(n.distanceMeters ?? 0),
+        isPlatformManaged: Boolean(n.isPlatformManaged),
+        isConverted: true,
+        isVerified: true,
+        activeSkusCount: 0,
+        logoUrl: n.logoUrl,
+      }));
+
+      setTenantAllowed(true);
+      setAllVerifiedStores(mapped);
+      setSelectedStore((prev) => {
+        if (prev && mapped.some((s) => s.businessId === prev.businessId)) return prev;
+        return mapped.find((s) => s.region === 'Dar es Salaam') ?? mapped[0] ?? null;
+      });
+      setDrawerOpen(mapped.length > 0);
+    } catch (err) {
+      if (err instanceof SokoHttpError && err.status === 403) {
+        setTenantAllowed(false);
+        setAllVerifiedStores([]);
+      } else if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setAllVerifiedStores([]);
+        setSelectedStore(null);
+      } else {
+        setErrorBanner(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to load geospatial matrix.'
+        );
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const syncAll = () => {
-      setTenantAllowed(isAdmin ? true : isTenantGeospatialMapEnabled(tenantBusinessId));
-      setAllVerifiedStores(loadVerifiedStoreGeoNodes());
-    };
+    void loadMatrixFromApi();
 
+    const syncAll = () => {
+      void loadMatrixFromApi();
+    };
     window.addEventListener('sokokuu:geospatial-toggle-updated', syncAll);
     window.addEventListener('sokokuu:shops-updated', syncAll);
-    window.addEventListener('storage', syncAll);
     return () => {
       window.removeEventListener('sokokuu:geospatial-toggle-updated', syncAll);
       window.removeEventListener('sokokuu:shops-updated', syncAll);
-      window.removeEventListener('storage', syncAll);
     };
-  }, [isAdmin, tenantBusinessId]);
+  }, [loadMatrixFromApi, tenantBusinessId]);
 
-  // Security Boundary Gate: Non-admin tenants default to FALSE and are blocked (HTTP 403)
-  if (!isAdmin && !tenantAllowed) {
+  if (!isLoading && !isAdmin && !tenantAllowed && !backendOffline) {
     return (
       <div className="max-w-4xl mx-auto p-4 sm:p-6">
         <section className="bg-white border border-red-200 rounded-xl shadow-sm p-6 space-y-4">
@@ -192,8 +263,8 @@ export function FullPageMarketplaceMap({
               </div>
               <p className="text-xs text-slate-600 leading-relaxed">
                 {isSw
-                  ? 'Kwa usalama wa mtandao, kipengele cha Ramani ya Maduka kimefungwa kwa chaguo-msingi. Wasiliana na Msimamizi Mkuu kuiwasha kwenye Hifadhidata ya SokoKuu.'
-                  : 'Geospatial map routing is disabled by default for merchant accounts. Only a Super Admin can enable this tenant permission inside SokoKuu Cloud SQL Cluster.'}
+                  ? 'Kwa usalama wa mtandao, kipengele cha Ramani ya Wafanyabiashara kimefungwa kwa chaguo-msingi. Wasiliana na Msimamizi Mkuu kuiwasha kwenye Hifadhidata ya SokoKuu.'
+                  : 'Geospatial map routing is disabled by default for Merchant accounts. Only a Super Admin can enable this Merchant permission.'}
               </p>
             </div>
           </div>
@@ -246,6 +317,22 @@ export function FullPageMarketplaceMap({
 
   return (
     <div className="max-w-4xl mx-auto space-y-5">
+      {backendOffline && (
+        <BackendOfflineBanner locale={locale} onRetry={() => void loadMatrixFromApi()} />
+      )}
+
+      {errorBanner && (
+        <div
+          role="alert"
+          className="bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 flex items-center justify-between gap-3 text-xs font-semibold text-red-900"
+        >
+          <span>{errorBanner}</span>
+          <button type="button" onClick={() => setErrorBanner(null)} className="cursor-pointer">
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Header, Region Selector & Filter Bar */}
       <section className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -256,18 +343,26 @@ export function FullPageMarketplaceMap({
             <div>
               <h2 className="text-sm sm:text-base font-bold text-slate-900">
                 {isSw
-                  ? 'Ramani ya Maduka Yaliyothibitishwa (PostGIS & Google Maps)'
-                  : 'Verified Shops Map'}
+                  ? 'Ramani ya Wafanyabiashara Waliothibitishwa (PostGIS & Google Maps)'
+                  : 'Verified Merchants Map'}
               </h2>
               <p className="text-[11px] font-mono text-slate-500">
                 {isSw
-                  ? `Eneo: ${activeRegionConfig.labelSw} · Maduka ${visibleStores.length} kuthibitishwa`
-                  : `Region: ${activeRegionConfig.labelEn} · ${visibleStores.length} verified shops`}
+                  ? `Eneo: ${activeRegionConfig.labelSw} · Wafanyabiashara ${visibleStores.length} waliothibitishwa`
+                  : `Region: ${activeRegionConfig.labelEn} · ${visibleStores.length} verified merchants`}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void loadMatrixFromApi()}
+              disabled={isLoading}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1 cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            </button>
             {isAdmin && onOpenShopsSettings && (
               <button
                 type="button"
@@ -275,7 +370,7 @@ export function FullPageMarketplaceMap({
                 className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <Store className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                <span>{isSw ? 'Maduka & Mipangilio' : 'Shops & Settings'}</span>
+                <span>{isSw ? 'Wafanyabiashara & Mipangilio' : 'Merchants & Settings'}</span>
               </button>
             )}
             {(['ALL', 'Wholesale Hub', 'Retail Duka'] as const).map((tier) => (
@@ -295,17 +390,17 @@ export function FullPageMarketplaceMap({
                     : 'All Tiers'
                   : tier === 'Wholesale Hub'
                     ? isSw
-                      ? 'Maduka ya Jumla'
+                      ? 'Wafanyabiashara wa Jumla'
                       : 'Wholesale Hubs'
                     : isSw
-                      ? 'Maduka ya Rejareja'
+                      ? 'Wafanyabiashara wa Rejareja'
                       : 'Retail Dukas'}
               </button>
             ))}
           </div>
         </div>
 
-        {/* Region Switcher: Dar es Salaam vs Mikoa Mingine */}
+        {/* Region Switcher */}
         <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-slate-100">
           <label
             htmlFor="marketplace-region-select"
@@ -335,14 +430,7 @@ export function FullPageMarketplaceMap({
           </select>
         </div>
 
-        {/* Verified Store Quick Selector in Active Region */}
-        {visibleStores.length === 0 ? (
-          <div className="text-xs text-slate-500 py-2">
-            {isSw
-              ? 'Hakuna maduka yaliyothibitishwa katika chaguo hili.'
-              : 'No verified shops in this filter.'}
-          </div>
-        ) : (
+        {visibleStores.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {visibleStores.map((store) => {
               const active = selectedStore?.businessId === store.businessId;
@@ -360,12 +448,14 @@ export function FullPageMarketplaceMap({
                       : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                   }`}
                 >
-                  <img
-                    src={store.logoUrl}
-                    alt={store.businessName}
-                    referrerPolicy="no-referrer"
-                    className="w-5 h-5 rounded-full object-cover border border-slate-200 shrink-0"
-                  />
+                  {store.logoUrl && (
+                    <img
+                      src={store.logoUrl}
+                      alt={store.businessName}
+                      referrerPolicy="no-referrer"
+                      className="w-5 h-5 rounded-full object-cover border border-slate-200 shrink-0"
+                    />
+                  )}
                   <span>{store.businessName}</span>
                   <span className="text-[11px] text-slate-500">· {store.region}</span>
                 </button>
@@ -394,155 +484,162 @@ export function FullPageMarketplaceMap({
         </div>
       )}
 
-      {/* Full-Page Responsive Map Container + Slide-Up Preview Card Drawer */}
-      <section className="relative bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        {MAPS_API_KEY ? (
-          <APIProvider
-            apiKey={MAPS_API_KEY}
-            libraries={['marker']}
-            language={isSw ? 'sw' : 'en'}
-            region="TZ"
-          >
-            <MapSdkCanvas
-              locale={locale}
-              stores={visibleStores}
-              selectedStore={selectedStore}
-              onSelectStore={(store) => {
-                setSelectedStore(store);
-                setDrawerOpen(true);
-              }}
-              viewportCenter={activeRegionConfig.center}
-              viewportZoom={activeRegionConfig.zoom}
-            />
-          </APIProvider>
-        ) : (
-          /* Clean Regional PostGIS Matrix Fallback when Maps API key is absent */
-          <div className="w-full h-[440px] sm:h-[520px] bg-slate-50 p-5 flex flex-col justify-between overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div className="text-xs font-semibold text-slate-700 flex items-center gap-2">
-                <MapPin className="w-4 h-4 text-emerald-600" aria-hidden="true" />
-                <span>
-                  {activeRegionConfig.labelSw} — PostGIS Node Matrix (EPSG:4326)
+      {!isLoading && visibleStores.length === 0 ? (
+        <EmptyStateCard
+          locale={locale}
+          titleSw="Hakuna rekodi bado"
+          titleEn="No verified merchants in this region yet"
+          descriptionSw="Hakuna wafanyabiashara waliothibitishwa katika chaguo hili kwenye PostgreSQL."
+          descriptionEn="No verified PostGIS merchant coordinates matched your current filter."
+        />
+      ) : (
+        <section className="relative bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          {MAPS_API_KEY ? (
+            <APIProvider
+              apiKey={MAPS_API_KEY}
+              libraries={['marker']}
+              language={isSw ? 'sw' : 'en'}
+              region="TZ"
+            >
+              <MapSdkCanvas
+                locale={locale}
+                stores={visibleStores}
+                selectedStore={selectedStore}
+                onSelectStore={(store) => {
+                  setSelectedStore(store);
+                  setDrawerOpen(true);
+                }}
+                viewportCenter={activeRegionConfig.center}
+                viewportZoom={activeRegionConfig.zoom}
+              />
+            </APIProvider>
+          ) : (
+            <div className="w-full h-[440px] sm:h-[520px] bg-slate-50 p-5 flex flex-col justify-between overflow-y-auto">
+              <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                <div className="text-xs font-semibold text-slate-700 flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+                  <span>
+                    {activeRegionConfig.labelSw} — PostGIS Node Matrix (EPSG:4326)
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono text-slate-500">
+                  {visibleStores.length} Verified Nodes
                 </span>
               </div>
-              <span className="text-[11px] font-mono text-slate-500">
-                {visibleStores.length} Verified Nodes
-              </span>
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 my-4">
-              {visibleStores.map((store) => {
-                const isSelected = selectedStore?.businessId === store.businessId;
-                return (
-                  <button
-                    key={store.businessId}
-                    type="button"
-                    onClick={() => {
-                      setSelectedStore(store);
-                      setDrawerOpen(true);
-                    }}
-                    className={`p-3.5 rounded-lg border text-left transition-all cursor-pointer flex items-center gap-3 ${
-                      isSelected
-                        ? 'bg-emerald-50 border-emerald-600 shadow-sm'
-                        : 'bg-white border-slate-200 hover:border-slate-300'
-                    }`}
-                  >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 my-4">
+                {visibleStores.map((store) => {
+                  const isSelected = selectedStore?.businessId === store.businessId;
+                  return (
+                    <button
+                      key={store.businessId}
+                      type="button"
+                      onClick={() => {
+                        setSelectedStore(store);
+                        setDrawerOpen(true);
+                      }}
+                      className={`p-3.5 rounded-lg border text-left transition-all cursor-pointer flex items-center gap-3 ${
+                        isSelected
+                          ? 'bg-emerald-50 border-emerald-600 shadow-sm'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      {store.logoUrl && (
+                        <img
+                          src={store.logoUrl}
+                          alt={store.businessName}
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-10 rounded-full object-cover border border-slate-200 shrink-0"
+                        />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-bold text-slate-900 truncate">
+                          {store.businessName}
+                        </div>
+                        <div className="text-[11px] text-slate-600 truncate">
+                          {store.ward} · {store.region}
+                        </div>
+                        <div className="text-[11px] font-mono text-emerald-700 tabular-nums mt-0.5">
+                          {store.latitude.toFixed(4)}, {store.longitude.toFixed(4)}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="h-24" />
+            </div>
+          )}
+
+          {drawerOpen && selectedStore && (
+            <div className="absolute bottom-3 inset-x-3 sm:inset-x-4 z-20 transition-transform duration-200">
+              <div className="bg-white border border-slate-200 rounded-xl shadow-xl p-4 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  {selectedStore.logoUrl && (
                     <img
-                      src={store.logoUrl}
-                      alt={store.businessName}
+                      src={selectedStore.logoUrl}
+                      alt={selectedStore.businessName}
                       referrerPolicy="no-referrer"
-                      className="w-10 h-10 rounded-full object-cover border border-slate-200 shrink-0"
+                      className="w-12 h-12 rounded-full object-cover border border-slate-200 shrink-0 bg-slate-50"
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-bold text-slate-900 truncate">
-                        {store.businessName}
-                      </div>
-                      <div className="text-[11px] text-slate-600 truncate">
-                        {store.ward} · {store.region}
-                      </div>
-                      <div className="text-[11px] font-mono text-emerald-700 tabular-nums mt-0.5">
-                        {store.latitude.toFixed(4)}, {store.longitude.toFixed(4)}
-                      </div>
+                  )}
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-bold text-slate-900 truncate">
+                        {selectedStore.businessName}
+                      </h3>
+                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                        {selectedStore.tierLabel}
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        <ShieldCheck className="w-3 h-3 text-emerald-600" aria-hidden="true" />
+                        <span>Verified</span>
+                      </span>
                     </div>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="h-24" />
-          </div>
-        )}
-
-        {/* Responsive Slide-Up Store Preview Card Drawer */}
-        {drawerOpen && selectedStore && (
-          <div className="absolute bottom-3 inset-x-3 sm:inset-x-4 z-20 transition-transform duration-200">
-            <div className="bg-white border border-slate-200 rounded-xl shadow-xl p-4 flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-3.5 min-w-0">
-                <img
-                  src={selectedStore.logoUrl}
-                  alt={selectedStore.businessName}
-                  referrerPolicy="no-referrer"
-                  className="w-12 h-12 rounded-full object-cover border border-slate-200 shrink-0 bg-slate-50"
-                />
-                <div className="min-w-0 space-y-0.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-bold text-slate-900 truncate">
-                      {selectedStore.businessName}
-                    </h3>
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
-                      {selectedStore.tierLabel}
-                    </span>
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
-                      <ShieldCheck className="w-3 h-3 text-emerald-600" aria-hidden="true" />
-                      <span>{isSw ? 'Verified' : 'Verified'}</span>
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-600 flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-1">
-                      <MapPin className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                      {selectedStore.ward}
-                    </span>
-                    <span className="text-slate-300">·</span>
-                    <span className="font-semibold text-emerald-700">{selectedStore.region}</span>
-                    <span className="text-slate-300">·</span>
-                    <span className="font-mono text-slate-500 tabular-nums">
-                      {selectedStore.activeSkusCount} SKUs
-                    </span>
+                    <div className="text-xs text-slate-600 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                        {selectedStore.ward}
+                      </span>
+                      <span className="text-slate-300">·</span>
+                      <span className="font-semibold text-emerald-700">{selectedStore.region}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (onSelectMerchantStorefront) {
-                      onSelectMerchantStorefront(selectedStore);
-                    } else {
-                      setActionToast(
-                        isSw
-                          ? `Umefungua duka: ${selectedStore.businessName} (${selectedStore.region}).`
-                          : `Opened storefront context for ${selectedStore.businessName} (${selectedStore.region}).`
-                      );
-                    }
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
-                >
-                  <Store className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>{isSw ? 'Fungua Duka' : 'Open Storefront'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDrawerOpen(false)}
-                  className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-900 cursor-pointer"
-                  aria-label="Close store preview"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onSelectMerchantStorefront) {
+                        onSelectMerchantStorefront(selectedStore);
+                      } else {
+                        setActionToast(
+                          isSw
+                            ? `Umefungua duka la mfanyabiashara: ${selectedStore.businessName} (${selectedStore.region}).`
+                            : `Opened storefront context for ${selectedStore.businessName} (${selectedStore.region}).`
+                        );
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    <Store className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{isSw ? 'Fungua Duka' : 'Open Storefront'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDrawerOpen(false)}
+                    className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-900 cursor-pointer"
+                    aria-label="Close merchant preview"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      )}
     </div>
   );
 }

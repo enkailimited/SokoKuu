@@ -6,7 +6,8 @@ interface OptimizedProductImageProps {
   skuCode: string;
   productName: string;
   unitSummary: string;
-  priceTzs: number;
+  priceTzs?: number;
+  imageUrl?: string;
   estimatedFullSizeKb?: number;
 }
 
@@ -19,6 +20,7 @@ export function OptimizedProductImage({
   productName,
   unitSummary,
   priceTzs,
+  imageUrl,
   estimatedFullSizeKb = 185,
 }: OptimizedProductImageProps) {
   const { isLowDataModeActive } = useDataSaver();
@@ -46,7 +48,7 @@ export function OptimizedProductImage({
 
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200">
           <span className="text-xs font-mono font-semibold tabular-nums text-slate-900">
-            TZS {priceTzs.toLocaleString('en-US')}
+            {typeof priceTzs === 'number' ? `TZS ${priceTzs.toLocaleString('en-US')}` : unitSummary}
           </span>
           <button
             type="button"
@@ -60,21 +62,40 @@ export function OptimizedProductImage({
     );
   }
 
-  // Standard Mode (or user tapped "Load Preview"): renders crisp vector product card without external image failure
   return (
     <div className="border border-slate-200 bg-white rounded-md overflow-hidden flex flex-col">
-      <div className="h-24 bg-slate-900 text-slate-100 px-4 py-3 flex flex-col justify-between">
-        <div className="flex items-center justify-between text-[11px] font-mono text-slate-300">
-          <span>{skuCode}</span>
-          <span className="tabular-nums">WEBP · {estimatedFullSizeKb} KB</span>
+      {imageUrl ? (
+        <div className="h-28 bg-slate-900 relative overflow-hidden">
+          <img
+            src={imageUrl}
+            alt={productName}
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover opacity-80"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent px-4 py-3 flex flex-col justify-between">
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-200">
+              <span>{skuCode}</span>
+              <span className="tabular-nums">WEBP · {estimatedFullSizeKb} KB</span>
+            </div>
+            <div className="text-sm font-semibold text-white truncate">{productName}</div>
+          </div>
         </div>
-        <div className="text-sm font-semibold truncate">{productName}</div>
-      </div>
+      ) : (
+        <div className="h-24 bg-slate-900 text-slate-100 px-4 py-3 flex flex-col justify-between">
+          <div className="flex items-center justify-between text-[11px] font-mono text-slate-300">
+            <span>{skuCode}</span>
+            <span className="tabular-nums">WEBP · {estimatedFullSizeKb} KB</span>
+          </div>
+          <div className="text-sm font-semibold truncate">{productName}</div>
+        </div>
+      )}
       <div className="p-3.5 flex items-center justify-between gap-2">
         <span className="text-xs text-slate-600 truncate">{unitSummary}</span>
-        <span className="text-xs font-mono font-semibold tabular-nums text-emerald-800 whitespace-nowrap">
-          TZS {priceTzs.toLocaleString('en-US')}
-        </span>
+        {typeof priceTzs === 'number' && (
+          <span className="text-xs font-mono font-semibold tabular-nums text-emerald-800 whitespace-nowrap">
+            TZS {priceTzs.toLocaleString('en-US')}
+          </span>
+        )}
       </div>
     </div>
   );

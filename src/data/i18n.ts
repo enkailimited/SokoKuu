@@ -57,13 +57,13 @@ export const TRANSLATIONS = {
     reconciliationSim: {
       heading: 'Dual-PIN Cash-on-Delivery Reconciliation Simulator',
       subheading:
-        'Test the anti-skimming Dual-PIN flow: Buyer (PIN: 4821) and Vendor Driver (PIN: 7390) must both confirm before the order moves from DISPATCHED to DELIVERED.',
+        'Test the anti-skimming Dual-PIN flow against a live PostgreSQL order ledger before transitioning DISPATCHED to DELIVERED.',
       orderRefLabel: 'Order Ref',
       expectedCashLabel: 'Expected Cash (CoD)',
       orderStatusLabel: 'Order Status',
       ledgerStatusLabel: 'Ledger Verification',
-      buyerPinLabel: 'Buyer 4-Digit PIN (Demo: 4821)',
-      driverPinLabel: 'Driver 4-Digit PIN (Demo: 7390)',
+      buyerPinLabel: 'Buyer 4-Digit PIN',
+      driverPinLabel: 'Driver 4-Digit PIN',
       collectedCashLabel: 'Driver Declared Cash (TZS)',
       confirmBuyerBtn: 'Confirm Buyer PIN',
       confirmDriverBtn: 'Confirm Driver PIN + Cash',
@@ -161,13 +161,13 @@ export const TRANSLATIONS = {
     reconciliationSim: {
       heading: 'Jaribio la Uhakiki wa Malipo ya Taslimu (Dual-PIN)',
       subheading:
-        'Jaribu mfumo wa PIN mbili: Mnunuzi (PIN: 4821) na Dereva (PIN: 7390) lazima wote wahakiki kabla oda haijawa DELIVERED.',
+        'Hakiki mfumo wa PIN mbili dhidi ya leja hai ya PostgreSQL kabla oda haijawa DELIVERED.',
       orderRefLabel: 'Namba ya Oda',
       expectedCashLabel: 'Fedha Inayotarajiwa (CoD)',
       orderStatusLabel: 'Hali ya Oda',
       ledgerStatusLabel: 'Hali ya Leja',
-      buyerPinLabel: 'PIN ya Mnunuzi (Jaribio: 4821)',
-      driverPinLabel: 'PIN ya Dereva (Jaribio: 7390)',
+      buyerPinLabel: 'PIN ya Mnunuzi (Namba 4)',
+      driverPinLabel: 'PIN ya Dereva (Namba 4)',
       collectedCashLabel: 'Taslimu Iliyokusanywa (TZS)',
       confirmBuyerBtn: 'Hakiki PIN ya Mnunuzi',
       confirmDriverBtn: 'Hakiki PIN ya Dereva + Taslimu',

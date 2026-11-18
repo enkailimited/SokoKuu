@@ -8,8 +8,9 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiHeader, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { CurrentTenant, CurrentUser, Roles } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
@@ -21,6 +22,34 @@ import { OrderReceiptResponse, OrdersService } from './orders.service';
 @Controller('api/v1')
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
+
+  @Get('orders')
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @ApiQuery({ name: 'scope', required: false, enum: ['buying', 'selling', 'all'] })
+  @ApiOperation({
+    summary: 'List orders scoped to authenticated buyer, seller Merchant, or Super Admin',
+  })
+  listOrdersAlias(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+    @Query('scope') scope?: 'buying' | 'selling' | 'all',
+  ) {
+    return this.ordersService.listMyOrders(user, tenantContext, scope);
+  }
+
+  @Get('orders/my-orders')
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @ApiQuery({ name: 'scope', required: false, enum: ['buying', 'selling', 'all'] })
+  @ApiOperation({
+    summary: 'List orders scoped to authenticated buyer, seller Merchant, or Super Admin',
+  })
+  listMyOrders(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+    @Query('scope') scope?: 'buying' | 'selling' | 'all',
+  ) {
+    return this.ordersService.listMyOrders(user, tenantContext, scope);
+  }
 
   @Post('orders/request')
   @HttpCode(HttpStatus.CREATED)

@@ -72,7 +72,7 @@ export function ProfileEditView({
             <span>{isSw ? 'Rudi kwenye Dashibodi' : 'Back to Dashboard'}</span>
           </button>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            {isSw ? 'Wasifu Wangu & Sasisho la Taarifa' : 'My Profile & Information Update'}
+            {isSw ? 'Wasifu Wangu & Maelezo ya Akaunti' : 'My Profile & Account Details'}
           </h1>
           <p className="text-xs text-slate-500">
             {isSw ? ROLE_LABELS[profile.role].sw : ROLE_LABELS[profile.role].en} ·{' '}
@@ -89,8 +89,8 @@ export function ProfileEditView({
           <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
           <span>
             {isSw
-              ? 'Taarifa za wasifu wako zimehifadhiwa kikamilifu.'
-              : 'Your profile information has been updated and saved.'}
+              ? 'Mapendeleo ya kikao chako yamehifadhiwa.'
+              : 'Your session display preferences have been updated.'}
           </span>
         </div>
       )}
@@ -107,13 +107,9 @@ export function ProfileEditView({
             </span>
             <input
               type="text"
-              required
+              readOnly
               value={form.fullName}
-              onChange={(e) => {
-                setForm((p) => ({ ...p, fullName: e.target.value }));
-                setSavedNotice(false);
-              }}
-              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+              className="w-full min-h-[44px] px-3.5 text-sm bg-slate-50 border border-slate-200 rounded-md text-slate-700"
             />
           </label>
 
@@ -124,83 +120,42 @@ export function ProfileEditView({
             </span>
             <input
               type="tel"
-              required
+              readOnly
               value={form.phone}
-              onChange={(e) => {
-                setForm((p) => ({ ...p, phone: e.target.value }));
-                setSavedNotice(false);
-              }}
-              className="w-full min-h-[44px] px-3.5 text-sm font-mono bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+              className="w-full min-h-[44px] px-3.5 text-sm font-mono bg-slate-50 border border-slate-200 rounded-md text-slate-700"
             />
           </label>
 
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold text-slate-700">
-              {isSw ? 'Barua Pepe' : 'Email Address'}
-            </span>
-            <input
-              type="email"
-              required
-              value={form.email}
-              onChange={(e) => {
-                setForm((p) => ({ ...p, email: e.target.value }));
-                setSavedNotice(false);
-              }}
-              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
-            />
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700">
-              {isSw ? 'Jina la Duka / Biashara / Kitambulisho' : 'Business / Account Label'}
+              {isSw ? 'Jina la Biashara / Kitambulisho' : 'Merchant / Account Label'}
             </span>
             <input
               type="text"
-              required
+              readOnly
               value={form.businessLabel}
-              onChange={(e) => {
-                setForm((p) => ({ ...p, businessLabel: e.target.value }));
-                setSavedNotice(false);
-              }}
-              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+              className="w-full min-h-[44px] px-3.5 text-sm bg-slate-50 border border-slate-200 rounded-md text-slate-700"
             />
           </label>
 
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-              <span>{isSw ? 'Kata / Eneo' : 'Ward / District'}</span>
+              <span>{isSw ? 'Kata / Mtaa (PostgreSQL)' : 'Ward / Address (PostgreSQL)'}</span>
             </span>
             <input
               type="text"
-              required
               value={form.ward}
               onChange={(e) => {
                 setForm((p) => ({ ...p, ward: e.target.value }));
                 setSavedNotice(false);
               }}
-              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
-            />
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700">
-              {isSw ? 'Mtaa & Namba ya Nyumba/Ghala' : 'Street & Landmark'}
-            </span>
-            <input
-              type="text"
-              required
-              value={form.streetAddress}
-              onChange={(e) => {
-                setForm((p) => ({ ...p, streetAddress: e.target.value }));
-                setSavedNotice(false);
-              }}
+              placeholder={isSw ? 'Weka kata yako...' : 'Enter ward...'}
               className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
             />
           </label>
         </div>
 
-        {/* Account Mode (locked to valid options for user's role only) */}
         <div className="pt-2 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
@@ -224,24 +179,15 @@ export function ProfileEditView({
             </select>
           </label>
 
-          <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700">
-              {isSw ? 'PIN Mpya ya Akaunti (Tarakimu 4)' : 'Account Access PIN (4 Digits)'}
+          <div className="space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700 block">
+              {isSw ? 'ID ya Mtumiaji & Biashara' : 'User & Merchant UUID'}
             </span>
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
-              minLength={4}
-              required
-              value={form.pinCode}
-              onChange={(e) => {
-                setForm((p) => ({ ...p, pinCode: e.target.value }));
-                setSavedNotice(false);
-              }}
-              className="w-full min-h-[44px] px-3.5 text-base font-mono tracking-widest bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
-            />
-          </label>
+            <div className="min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-[11px] font-mono text-slate-600 break-all">
+              UID: {profile.userId}
+              {profile.businessId ? ` · BID: ${profile.businessId}` : ''}
+            </div>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
@@ -263,14 +209,14 @@ export function ProfileEditView({
               onClick={onBackToDashboard}
               className="min-h-[44px] px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 cursor-pointer"
             >
-              {isSw ? 'Funga' : 'Cancel'}
+              {isSw ? 'Funga' : 'Close'}
             </button>
             <button
               type="submit"
               className="min-h-[44px] px-5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-2 cursor-pointer"
             >
               <Save className="w-4 h-4" aria-hidden="true" />
-              <span>{isSw ? 'Hifadhi Mabadiliko' : 'Save Profile Changes'}</span>
+              <span>{isSw ? 'Hifadhi Mapendeleo' : 'Save Preferences'}</span>
             </button>
           </div>
         </div>
@@ -331,7 +277,6 @@ export function SettingsView({
       )}
 
       <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
-        {/* Language Setting */}
         <div className="p-5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <Languages className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />
@@ -369,7 +314,6 @@ export function SettingsView({
           </div>
         </div>
 
-        {/* Low-Data Bundle Saver */}
         <div className="p-5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <WifiOff className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />
@@ -398,7 +342,6 @@ export function SettingsView({
           </button>
         </div>
 
-        {/* NextSMS Order Notifications */}
         <div className="p-5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <SlidersHorizontal className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />
@@ -433,7 +376,6 @@ export function SettingsView({
           </button>
         </div>
 
-        {/* Offline SMS Fallback */}
         <div className="p-5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <ShieldCheck className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />

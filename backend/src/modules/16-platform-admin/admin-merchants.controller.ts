@@ -92,3 +92,21 @@ export class AdminTenantMapController {
     );
   }
 }
+
+@ApiTags('Platform Administration')
+@ApiBearerAuth('bearer')
+@Roles(Role.SUPER_ADMIN)
+@Controller('api/v1/admin')
+export class AdminMetricsController {
+  constructor(private readonly adminMerchantsService: AdminMerchantsService) {}
+
+  @Get('metrics')
+  @ApiOperation({
+    summary: 'Live PostgreSQL Platform Telemetry & Counts (SUPER_ADMIN)',
+    description:
+      'Returns live PostgreSQL counts for Merchants, Global Catalog, Orders, Outbox events, Fraud Disputes, and Sales Leads.',
+  })
+  getPlatformMetrics() {
+    return this.adminMerchantsService.getPlatformMetrics();
+  }
+}

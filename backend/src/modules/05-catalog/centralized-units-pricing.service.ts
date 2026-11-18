@@ -142,6 +142,13 @@ export class CentralizedUnitsPricingService {
   // B. Platform Admin — Versioned Standard Pricing Management
   // ===========================================================================
 
+  async listPricingProfiles() {
+    return this.prismaService.standardPricingProfile.findMany({
+      where: { isActive: true },
+      orderBy: [{ profileType: 'asc' }, { profileCode: 'asc' }],
+    });
+  }
+
   async createPricingProfile(
     dto: CreateStandardPricingProfileDto,
     adminUser: AuthenticatedUser,

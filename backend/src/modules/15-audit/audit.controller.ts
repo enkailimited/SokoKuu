@@ -2,9 +2,12 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
@@ -52,5 +55,33 @@ export class AuditController {
     @Query('businessId') businessId?: string,
   ) {
     return this.auditService.listFinancialAuditLogs(tenantContext, businessId);
+  }
+
+  @Get('admin/audit/fraud-alerts')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'List 3-strike driver dispute escalations, brute-force locks, and disputed cash ledgers',
+  })
+  listFraudAlerts() {
+    return this.auditService.listFraudAlerts();
+  }
+
+  @Get('admin/retention/stats')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Return real PostgreSQL row counts for idempotency keys, cold archive, and outbox queue',
+  })
+  getRetentionStats() {
+    return this.auditService.getRetentionStats();
+  }
+
+  @Post('admin/retention/run')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Execute idempotency cleanup and >90d ledger cold archival batch immediately',
+  })
+  runRetentionCleanup() {
+    return this.auditService.runRetentionCleanupNow();
   }
 }

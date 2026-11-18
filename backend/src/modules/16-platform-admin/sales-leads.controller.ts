@@ -1,5 +1,5 @@
-import { Body, Controller, Param, ParseUUIDPipe, Post } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthenticatedUser } from '@common/security/auth.types';
 import { CurrentUser, Roles } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
@@ -11,6 +11,14 @@ import { SalesLeadsService } from './sales-leads.service';
 @Controller('api/v1/sales/leads')
 export class SalesLeadsController {
   constructor(private readonly salesLeadsService: SalesLeadsService) {}
+
+  @Get()
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER)
+  @ApiQuery({ name: 'status', required: false })
+  @ApiOperation({ summary: 'List field-captured Merchant prospect and converted leads' })
+  listLeads(@Query('status') status?: string) {
+    return this.salesLeadsService.listLeads(status);
+  }
 
   @Post()
   @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER)

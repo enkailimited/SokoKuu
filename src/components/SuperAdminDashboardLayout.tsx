@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Container,
-  Copy,
   Database,
   FileCode2,
   FolderPlus,
@@ -32,16 +31,14 @@ import {
 } from 'lucide-react';
 import { CODE_ARTIFACTS, type CodeArtifact } from '../data/blueprints';
 import { TRANSLATIONS, type Locale } from '../data/i18n';
-import { SokoApiClient } from '../services/sokoApiClient';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
 import {
   ADMIN_ALERT_CHANNEL_NAME,
-  addCatalogCategory,
-  addGlobalCatalogEntry,
   formatCodeWithoutUnderscores,
-  incrementCatalogCloneCounter,
-  loadCatalogCategories,
-  loadDispatchAuditTraces,
-  loadGlobalCatalogEntries,
   type CatalogCategoryRecord,
   type GlobalCatalogEntry,
   type OrderDispatchAuditTrace,
@@ -49,6 +46,7 @@ import {
 import { AdminAlertTerminal } from './AdminAlertTerminal';
 import { AdminShopsDirectoryPanel } from './AdminShopsDirectoryPanel';
 import { AdminUnitsAndPricingPanel } from './AdminUnitsAndPricingPanel';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { BrandLogo } from './BrandLogo';
 import { CodeViewer } from './CodeViewer';
 import { ConcurrencySmsCsvPanel } from './ConcurrencySmsCsvPanel';
@@ -165,16 +163,30 @@ export function SuperAdminDashboardLayout({
   };
   const [selectedDocModule, setSelectedDocModule] = useState<AdminModuleKey>('admin_security');
 
-  const [catalogEntries, setCatalogEntries] = useState<GlobalCatalogEntry[]>(() =>
-    loadGlobalCatalogEntries()
-  );
-  const [categories, setCategories] = useState<CatalogCategoryRecord[]>(() =>
-    loadCatalogCategories()
-  );
-  const [managedAlarmCount, setManagedAlarmCount] = useState<number>(() =>
-    loadDispatchAuditTraces().filter((tr) => tr.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK').length
-  );
+  const [catalogEntries, setCatalogEntries] = useState<GlobalCatalogEntry[]>([]);
+  const [categories, setCategories] = useState<CatalogCategoryRecord[]>([]);
+  const [platformMetrics, setPlatformMetrics] = useState<{
+    totalMerchants: number;
+    managedMerchants: number;
+    geoEnabledMerchants: number;
+    totalUsers: number;
+    totalCatalogEntries: number;
+    totalActiveProducts: number;
+    totalOrders: number;
+    pendingDispatchedTraces: number;
+    disputedLedgers: number;
+    totalLeads: number;
+    convertedLeads: number;
+    pendingOutboxEvents: number;
+    deadLetterOutboxEvents: number;
+    smsSentCount: number;
+  } | null>(null);
+  const [managedAlarmCount, setManagedAlarmCount] = useState<number>(0);
   const [liveIncomingAlarms, setLiveIncomingAlarms] = useState<number>(0);
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [selectedPricingCatalogId, setSelectedPricingCatalogId] = useState<string | undefined>(
+    undefined
+  );
 
   const [catalogSearch, setCatalogSearch] = useState<string>('');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
@@ -184,51 +196,138 @@ export function SuperAdminDashboardLayout({
   const [showCategoryModal, setShowCategoryModal] = useState<boolean>(false);
   const [showProductModal, setShowProductModal] = useState<boolean>(false);
   const [modalError, setModalError] = useState<string | null>(null);
+  const [isSubmittingModal, setIsSubmittingModal] = useState<boolean>(false);
 
-  // Category Form State (hyphenated clean code, no underscores shown in UI)
-  const [newCategoryCode, setNewCategoryCode] = useState<string>('Vinywaji Baridi');
-  const [newCategoryNameSw, setNewCategoryNameSw] = useState<string>('Vinywaji Baridi');
-  const [newCategoryNameEn, setNewCategoryNameEn] = useState<string>('Cold Beverages');
-  const [newImagekitFolder, setNewImagekitFolder] = useState<string>(
-    '/sokokuutz/catalog/cold-beverages'
-  );
+  // Category Form State (empty defaults)
+  const [newCategoryCode, setNewCategoryCode] = useState<string>('');
+  const [newCategoryNameSw, setNewCategoryNameSw] = useState<string>('');
+  const [newCategoryNameEn, setNewCategoryNameEn] = useState<string>('');
+  const [newImagekitFolder, setNewImagekitFolder] = useState<string>('');
 
-  // Product Form State
-  const [newSku, setNewSku] = useState<string>('GC-AZM-JUICE');
-  const [newProductNameSw, setNewProductNameSw] = useState<string>(
-    'Juisi ya Embe ya Azam (Lita 1 Standard)'
-  );
-  const [newProductNameEn, setNewProductNameEn] = useState<string>(
-    'Azam Mango Juice (1L Standard)'
-  );
-  const [selectedCategoryCode, setSelectedCategoryCode] = useState<string>(
-    categories[0]?.categoryCode ?? 'NAFAKA_UNGA'
-  );
-  const [newImagekitUrlOverride, setNewImagekitUrlOverride] = useState<string>(
-    'https://ik.imagekit.io/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/cold-beverages/azam_mango_1l.webp'
-  );
+  // Product Form State (empty defaults)
+  const [newSku, setNewSku] = useState<string>('');
+  const [newProductNameSw, setNewProductNameSw] = useState<string>('');
+  const [newProductNameEn, setNewProductNameEn] = useState<string>('');
+  const [selectedCategoryCode, setSelectedCategoryCode] = useState<string>('');
+  const [newImagekitUrlOverride, setNewImagekitUrlOverride] = useState<string>('');
+
+  const loadAdminOverviewFromApi = useCallback(async () => {
+    try {
+      const [metricsRes, catRows, catalogRows, managedRes] = await Promise.all([
+        SokoApiClient.get<{
+          totalMerchants: number;
+          managedMerchants: number;
+          geoEnabledMerchants: number;
+          totalUsers: number;
+          totalCatalogEntries: number;
+          totalActiveProducts: number;
+          totalOrders: number;
+          pendingDispatchedTraces: number;
+          disputedLedgers: number;
+          totalLeads: number;
+          convertedLeads: number;
+          pendingOutboxEvents: number;
+          deadLetterOutboxEvents: number;
+          smsSentCount: number;
+        }>('/admin/metrics'),
+        SokoApiClient.get<
+          Array<{
+            id: string;
+            categoryCode: string;
+            nameSw: string;
+            nameEn: string;
+            imagekitFolderPath: string;
+            createdAt: string;
+          }>
+        >('/admin/marketplace/catalog/categories'),
+        SokoApiClient.get<
+          Array<{
+            id: string;
+            canonicalSku: string;
+            fixedNameSw: string;
+            fixedNameEn: string;
+            categoryCode: string;
+            imagekitCdnUrl: string;
+            staticImageUrl: string;
+            baseQuantumUnit: string;
+            clonedByStoresCount: number;
+            updatedAt: string;
+          }>
+        >('/marketplace/catalog'),
+        SokoApiClient.get<{
+          count: number;
+          traces: Array<{ helpdeskStatus: string }>;
+        }>('/admin/managed-orders?routingOutputCode=ROUTED_PLATFORM_MANAGED_HELPDESK'),
+      ]);
+
+      setPlatformMetrics(metricsRes);
+
+      const mappedCategories: CatalogCategoryRecord[] = (catRows || []).map((c) => ({
+        categoryId: c.id,
+        categoryCode: c.categoryCode,
+        nameSw: c.nameSw,
+        nameEn: c.nameEn,
+        imagekitFolderPath: c.imagekitFolderPath,
+        createdAtEat: new Date(c.createdAt).toLocaleDateString(),
+      }));
+      const categoryLabelMap = new Map(
+        mappedCategories.map((c) => [c.categoryCode, isSw ? c.nameSw : c.nameEn])
+      );
+
+      const mappedCatalog: GlobalCatalogEntry[] = (catalogRows || []).map((item) => ({
+        globalCatalogId: item.id,
+        canonicalSku: item.canonicalSku,
+        fixedNameSw: item.fixedNameSw,
+        fixedNameEn: item.fixedNameEn,
+        category: categoryLabelMap.get(item.categoryCode) ?? item.categoryCode,
+        categoryCode: item.categoryCode,
+        imagekitCdnUrl: item.imagekitCdnUrl,
+        staticImageUrl: item.staticImageUrl,
+        defaultBaseUnitSw: item.baseQuantumUnit || 'Quanta (Robo 250g/mL)',
+        defaultBaseUnitEn: item.baseQuantumUnit || 'Quanta (250g/mL Base)',
+        clonedByStoresCount: Number(item.clonedByStoresCount ?? 0),
+        updatedAtEat: new Date(item.updatedAt).toLocaleDateString(),
+      }));
+
+      setCategories(mappedCategories);
+      setCatalogEntries(mappedCatalog);
+      if (
+        mappedCategories.length > 0 &&
+        !mappedCategories.some((c) => c.categoryCode === selectedCategoryCode)
+      ) {
+        setSelectedCategoryCode(mappedCategories[0].categoryCode);
+      }
+      const traces = managedRes?.traces ?? [];
+      setManagedAlarmCount(traces.length);
+      setLiveIncomingAlarms(traces.filter((t) => t.helpdeskStatus === 'OPEN').length);
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setPlatformMetrics(null);
+        setCatalogEntries([]);
+        setCategories([]);
+        setManagedAlarmCount(0);
+        setLiveIncomingAlarms(0);
+      }
+    }
+  }, [isSw, selectedCategoryCode]);
 
   useEffect(() => {
-    const refreshCatalog = () => setCatalogEntries(loadGlobalCatalogEntries());
-    const refreshOrderCounts = () => {
-      const managed = loadDispatchAuditTraces().filter(
-        (tr) => tr.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK'
-      );
-      setManagedAlarmCount(managed.length);
-      setLiveIncomingAlarms(managed.filter((tr) => (tr.adminStatus ?? 'PENDING') === 'PENDING').length);
-    };
+    void loadAdminOverviewFromApi();
 
+    const handleRefresh = () => {
+      void loadAdminOverviewFromApi();
+    };
     const handleLiveAlert = (evt: Event) => {
       const detail = (evt as CustomEvent<OrderDispatchAuditTrace>).detail;
       if (detail?.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK') {
-        refreshOrderCounts();
+        void loadAdminOverviewFromApi();
       }
     };
 
-    window.addEventListener('sokokuu:catalog-updated', refreshCatalog);
-    window.addEventListener('sokokuu:orders-updated', refreshOrderCounts);
-    window.addEventListener('storage', refreshCatalog);
-    window.addEventListener('storage', refreshOrderCounts);
+    window.addEventListener('sokokuu:catalog-updated', handleRefresh);
+    window.addEventListener('sokokuu:orders-updated', handleRefresh);
     window.addEventListener('sokokuu:managed-order-alert', handleLiveAlert);
 
     let channel: BroadcastChannel | null = null;
@@ -238,7 +337,7 @@ export function SuperAdminDashboardLayout({
         channel.onmessage = (msg) => {
           const payload = msg.data as OrderDispatchAuditTrace | undefined;
           if (payload?.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK') {
-            refreshOrderCounts();
+            void loadAdminOverviewFromApi();
           }
         };
       } catch {
@@ -247,14 +346,12 @@ export function SuperAdminDashboardLayout({
     }
 
     return () => {
-      window.removeEventListener('sokokuu:catalog-updated', refreshCatalog);
-      window.removeEventListener('sokokuu:orders-updated', refreshOrderCounts);
-      window.removeEventListener('storage', refreshCatalog);
-      window.removeEventListener('storage', refreshOrderCounts);
+      window.removeEventListener('sokokuu:catalog-updated', handleRefresh);
+      window.removeEventListener('sokokuu:orders-updated', handleRefresh);
       window.removeEventListener('sokokuu:managed-order-alert', handleLiveAlert);
       channel?.close();
     };
-  }, []);
+  }, [loadAdminOverviewFromApi]);
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -303,17 +400,12 @@ export function SuperAdminDashboardLayout({
     return matchesCategory && matchesSearch;
   });
 
-  const handleSimulateAtomicClone = (entry: GlobalCatalogEntry) => {
-    const updated = incrementCatalogCloneCounter(entry.globalCatalogId);
-    setCatalogEntries(updated);
-    setAdminToast(
-      isSw
-        ? `${entry.canonicalSku} -> Inatumiwa na Wafanyabiashara: ${entry.clonedByStoresCount + 1} (Hifadhidata ya SokoKuu imesasishwa).`
-        : `${entry.canonicalSku} -> Cloned by Merchants: ${entry.clonedByStoresCount + 1} (Cloud Database Core updated).`
-    );
+  const handleInspectUnitsAndPrices = (entry: GlobalCatalogEntry) => {
+    setSelectedPricingCatalogId(entry.globalCatalogId);
+    setActiveSection('units');
   };
 
-  const handleCreateCategory = (e: React.FormEvent) => {
+  const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     setModalError(null);
     const cleanCode = newCategoryCode
@@ -326,47 +418,59 @@ export function SuperAdminDashboardLayout({
       return;
     }
 
-    if (categories.some((c) => c.categoryCode === cleanCode)) {
-      setModalError(
-        isSw
-          ? `HTTP 409 CONFLICT: Kategoria "${cleanCode}" tayari ipo.`
-          : `HTTP 409 CONFLICT: Category code "${cleanCode}" already exists.`
-      );
-      return;
-    }
-
     const cleanFolder = newImagekitFolder.trim().startsWith('/')
       ? newImagekitFolder.trim()
       : `/${newImagekitFolder.trim()}`;
 
-    const record: CatalogCategoryRecord = {
-      categoryId: 'cat-' + Math.random().toString(36).substring(2, 7),
-      categoryCode: cleanCode,
-      nameSw: newCategoryNameSw.trim(),
-      nameEn: newCategoryNameEn.trim(),
-      imagekitFolderPath: cleanFolder,
-      createdAtEat: new Date().toLocaleTimeString(),
-    };
+    setIsSubmittingModal(true);
+    try {
+      await SokoApiClient.post('/admin/marketplace/catalog/categories', {
+        categoryCode: cleanCode,
+        nameSw: newCategoryNameSw.trim(),
+        nameEn: newCategoryNameEn.trim(),
+        imagekitFolderPath: cleanFolder,
+      });
 
-    const next = addCatalogCategory(record);
-    setCategories(next);
-    setSelectedCategoryCode(cleanCode);
-    setShowCategoryModal(false);
-    setAdminToast(
-      isSw
-        ? `Kategoria "${record.nameSw}" imehifadhiwa kwenye Hifadhidata ya SokoKuu.`
-        : `Category "${record.nameEn}" committed to SokoKuu Cloud SQL Cluster.`
-    );
+      await loadAdminOverviewFromApi();
+      setSelectedCategoryCode(cleanCode);
+      setNewCategoryCode('');
+      setNewCategoryNameSw('');
+      setNewCategoryNameEn('');
+      setNewImagekitFolder('');
+      setShowCategoryModal(false);
+      setAdminToast(
+        isSw
+          ? `Kategoria "${newCategoryNameSw.trim()}" imehifadhiwa kwenye PostgreSQL.`
+          : `Category "${newCategoryNameEn.trim()}" persisted to PostgreSQL.`
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setModalError(
+          'Backend Offline — Connect to NestJS API (/api/v1/admin/marketplace/catalog/categories).'
+        );
+      } else {
+        setModalError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to create catalog category.'
+        );
+      }
+    } finally {
+      setIsSubmittingModal(false);
+    }
   };
 
-  const handleIngestCatalogProduct = (e: React.FormEvent) => {
+  const handleIngestCatalogProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setModalError(null);
     const sku = newSku.trim().toUpperCase();
     const cdnUrl = newImagekitUrlOverride.trim();
 
-    if (!sku || !newProductNameSw.trim() || !newProductNameEn.trim()) {
-      setModalError(isSw ? 'Jaza SKU na majina rasmi.' : 'SKU and canonical names are required.');
+    if (!sku || !newProductNameSw.trim() || !newProductNameEn.trim() || !selectedCategoryCode) {
+      setModalError(
+        isSw ? 'Jaza SKU, kategoria, na majina rasmi.' : 'SKU, category, and canonical names are required.'
+      );
       return;
     }
 
@@ -379,45 +483,44 @@ export function SuperAdminDashboardLayout({
       return;
     }
 
-    if (catalogEntries.some((item) => item.canonicalSku === sku)) {
-      setModalError(
+    setIsSubmittingModal(true);
+    try {
+      await SokoApiClient.post('/admin/marketplace/catalog/add-item', {
+        canonicalSku: sku,
+        fixedNameSw: newProductNameSw.trim(),
+        fixedNameEn: newProductNameEn.trim(),
+        categoryCode: selectedCategoryCode,
+        imagekitCdnUrl: cdnUrl,
+      });
+
+      await loadAdminOverviewFromApi();
+      setShowProductModal(false);
+      setNewSku('');
+      setNewProductNameSw('');
+      setNewProductNameEn('');
+      setNewImagekitUrlOverride('');
+      setAdminToast(
         isSw
-          ? `HTTP 409 CONFLICT (SERIALIZABLE): SKU "${sku}" tayari ipo.`
-          : `HTTP 409 CONFLICT (SERIALIZABLE): Canonical SKU "${sku}" already exists.`
+          ? `${sku} imeongezwa (/api/v1/admin/marketplace/catalog/add-item) -> PostgreSQL.`
+          : `${sku} added via /api/v1/admin/marketplace/catalog/add-item -> PostgreSQL.`
       );
-      return;
+      setActiveSection('catalog');
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setModalError(
+          'Backend Offline — Connect to NestJS API (/api/v1/admin/marketplace/catalog/add-item).'
+        );
+      } else {
+        setModalError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to ingest catalog item.'
+        );
+      }
+    } finally {
+      setIsSubmittingModal(false);
     }
-
-    const targetCategory =
-      categories.find((c) => c.categoryCode === selectedCategoryCode) ?? categories[0];
-
-    const created: GlobalCatalogEntry = {
-      globalCatalogId: 'gc-' + Math.random().toString(36).substring(2, 9),
-      canonicalSku: sku,
-      fixedNameSw: newProductNameSw.trim(),
-      fixedNameEn: newProductNameEn.trim(),
-      category: targetCategory ? (isSw ? targetCategory.nameSw : targetCategory.nameEn) : 'General',
-      categoryCode: targetCategory?.categoryCode ?? 'GENERAL',
-      imagekitCdnUrl: cdnUrl,
-      staticImageUrl: FALLBACK_SVG_PLACEHOLDER,
-      defaultBaseUnitSw: 'Quanta (Robo 250g/mL)',
-      defaultBaseUnitEn: 'Quanta (250g/mL Base)',
-      clonedByStoresCount: 0,
-      updatedAtEat: new Date().toLocaleTimeString(),
-    };
-
-    const next = addGlobalCatalogEntry(created);
-    setCatalogEntries(next);
-    setShowProductModal(false);
-    setNewSku('GC-' + Math.random().toString(36).substring(2, 6).toUpperCase());
-    setNewProductNameSw('');
-    setNewProductNameEn('');
-    setAdminToast(
-      isSw
-        ? `${sku} imeongezwa (/api/v1/admin/marketplace/catalog/add-item) -> Hifadhidata ya SokoKuu.`
-        : `${sku} added via /api/v1/admin/marketplace/catalog/add-item -> Cloud Database Core.`
-    );
-    setActiveSection('catalog');
   };
 
   const navItems: Array<{
@@ -430,10 +533,10 @@ export function SuperAdminDashboardLayout({
   }> = [
     {
       key: 'metrics',
-      labelSw: 'Vipimo vya Mfumo & HikariCP',
-      labelEn: 'System Metrics & HikariCP',
-      metaSw: 'Serverless SQL Cluster',
-      metaEn: 'Serverless Database Engine',
+      labelSw: 'Vipimo vya Mfumo (PostgreSQL)',
+      labelEn: 'System Metrics (PostgreSQL)',
+      metaSw: 'Live DB Telemetry',
+      metaEn: 'Live PostgreSQL Counts',
       icon: Activity,
     },
     {
@@ -669,33 +772,48 @@ export function SuperAdminDashboardLayout({
           </div>
         )}
 
-        {/* VIEW 1: SYSTEM METRICS & HIKARICP */}
+        {backendOffline && (
+          <BackendOfflineBanner
+            locale={locale}
+            onRetry={() => void loadAdminOverviewFromApi()}
+          />
+        )}
+
+        {/* VIEW 1: SYSTEM METRICS (LIVE POSTGRESQL COUNTS) */}
         {activeSection === 'metrics' && (
           <div className="space-y-5">
             <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 bg-white border border-slate-100 rounded-lg shadow-sm divide-y sm:divide-y-0 sm:divide-x divide-slate-100">
               <div className="p-4 space-y-1">
                 <div className="text-xs text-slate-500">
-                  {isSw ? 'Injini ya Hifadhidata' : 'Serverless Database Engine'}
+                  {isSw ? 'Wafanyabiashara (Merchants)' : 'Verified Merchants'}
                 </div>
                 <div className="text-xl font-bold font-mono tabular-nums text-emerald-600">
-                  TLS 1.3 · OK
+                  {platformMetrics ? platformMetrics.totalMerchants.toLocaleString('en-US') : '—'}
                 </div>
                 <div className="text-xs font-mono text-slate-500">
-                  SokoKuu Cloud SQL Cluster
-                </div>
-              </div>
-              <div className="p-4 space-y-1">
-                <div className="text-xs text-slate-500">HikariPool Active / Max</div>
-                <div className="text-xl font-bold font-mono tabular-nums text-slate-900">
-                  6 / 32
-                </div>
-                <div className="text-xs font-mono text-slate-500">
-                  SERIALIZABLE · 5s Tx Guard
+                  {platformMetrics
+                    ? `${platformMetrics.managedMerchants} Helpdesk · ${platformMetrics.geoEnabledMerchants} GIS`
+                    : 'PostgreSQL /api/v1/admin/metrics'}
                 </div>
               </div>
               <div className="p-4 space-y-1">
                 <div className="text-xs text-slate-500">
-                  {isSw ? 'Kengele za Oda (STOMP)' : 'STOMP Live Alarms'}
+                  {isSw ? 'Oda & Bidhaa Hai' : 'Orders & Active SKUs'}
+                </div>
+                <div className="text-xl font-bold font-mono tabular-nums text-slate-900">
+                  {platformMetrics
+                    ? `${platformMetrics.totalOrders.toLocaleString('en-US')} / ${platformMetrics.totalActiveProducts.toLocaleString('en-US')}`
+                    : '—'}
+                </div>
+                <div className="text-xs font-mono text-slate-500">
+                  {platformMetrics
+                    ? `${platformMetrics.totalUsers} Users · ${platformMetrics.convertedLeads}/${platformMetrics.totalLeads} Leads`
+                    : 'PostgreSQL Live Counts'}
+                </div>
+              </div>
+              <div className="p-4 space-y-1">
+                <div className="text-xs text-slate-500">
+                  {isSw ? 'Kengele za Oda & Outbox' : 'STOMP Alarms & Outbox'}
                 </div>
                 <div className="text-xl font-bold font-mono tabular-nums text-emerald-600">
                   {managedAlarmCount}{' '}
@@ -704,18 +822,22 @@ export function SuperAdminDashboardLayout({
                   )}
                 </div>
                 <div className="text-xs font-mono text-slate-500">
-                  /topic/admin/managed-alerts
+                  {platformMetrics
+                    ? `Outbox: ${platformMetrics.pendingOutboxEvents} pending · ${platformMetrics.deadLetterOutboxEvents} DLQ`
+                    : '/topic/admin/managed-alerts'}
                 </div>
               </div>
               <div className="p-4 space-y-1">
                 <div className="text-xs text-slate-500">
-                  {isSw ? 'Matumizi ya Katalogi' : 'Global Catalog Adoptions'}
+                  {isSw ? 'Matumizi ya Katalogi & SMS' : 'Catalog Adoptions & SMS'}
                 </div>
                 <div className="text-xl font-bold font-mono tabular-nums text-slate-900">
                   {totalStoreAdoptions.toLocaleString('en-US')}
                 </div>
                 <div className="text-xs font-mono text-slate-500">
-                  Inatumiwa na Wafanyabiashara: {totalStoreAdoptions}
+                  {platformMetrics
+                    ? `SMS: ${platformMetrics.smsSentCount} · Disputes: ${platformMetrics.disputedLedgers}`
+                    : `Wafanyabiashara: ${totalStoreAdoptions}`}
                 </div>
               </div>
             </section>
@@ -782,9 +904,13 @@ export function SuperAdminDashboardLayout({
             </div>
 
             {filteredCatalog.length === 0 ? (
-              <div className="py-10 text-center text-xs text-slate-500">
-                {isSw ? 'Hakuna bidhaa zilizopatikana.' : 'No matching catalog entries.'}
-              </div>
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Hakuna bidhaa kwenye Global Catalog"
+                titleEn="No catalog items yet"
+                descriptionSw="Ongeza bidhaa kuu au hakikisha hifadhidata ya PostgreSQL ina rekodi."
+                descriptionEn="Add a canonical SKU or check PostgreSQL catalog records."
+              />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
@@ -845,11 +971,11 @@ export function SuperAdminDashboardLayout({
                         <td className="py-2.5 px-3 text-right whitespace-nowrap">
                           <button
                             type="button"
-                            onClick={() => handleSimulateAtomicClone(entry)}
+                            onClick={() => handleInspectUnitsAndPrices(entry)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-900 text-xs font-semibold transition-colors cursor-pointer"
                           >
-                            <Copy className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                            <span>+1 Clone</span>
+                            <Scale className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                            <span>{isSw ? 'Vipimo & Bei' : 'Units & Pricing'}</span>
                           </button>
                         </td>
                       </tr>
@@ -881,46 +1007,61 @@ export function SuperAdminDashboardLayout({
               </button>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-semibold">
-                    <th className="py-2.5 px-3">Code</th>
-                    <th className="py-2.5 px-3">{isSw ? 'Jina (SW)' : 'Swahili Name'}</th>
-                    <th className="py-2.5 px-3">{isSw ? 'Jina (EN)' : 'English Name'}</th>
-                    <th className="py-2.5 px-3">ImageKit Folder</th>
-                    <th className="py-2.5 px-3 text-right">{isSw ? 'Bidhaa' : 'SKUs'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {categories.map((cat) => {
-                    const skuCount = catalogEntries.filter(
-                      (e) => e.categoryCode === cat.categoryCode
-                    ).length;
-                    return (
-                      <tr key={cat.categoryId} className="hover:bg-slate-50/70">
-                        <td className="py-2.5 px-3 font-medium text-slate-900">
-                          {formatCodeWithoutUnderscores(cat.categoryCode)}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-800 font-medium">{cat.nameSw}</td>
-                        <td className="py-2.5 px-3 text-slate-600">{cat.nameEn}</td>
-                        <td className="py-2.5 px-3 font-mono text-emerald-700">
-                          {cat.imagekitFolderPath}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 tabular-nums">
-                          {skuCount}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            {categories.length === 0 ? (
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Hakuna kategoria bado"
+                titleEn="No categories registered yet"
+                descriptionSw="Sajili kategoria ya ImageKit kuhifadhi bidhaa kwenye PostgreSQL."
+                descriptionEn="Register a catalog category in PostgreSQL to organize SKUs."
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-semibold">
+                      <th className="py-2.5 px-3">Code</th>
+                      <th className="py-2.5 px-3">{isSw ? 'Jina (SW)' : 'Swahili Name'}</th>
+                      <th className="py-2.5 px-3">{isSw ? 'Jina (EN)' : 'English Name'}</th>
+                      <th className="py-2.5 px-3">ImageKit Folder</th>
+                      <th className="py-2.5 px-3 text-right">{isSw ? 'Bidhaa' : 'SKUs'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {categories.map((cat) => {
+                      const skuCount = catalogEntries.filter(
+                        (e) => e.categoryCode === cat.categoryCode
+                      ).length;
+                      return (
+                        <tr key={cat.categoryId} className="hover:bg-slate-50/70">
+                          <td className="py-2.5 px-3 font-medium text-slate-900">
+                            {formatCodeWithoutUnderscores(cat.categoryCode)}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-800 font-medium">{cat.nameSw}</td>
+                          <td className="py-2.5 px-3 text-slate-600">{cat.nameEn}</td>
+                          <td className="py-2.5 px-3 font-mono text-emerald-700">
+                            {cat.imagekitFolderPath}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 tabular-nums">
+                            {skuCount}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         )}
 
         {/* VIEW 4A: CENTRALIZED UNITS & STANDARD PRICING ENGINE */}
-        {activeSection === 'units' && <AdminUnitsAndPricingPanel locale={locale} />}
+        {activeSection === 'units' && (
+          <AdminUnitsAndPricingPanel
+            locale={locale}
+            initialCatalogId={selectedPricingCatalogId}
+          />
+        )}
 
         {/* VIEW 5: ARCHITECTURE VAULT */}
         {activeSection === 'vault' && (
@@ -1011,6 +1152,7 @@ export function SuperAdminDashboardLayout({
                     type="text"
                     value={newCategoryCode}
                     onChange={(e) => setNewCategoryCode(e.target.value)}
+                    placeholder="NAFAKA_UNGA"
                     className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-900"
                     required
                   />
@@ -1021,6 +1163,7 @@ export function SuperAdminDashboardLayout({
                     type="text"
                     value={newImagekitFolder}
                     onChange={(e) => setNewImagekitFolder(e.target.value)}
+                    placeholder="/sokokuutz/catalog/..."
                     className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-900"
                     required
                   />
@@ -1036,6 +1179,7 @@ export function SuperAdminDashboardLayout({
                     type="text"
                     value={newCategoryNameSw}
                     onChange={(e) => setNewCategoryNameSw(e.target.value)}
+                    placeholder={isSw ? 'Jina la Kiswahili' : 'Swahili name'}
                     className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
                     required
                   />
@@ -1048,6 +1192,7 @@ export function SuperAdminDashboardLayout({
                     type="text"
                     value={newCategoryNameEn}
                     onChange={(e) => setNewCategoryNameEn(e.target.value)}
+                    placeholder={isSw ? 'Jina la Kiingereza' : 'English name'}
                     className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
                     required
                   />
@@ -1064,7 +1209,8 @@ export function SuperAdminDashboardLayout({
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+                  disabled={isSubmittingModal}
+                  className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
                 >
                   {isSw ? 'Hifadhi Kategoria' : 'Save Category'}
                 </button>
@@ -1115,6 +1261,7 @@ export function SuperAdminDashboardLayout({
                     type="text"
                     value={newSku}
                     onChange={(e) => setNewSku(e.target.value)}
+                    placeholder="GC-SKU-001"
                     className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-900"
                     required
                   />
@@ -1145,6 +1292,7 @@ export function SuperAdminDashboardLayout({
                   type="text"
                   value={newProductNameSw}
                   onChange={(e) => setNewProductNameSw(e.target.value)}
+                  placeholder={isSw ? 'Jina la bidhaa kwa Kiswahili' : 'Product name in Swahili'}
                   className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
                   required
                 />
@@ -1158,6 +1306,7 @@ export function SuperAdminDashboardLayout({
                   type="text"
                   value={newProductNameEn}
                   onChange={(e) => setNewProductNameEn(e.target.value)}
+                  placeholder={isSw ? 'Jina la bidhaa kwa Kiingereza' : 'Product name in English'}
                   className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
                   required
                 />
@@ -1194,7 +1343,8 @@ export function SuperAdminDashboardLayout({
                 </button>
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
+                  disabled={isSubmittingModal}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
                 >
                   <PackagePlus className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>{isSw ? 'Sajili Bidhaa' : 'Add Item'}</span>

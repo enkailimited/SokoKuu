@@ -76,6 +76,13 @@ export class CentralizedUnitsPricingController {
     return this.service.listProductUnits(globalCatalogId);
   }
 
+  @Get('admin/pricing/profiles')
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER)
+  @ApiOperation({ summary: 'List active standard pricing profiles' })
+  listProfiles() {
+    return this.service.listPricingProfiles();
+  }
+
   @Post('admin/pricing/profiles')
   @Roles(Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Create a standard pricing profile (RETAIL, WHOLESALE, REGIONAL, PROMOTIONAL)' })

@@ -23,7 +23,7 @@ export class DispatchController {
 
   @Post('orders/:orderId/dispatch')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.DRIVER, Role.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Transition PLACED order to DISPATCHED and allocate salted Argon2id Buyer & Driver PINs',
   })

@@ -1,26 +1,62 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   BellRing,
   CheckCircle2,
   ClipboardCheck,
   Lock,
   PhoneCall,
   Radio,
+  RefreshCw,
   Volume2,
   VolumeX,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
   ADMIN_ALERT_CHANNEL_NAME,
-  appendIncomingManagedOrder,
   formatRoutingLabel,
-  loadDispatchAuditTraces,
-  updateAdminManagedOrderStatus,
   type AdminManagedOrderStatus,
   type OrderDispatchAuditTrace,
 } from '../lib/sokoManagedState';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
 type OrderFilterTab = 'ALL' | AdminManagedOrderStatus;
+
+interface BackendManagedTrace {
+  traceId: string;
+  orderId: string;
+  orderRef8: string;
+  sellerBusinessId: string;
+  merchantName: string;
+  merchantShortCode?: string;
+  isPlatformManagedSnapshot: boolean;
+  routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
+  targetPipeline: string;
+  txIsolationLevel?: string;
+  helpdeskStatus: 'OPEN' | 'IN_REVIEW' | 'RESOLVED' | 'ESCALATED' | 'DIRECT_MERCHANT';
+  handledNotes?: string | null;
+  handledAt?: string | null;
+  recordedAt: string;
+  orderStatus?: string;
+  expectedTotalTzs: number;
+}
+
+function mapHelpdeskStatusToUi(status: BackendManagedTrace['helpdeskStatus']): AdminManagedOrderStatus {
+  if (status === 'IN_REVIEW') return 'RECEIVED';
+  if (status === 'RESOLVED' || status === 'ESCALATED') return 'DISPATCHED';
+  return 'PENDING';
+}
+
+function mapUiStatusToBackend(status: AdminManagedOrderStatus): 'OPEN' | 'IN_REVIEW' | 'RESOLVED' {
+  if (status === 'RECEIVED') return 'IN_REVIEW';
+  if (status === 'DISPATCHED') return 'RESOLVED';
+  return 'OPEN';
+}
 
 function getEffectiveStatus(order: OrderDispatchAuditTrace): AdminManagedOrderStatus {
   return order.adminStatus ?? 'PENDING';
@@ -44,18 +80,64 @@ export function AdminAlertTerminal({
     'CONNECTING'
   );
   const [statusFilter, setStatusFilter] = useState<OrderFilterTab>('ALL');
-  const [liveOrders, setLiveOrders] = useState<OrderDispatchAuditTrace[]>(() =>
-    loadDispatchAuditTraces().filter((t) => t.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK')
-  );
+  const [liveOrders, setLiveOrders] = useState<OrderDispatchAuditTrace[]>([]);
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [busyTraceId, setBusyTraceId] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ringIntervalRef = useRef<number | null>(null);
 
-  const refreshLiveOrders = useCallback(() => {
-    setLiveOrders(
-      loadDispatchAuditTraces().filter((t) => t.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK')
-    );
-  }, []);
+  const refreshLiveOrders = useCallback(async () => {
+    setIsLoading(true);
+    setErrorBanner(null);
+    try {
+      const res = await SokoApiClient.get<{
+        count: number;
+        traces: BackendManagedTrace[];
+      }>('/admin/managed-orders?routingOutputCode=ROUTED_PLATFORM_MANAGED_HELPDESK');
+
+      const mapped: OrderDispatchAuditTrace[] = (res.traces || []).map((t) => ({
+        traceId: t.traceId,
+        orderRef8: t.orderRef8,
+        sellerBusinessId: t.sellerBusinessId,
+        sellerBusinessName: t.merchantName,
+        isPlatformManagedAtSubmit: t.isPlatformManagedSnapshot,
+        routingCode: t.routingOutputCode,
+        targetPipeline: 'SUPER_ADMIN_HELPDESK_PIPELINE',
+        isolationLevel: 'REPEATABLE_READ',
+        totalCashDueTzs: t.expectedTotalTzs,
+        itemsSummary:
+          t.handledNotes ||
+          (isSw
+            ? `Oda #${t.orderRef8} · Hali: ${t.orderStatus ?? t.helpdeskStatus}`
+            : `Order #${t.orderRef8} · Status: ${t.orderStatus ?? t.helpdeskStatus}`),
+        recordedAtEat: new Date(t.recordedAt).toLocaleTimeString(),
+        adminStatus: mapHelpdeskStatusToUi(t.helpdeskStatus),
+        adminHandledAtEat: t.handledAt ? new Date(t.handledAt).toLocaleTimeString() : undefined,
+      }));
+      setLiveOrders(mapped);
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setLiveOrders([]);
+      } else {
+        setErrorBanner(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to load managed orders queue.'
+        );
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isSw]);
+
+  useEffect(() => {
+    void refreshLiveOrders();
+  }, [refreshLiveOrders]);
 
   const playChimeOnce = useCallback(() => {
     if (audioMuted || typeof window === 'undefined') return;
@@ -101,17 +183,10 @@ export function AdminAlertTerminal({
   const incomingAlertHandler = useCallback(
     (payload: OrderDispatchAuditTrace) => {
       if (payload.routingCode !== 'ROUTED_PLATFORM_MANAGED_HELPDESK') return;
-
-      const updated = appendIncomingManagedOrder({
-        ...payload,
-        adminStatus: payload.adminStatus ?? 'PENDING',
-      });
-      setLiveOrders(
-        updated.filter((t) => t.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK')
-      );
+      void refreshLiveOrders();
       playChimeOnce();
     },
-    [playChimeOnce]
+    [playChimeOnce, refreshLiveOrders]
   );
 
   const pendingCount = liveOrders.filter((o) => getEffectiveStatus(o) === 'PENDING').length;
@@ -146,10 +221,12 @@ export function AdminAlertTerminal({
       const detail = (evt as CustomEvent<OrderDispatchAuditTrace>).detail;
       if (detail) incomingAlertHandler(detail);
     };
+    const handleOrdersUpdated = () => {
+      void refreshLiveOrders();
+    };
 
     window.addEventListener('sokokuu:managed-order-alert', handleCustomEvent);
-    window.addEventListener('sokokuu:orders-updated', refreshLiveOrders);
-    window.addEventListener('storage', refreshLiveOrders);
+    window.addEventListener('sokokuu:orders-updated', handleOrdersUpdated);
 
     let bc: BroadcastChannel | null = null;
     if ('BroadcastChannel' in window) {
@@ -215,8 +292,7 @@ export function AdminAlertTerminal({
     return () => {
       isDisposed = true;
       window.removeEventListener('sokokuu:managed-order-alert', handleCustomEvent);
-      window.removeEventListener('sokokuu:orders-updated', refreshLiveOrders);
-      window.removeEventListener('storage', refreshLiveOrders);
+      window.removeEventListener('sokokuu:orders-updated', handleOrdersUpdated);
       bc?.close();
       if (socket && socket.readyState === WebSocket.OPEN) {
         try {
@@ -229,31 +305,37 @@ export function AdminAlertTerminal({
     };
   }, [stompEndpointUrl, incomingAlertHandler, refreshLiveOrders]);
 
-  const handleUpdateOrderStatus = (traceId: string, nextStatus: AdminManagedOrderStatus) => {
-    const updated = updateAdminManagedOrderStatus(traceId, nextStatus);
-    setLiveOrders(
-      updated.filter((t) => t.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK')
-    );
-  };
-
-  const handleSimulateLiveOrder = () => {
-    setAudioMuted(false);
-    playChimeOnce();
-    const demoAlert: OrderDispatchAuditTrace = {
-      traceId: 'TRC-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
-      orderRef8: 'SK' + Math.random().toString(36).substring(2, 8).toUpperCase(),
-      sellerBusinessId: '11111111-aaaa-4111-8111-000000000001',
-      sellerBusinessName: 'Mo Wholesale Hub',
-      isPlatformManagedAtSubmit: true,
-      routingCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK',
-      targetPipeline: 'SUPER_ADMIN_HELPDESK_PIPELINE',
-      isolationLevel: 'REPEATABLE_READ',
-      totalCashDueTzs: 74500,
-      itemsSummary: 'Unga wa Ngano Azania (24 Quanta) + Mafuta ya Korie (12 Quanta)',
-      recordedAtEat: new Date().toLocaleTimeString(),
-      adminStatus: 'PENDING',
-    };
-    incomingAlertHandler(demoAlert);
+  const handleUpdateOrderStatus = async (traceId: string, nextStatus: AdminManagedOrderStatus) => {
+    setErrorBanner(null);
+    setBusyTraceId(traceId);
+    try {
+      const backendStatus = mapUiStatusToBackend(nextStatus);
+      await SokoApiClient.patch(`/admin/managed-orders/${traceId}/status`, {
+        helpdeskStatus: backendStatus,
+        notes:
+          nextStatus === 'RECEIVED'
+            ? isSw
+              ? 'Imepokelewa na Admin Helpdesk'
+              : 'Received by Super Admin Helpdesk'
+            : isSw
+              ? 'Imekamilishwa na kutumwa kwa uthibitisho'
+              : 'Helpdesk dispatch completed',
+      });
+      await refreshLiveOrders();
+      window.dispatchEvent(new CustomEvent('sokokuu:orders-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorBanner(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to update managed order status.'
+        );
+      }
+    } finally {
+      setBusyTraceId(null);
+    }
   };
 
   const visibleOrders = liveOrders.filter((order) => {
@@ -267,6 +349,32 @@ export function AdminAlertTerminal({
         pendingCount > 0 ? 'border-amber-400 ring-1 ring-amber-200' : 'border-slate-100'
       }`}
     >
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          onRetry={() => void refreshLiveOrders()}
+          retrying={isLoading}
+        />
+      )}
+      {errorBanner && (
+        <div
+          role="alert"
+          className="border border-red-200 bg-red-50 rounded-lg px-4 py-2.5 flex items-center justify-between gap-3 text-xs font-semibold text-red-900"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" aria-hidden="true" />
+            <span>{errorBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorBanner(null)}
+            className="text-red-800 hover:text-red-950 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
         <div className="space-y-0.5">
@@ -287,8 +395,8 @@ export function AdminAlertTerminal({
             <Lock className="w-3 h-3 text-emerald-600 shrink-0" aria-hidden="true" />
             <span>
               {isSw
-                ? 'Oda kutoka maduka yanayosimamiwa na jukwaa hupokelewa na kukamilishwa hapa na Super Admin pekee.'
-                : 'Incoming orders for platform-managed shops are received and fulfilled strictly by Super Admins.'}
+                ? 'Oda kutoka wafanyabiashara wanaosimamiwa na jukwaa hupokelewa na kukamilishwa hapa na Super Admin pekee.'
+                : 'Incoming orders for platform-managed Merchants are received and fulfilled strictly by Super Admins.'}
             </span>
           </p>
         </div>
@@ -323,11 +431,12 @@ export function AdminAlertTerminal({
 
           <button
             type="button"
-            onClick={handleSimulateLiveOrder}
+            onClick={() => void refreshLiveOrders()}
+            disabled={isLoading}
             className="min-h-[36px] px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
           >
-            <BellRing className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{isSw ? 'Jaribu Oda Mpya' : 'Test Live Order'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            <span>{isSw ? 'Sasisha Foleni' : 'Sync Queue'}</span>
           </button>
         </div>
       </div>
@@ -338,9 +447,9 @@ export function AdminAlertTerminal({
           {(
             [
               { key: 'ALL', labelSw: `Zote (${liveOrders.length})`, labelEn: `All (${liveOrders.length})` },
-              { key: 'PENDING', labelSw: `Zinazosubiri (${pendingCount})`, labelEn: `Pending (${pendingCount})` },
-              { key: 'RECEIVED', labelSw: `Zimepokelewa (${receivedCount})`, labelEn: `Received (${receivedCount})` },
-              { key: 'DISPATCHED', labelSw: `Zimekamilika (${dispatchedCount})`, labelEn: `Dispatched (${dispatchedCount})` },
+              { key: 'PENDING', labelSw: `Zinazosubiri (${pendingCount})`, labelEn: `Open (${pendingCount})` },
+              { key: 'RECEIVED', labelSw: `Zimepokelewa (${receivedCount})`, labelEn: `In Review (${receivedCount})` },
+              { key: 'DISPATCHED', labelSw: `Zimekamilika (${dispatchedCount})`, labelEn: `Resolved (${dispatchedCount})` },
             ] as const
           ).map((tab) => {
             const active = statusFilter === tab.key;
@@ -381,12 +490,18 @@ export function AdminAlertTerminal({
 
       {/* Admin-Only Live Orders Queue */}
       <div className="space-y-2.5">
-        {visibleOrders.length === 0 ? (
+        {isLoading && liveOrders.length === 0 ? (
           <div className="py-10 text-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-lg">
-            {isSw
-              ? 'Hakuna oda za moja kwa moja katika kundi hili.'
-              : 'No live admin-managed orders in this queue.'}
+            {isSw ? 'Inapakia oda za Helpdesk...' : 'Loading managed helpdesk orders...'}
           </div>
+        ) : visibleOrders.length === 0 ? (
+          <EmptyStateCard
+            locale={locale}
+            titleSw="Hakuna oda za msaada kwa sasa"
+            titleEn="No live admin-managed orders"
+            descriptionSw="Oda mpya zinazoelekezwa kwa Dawati la Admin zitaonekana hapa moja kwa moja."
+            descriptionEn="Incoming managed Merchant orders from PostgreSQL will appear here in real time."
+          />
         ) : (
           visibleOrders.map((order) => {
             const status = getEffectiveStatus(order);
@@ -426,8 +541,9 @@ export function AdminAlertTerminal({
                   {status === 'PENDING' && (
                     <button
                       type="button"
-                      onClick={() => handleUpdateOrderStatus(order.traceId, 'RECEIVED')}
-                      className="min-h-[38px] px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                      disabled={busyTraceId === order.traceId}
+                      onClick={() => void handleUpdateOrderStatus(order.traceId, 'RECEIVED')}
+                      className="min-h-[38px] px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <ClipboardCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
                       <span>{isSw ? 'Pokea Oda' : 'Receive Order'}</span>
@@ -437,8 +553,9 @@ export function AdminAlertTerminal({
                   {status === 'RECEIVED' && (
                     <button
                       type="button"
-                      onClick={() => handleUpdateOrderStatus(order.traceId, 'DISPATCHED')}
-                      className="min-h-[38px] px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                      disabled={busyTraceId === order.traceId}
+                      onClick={() => void handleUpdateOrderStatus(order.traceId, 'DISPATCHED')}
+                      className="min-h-[38px] px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <PhoneCall className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>{isSw ? 'Kamilisha Simu' : 'Complete Dispatch'}</span>
@@ -448,7 +565,7 @@ export function AdminAlertTerminal({
                   {status === 'DISPATCHED' && (
                     <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                      <span>{isSw ? 'Imepokelewa & Kutumwa' : 'Dispatched'}</span>
+                      <span>{isSw ? 'Imepokelewa & Kutumwa' : 'Resolved'}</span>
                     </span>
                   )}
                 </div>

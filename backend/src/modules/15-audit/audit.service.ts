@@ -1,11 +1,20 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { TenantContext } from '@common/security/auth.types';
 import { PrismaService } from '@database/prisma.service';
 import { ListManagedOrdersQueryDto, UpdateManagedOrderStatusDto } from './dto/audit.dto';
+import { RetentionCronService } from './retention-cron.service';
 
 @Injectable()
 export class AuditService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    @Optional() private readonly retentionCronService?: RetentionCronService,
+  ) {}
 
   async listManagedOrders(query: ListManagedOrdersQueryDto) {
     const traces = await this.prismaService.orderDispatchAuditTrace.findMany({
@@ -154,5 +163,122 @@ export class AuditService {
         createdAt: log.createdAt.toISOString(),
       })),
     };
+  }
+
+  async listFraudAlerts() {
+    const [securityLogs, disputedLedgers] = await Promise.all([
+      this.prismaService.securityAuditLog.findMany({
+        where: {
+          eventType: {
+            in: [
+              'DRIVER_3_STRIKE_AUDIT_FLAGGED',
+              'REFRESH_TOKEN_REUSE_DETECTED',
+              'LOGIN_BRUTE_FORCE_LOCKOUT',
+            ],
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        include: {
+          user: {
+            select: { id: true, fullName: true, phoneE164: true, role: true },
+          },
+        },
+      }),
+      this.prismaService.cashDeliveryLedger.findMany({
+        where: { verificationStatus: 'DISPUTED' },
+        orderBy: { updatedAt: 'desc' },
+        take: 50,
+        include: {
+          order: { select: { orderRef: true } },
+          driver: { select: { id: true, fullName: true, phoneE164: true } },
+        },
+      }),
+    ]);
+
+    return {
+      securityAlerts: securityLogs.map((log) => ({
+        id: log.id,
+        eventType: log.eventType,
+        severity:
+          log.eventType === 'DRIVER_3_STRIKE_AUDIT_FLAGGED' ||
+          log.eventType === 'REFRESH_TOKEN_REUSE_DETECTED'
+            ? ('CRITICAL_3_STRIKE' as const)
+            : ('INFO' as const),
+        userId: log.userId,
+        actorName: log.user?.fullName ?? null,
+        actorPhone: log.user?.phoneE164 ?? null,
+        details: log.details,
+        createdAt: log.createdAt.toISOString(),
+      })),
+      disputedLedgers: disputedLedgers.map((l) => ({
+        ledgerId: l.id,
+        orderId: l.orderId,
+        orderRef: l.order.orderRef,
+        driverUserId: l.driverUserId,
+        driverName: l.driver?.fullName ?? 'Unassigned',
+        expectedCashTzs: Number(l.expectedCashAmount),
+        collectedCashTzs: Number(l.collectedCashAmount),
+        varianceTzs: Number(l.expectedCashAmount) - Number(l.collectedCashAmount),
+        updatedAt: l.updatedAt.toISOString(),
+      })),
+    };
+  }
+
+  async getRetentionStats() {
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+
+    const [
+      totalIdempotencyKeys,
+      staleIdempotencyKeysCount,
+      totalActiveLedgers,
+      archiveEligibleLedgersCount,
+      disputedLedgersCount,
+      coldArchiveLedgersCount,
+      pendingOutboxCount,
+      deadLetterOutboxCount,
+    ] = await Promise.all([
+      this.prismaService.idempotencyKey.count(),
+      this.prismaService.idempotencyKey.count({
+        where: { expiresAt: { lte: fortyEightHoursAgo } },
+      }),
+      this.prismaService.cashDeliveryLedger.count(),
+      this.prismaService.cashDeliveryLedger.count({
+        where: {
+          verificationStatus: 'SUCCESSFUL',
+          reconciledAt: { lte: ninetyDaysAgo },
+        },
+      }),
+      this.prismaService.cashDeliveryLedger.count({
+        where: { verificationStatus: 'DISPUTED' },
+      }),
+      this.prismaService.cashDeliveryLedgerArchive.count(),
+      this.prismaService.domainOutboxEvent.count({
+        where: { status: 'PENDING' },
+      }),
+      this.prismaService.domainOutboxEvent.count({
+        where: { status: 'DEAD_LETTER' },
+      }),
+    ]);
+
+    return {
+      totalIdempotencyKeys,
+      staleIdempotencyKeysCount,
+      totalActiveLedgers,
+      archiveEligibleLedgersCount,
+      disputedLedgersCount,
+      coldArchiveLedgersCount,
+      pendingOutboxCount,
+      deadLetterOutboxCount,
+      sampledAt: new Date().toISOString(),
+    };
+  }
+
+  async runRetentionCleanupNow() {
+    if (this.retentionCronService) {
+      return this.retentionCronService.runRetentionMaintenance();
+    }
+    return { purgedKeys: 0, archivedLedgers: 0 };
   }
 }

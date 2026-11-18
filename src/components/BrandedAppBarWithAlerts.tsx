@@ -18,7 +18,6 @@ import type { Locale } from '../data/i18n';
 import {
   ADMIN_ALERT_CHANNEL_NAME,
   formatAlertPacketLabel,
-  loadDispatchAuditTraces,
   type OrderDispatchAuditTrace,
 } from '../lib/sokoManagedState';
 import {
@@ -33,6 +32,7 @@ import {
   triggerLocalServiceWorkerPushTest,
 } from '../services/webPushRegistrationService';
 import { sokoRealtime } from '../services/sokoRealtimeClient';
+import { SokoApiClient, checkBackendHealth } from '../services/sokoApiClient';
 
 export type StompPacketType =
   | 'NEW_B2B_ORDER_REQUEST'
@@ -206,29 +206,102 @@ export function BrandedAppBarWithAlerts({
   const [stompStatus, setStompStatus] = useState<'SUBSCRIBED' | 'STANDBY_CHANNEL' | 'CONNECTING'>(
     'CONNECTING'
   );
-  const [alerts, setAlerts] = useState<StompAlertPacket[]>(() => {
-    const pendingTraces = loadDispatchAuditTraces().filter(
-      (t) =>
-        t.routingCode === 'ROUTED_PLATFORM_MANAGED_HELPDESK' &&
-        (t.adminStatus ?? 'PENDING') === 'PENDING'
-    );
-    return pendingTraces.slice(0, 8).map((t) => ({
-      id: t.traceId,
-      packetType: 'ROUTED_PLATFORM_MANAGED_HELPDESK',
-      title: t.sellerBusinessName,
-      message: t.itemsSummary,
-      orderRef: t.orderRef8,
-      amountTzs: t.totalCashDueTzs,
-      receivedAt: t.recordedAtEat,
-      acknowledged: false,
-    }));
-  });
+  const [alerts, setAlerts] = useState<StompAlertPacket[]>([]);
 
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
   const bellContainerRef = useRef<HTMLDivElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const alarmIntervalRef = useRef<number | null>(null);
   const [pushBanner, setPushBanner] = useState<string | null>(null);
+  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      const res = await checkBackendHealth();
+      if (active) setBackendOnline(res.online);
+    };
+    void poll();
+    const timer = window.setInterval(poll, 20000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!SokoApiClient.hasAccessToken()) return;
+    let active = true;
+
+    if (activeProfile.role === 'SUPER_ADMIN') {
+      SokoApiClient.get<{
+        traces?: Array<{
+          traceId: string;
+          orderRef8: string;
+          merchantName: string;
+          routingOutputCode: string;
+          helpdeskStatus: string;
+          expectedTotalTzs: number;
+          recordedAt: string;
+        }>;
+      }>('/admin/managed-orders?routingOutputCode=ROUTED_PLATFORM_MANAGED_HELPDESK')
+        .then((res) => {
+          if (!active || !Array.isArray(res?.traces)) return;
+          const openAlerts: StompAlertPacket[] = res.traces
+            .filter((t) => t.helpdeskStatus === 'OPEN')
+            .slice(0, 10)
+            .map((t) => ({
+              id: t.traceId,
+              packetType: 'ROUTED_PLATFORM_MANAGED_HELPDESK',
+              title: t.merchantName,
+              message: `Oda #${t.orderRef8} — Dawati la Msaada`,
+              orderRef: t.orderRef8,
+              amountTzs: Number(t.expectedTotalTzs ?? 0),
+              receivedAt: new Date(t.recordedAt).toLocaleTimeString(),
+              acknowledged: false,
+            }));
+          setAlerts(openAlerts);
+        })
+        .catch(() => {
+          if (active) setAlerts([]);
+        });
+    } else if (activeProfile.role === 'WHOLESALER' || activeProfile.role === 'RETAILER') {
+      SokoApiClient.get<{
+        orders?: Array<{
+          id: string;
+          orderRef: string;
+          status: string;
+          expectedTotalTzs: number;
+          placedAt: string;
+          buyer?: { fullName?: string } | null;
+        }>;
+      }>('/orders/my-orders?scope=selling')
+        .then((res) => {
+          if (!active || !Array.isArray(res?.orders)) return;
+          const placed = res.orders
+            .filter((o) => o.status === 'PLACED')
+            .slice(0, 8)
+            .map((o) => ({
+              id: o.id,
+              packetType: 'NEW_B2B_ORDER_REQUEST' as StompPacketType,
+              title: o.buyer?.fullName || (isSw ? 'Oda Mpya' : 'New Order'),
+              message: `#${o.orderRef} — ${o.status}`,
+              orderRef: o.orderRef,
+              amountTzs: Number(o.expectedTotalTzs ?? 0),
+              receivedAt: new Date(o.placedAt).toLocaleTimeString(),
+              acknowledged: false,
+            }));
+          setAlerts(placed);
+        })
+        .catch(() => {
+          if (active) setAlerts([]);
+        });
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [activeProfile.role, isSw]);
 
   const unreadCount = alerts.filter((a) => !a.acknowledged).length;
   const activeHighPriorityCount = alerts.filter(
@@ -462,39 +535,19 @@ export function BrandedAppBarWithAlerts({
     };
   }, [stompEndpointUrl, ingestPacket]);
 
-  const triggerTestPacket = (packetType: StompPacketType) => {
+  const triggerAudioHardwareTest = (packetType: StompPacketType) => {
     setAudioMuted(false);
-    const ref = 'SK' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    const packet: StompAlertPacket =
-      packetType === 'NEW_B2B_ORDER_REQUEST'
-        ? {
-            id: `PKT-${Date.now()}`,
-            packetType: 'NEW_B2B_ORDER_REQUEST',
-            title: isSw ? 'Oda Mpya ya B2B (Kengele ya Duka)' : 'New B2B Order Request',
-            message: 'Azania Unga 25kg (x10) + Korie Mafuta 20L (x4)',
-            orderRef: ref,
-            amountTzs: 486000,
-            receivedAt: new Date().toLocaleTimeString(),
-            acknowledged: false,
-          }
-        : {
-            id: `PKT-${Date.now()}`,
-            packetType: 'STANDARD_UPDATE',
-            title: isSw ? 'Taarifa ya Mfumo (STOMP)' : 'Standard Platform Update',
-            message: isSw
-              ? `Oda #${ref} imepakiwa kwenye gari la usambazaji.`
-              : `Order #${ref} has been loaded onto dispatch fleet.`,
-            orderRef: ref,
-            receivedAt: new Date().toLocaleTimeString(),
-            acknowledged: false,
-          };
-
     if (packetType === 'NEW_B2B_ORDER_REQUEST') {
       playDukaAlarmChime(audioCtxRef);
+      setPushBanner(
+        isSw ? 'Kengele ya duka imejiribika (Audio OK).' : 'Alarm audio hardware test played.'
+      );
     } else {
       playSoftNotificationChime(audioCtxRef);
+      setPushBanner(
+        isSw ? 'Mlio laini umejibiwa (Audio OK).' : 'Soft notification chime played.'
+      );
     }
-    setAlerts((prev) => [packet, ...prev].slice(0, 20));
   };
 
   const acknowledgeAlert = (id: string) => {
@@ -662,6 +715,26 @@ export function BrandedAppBarWithAlerts({
 
         {/* Top-Right Telemetry Bell + PWA Install + Language Switcher + Always-Visible Profile Matrix */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <span
+            className={`hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-mono font-semibold ${
+              backendOnline === true
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : backendOnline === false
+                  ? 'bg-amber-50 border-amber-200 text-amber-800'
+                  : 'bg-slate-50 border-slate-200 text-slate-600'
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                backendOnline === true
+                  ? 'bg-emerald-600'
+                  : backendOnline === false
+                    ? 'bg-amber-500'
+                    : 'bg-slate-400'
+              }`}
+            />
+            <span>{backendOnline === true ? 'API: ONLINE' : backendOnline === false ? 'OFFLINE' : 'API'}</span>
+          </span>
           <PWAInstallButton locale={locale} />
 
           {/* Interactive White-Labeled STOMP Notification Bell */}
@@ -763,19 +836,19 @@ export function BrandedAppBarWithAlerts({
                   </div>
                 </div>
 
-                {/* Native Web Audio Simulator Controls */}
+                {/* Native Web Audio Hardware Check Controls */}
                 <div className="px-3 py-2 bg-slate-50/40 border-b border-slate-100 flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => triggerTestPacket('NEW_B2B_ORDER_REQUEST')}
+                    onClick={() => triggerAudioHardwareTest('NEW_B2B_ORDER_REQUEST')}
                     className="flex-1 min-w-[140px] px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <BellRing className="w-3 h-3 text-amber-400 shrink-0" aria-hidden="true" />
-                    <span>{isSw ? 'Jaribu Kengele (B2B)' : 'Test B2B Alarm'}</span>
+                    <span>{isSw ? 'Jaribu Sauti ya Kengele' : 'Test Alarm Audio'}</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerTestPacket('STANDARD_UPDATE')}
+                    onClick={() => triggerAudioHardwareTest('STANDARD_UPDATE')}
                     className="flex-1 min-w-[130px] px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <Volume2 className="w-3 h-3 text-emerald-600 shrink-0" aria-hidden="true" />

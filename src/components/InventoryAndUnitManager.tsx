@@ -1,36 +1,49 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   PlusCircle,
   CheckCircle2,
   AlertTriangle,
   Wifi,
-  WifiOff,
   DollarSign,
   Copy,
   Globe,
-  X
+  X,
+  Tag,
+  PackagePlus,
+  RotateCcw,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
   formatUnitTypeLabel,
-  incrementCatalogCloneCounter,
-  loadGlobalCatalogEntries,
   loadPendingGlobalClones,
   markGlobalClonesSynced,
   stageOfflineGlobalClone,
   type GlobalCatalogEntry,
   type GlobalCloneSyncStatus,
 } from '../lib/sokoManagedState';
-import { SokoApiClient } from '../services/sokoApiClient';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
-// ============================================================================
-// Types & Interfaces for Merchant Custom Units & Dynamic POS Terminal
-// ============================================================================
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(val?: string | null): val is string {
+  return Boolean(val && UUID_REGEX.test(val));
+}
+
 export interface MerchantCustomUnit {
   unitId: string;
-  unitName: string; // e.g. "Debe", "Sado", "Dumu", "Gunia"
-  baseMultiplierKg: number; // e.g. 18 KG for a Debe
-  quantaEquivalent: number; // baseMultiplierKg * 4 (Quarter Quanta integer)
+  productId?: string;
+  productSku?: string;
+  unitCode: string;
+  unitName: string;
+  baseMultiplierKg: number;
+  quantaEquivalent: number;
+  priceTzs: number;
+  isWholesaleTier: boolean;
   descriptionSw: string;
 }
 
@@ -42,11 +55,71 @@ export interface DukaInventoryItem {
   syncStatus?: GlobalCloneSyncStatus;
   productNameSw: string;
   productNameEn: string;
-  availableQuanta: number; // Integer Quarter Quanta (1 = 250g, 4 = 1KG)
-  unitPriceTzs: number; // Price per Quantum (0 when freshly cloned from Global Catalog)
+  availableQuanta: number;
+  sealedBulkPackagesStock?: number;
+  unitPriceTzs: number;
+  cartonPriceTzs?: number;
   lowStockThresholdQuanta: number;
   unitType: string;
   lastRestockedEat: string;
+}
+
+export interface ClonedCatalogItemRecord {
+  clonedProductId: string;
+  retailerBusinessId: string;
+  globalCatalogId: string;
+  canonicalSku: string;
+  fixedNameSw: string;
+  fixedNameEn: string;
+  imagekitCdnUrl: string;
+  availableQuantaStock: number;
+  lowStockThresholdQuanta: number;
+  unitPriceTzs: number;
+  inventoryValueTzs: number;
+  lastBuyingPricePerQuantumTzs: number;
+  weightedAvgBuyingCostPerQuantumTzs: number;
+  buyingPriceEstablished: boolean;
+  unitPricingOverrides: Array<{
+    overrideId: string;
+    globalProductUnitId: string;
+    unitCode: string;
+    displayLabelSw: string;
+    displayLabelEn: string;
+    quarterQuantaPerUnit: number;
+    standardPriceId: string | null;
+    standardPriceVersion: number;
+    selectedStandardPriceTzs: number | null;
+    amendedSellingPriceTzs: number | null;
+    effectiveSellingPriceTzs: number;
+    isOverridden: boolean;
+  }>;
+}
+
+interface GlobalProductUnitDto {
+  id: string;
+  quarterQuantaPerUnit: number;
+  displayLabelSw: string | null;
+  displayLabelEn: string | null;
+  isWholesaleUnit: boolean;
+  systemUnit?: {
+    unitCode: string;
+    nameSw: string;
+    nameEn: string;
+    abbreviation: string;
+  };
+}
+
+interface StandardPriceDto {
+  id: string;
+  globalProductUnitId: string;
+  pricingProfileId: string;
+  profileCode: string;
+  profileType: 'RETAIL' | 'WHOLESALE' | 'REGIONAL' | 'PROMOTIONAL';
+  version: number;
+  minQty: number;
+  maxQty: number | null;
+  standardPriceTzs: number;
+  currency: string;
 }
 
 export interface PosReceiptRecord {
@@ -60,384 +133,771 @@ export interface PosReceiptRecord {
   synced: boolean;
 }
 
-const DEFAULT_CUSTOM_UNITS: MerchantCustomUnit[] = [
-  {
-    unitId: 'unit-debe',
-    unitName: 'Debe (20L / 18KG)',
-    baseMultiplierKg: 18,
-    quantaEquivalent: 72,
-    descriptionSw: 'Kipimo cha jadi cha Debe ya mafuta au unga (Lita 20 / Kilo 18).'
-  },
-  {
-    unitId: 'unit-sado',
-    unitName: 'Sado (5KG)',
-    baseMultiplierKg: 5,
-    quantaEquivalent: 20,
-    descriptionSw: 'Kipimo cha kati cha Sado kwa maharagwe au mchele.'
-  },
-  {
-    unitId: 'unit-dumu',
-    unitName: 'Dumu Kubwa (10L)',
-    baseMultiplierKg: 10,
-    quantaEquivalent: 40,
-    descriptionSw: 'Dumu la plastiki la ujazo wa lita 10 za mafuta ya kupikia.'
-  },
-  {
-    unitId: 'unit-quanta',
-    unitName: 'Robo Quanta (250g/250mL)',
-    baseMultiplierKg: 0.25,
-    quantaEquivalent: 1,
-    descriptionSw: 'Kipimo kikuu cha msingi (1 Quanta = robo kilo/lita).'
-  }
-];
-
-const INITIAL_SHELF_ITEMS: DukaInventoryItem[] = [
-  {
-    itemId: 'item-001',
-    sku: 'KOR-OIL-20L',
-    productNameSw: 'Mafuta ya Kupikia Korie (Debe 18KG)',
-    productNameEn: 'Korie Cooking Oil (18KG Debe)',
-    availableQuanta: 216, // 3 Debes (3 * 72)
-    unitPriceTzs: 1250,
-    lowStockThresholdQuanta: 40,
-    unitType: 'DEBE',
-    lastRestockedEat: 'Leo 08:30 EAT'
-  },
-  {
-    itemId: 'item-002',
-    sku: 'AZN-WHEAT-5KG',
-    productNameSw: 'Unga wa Ngano Azania (Sado 5KG)',
-    productNameEn: 'Azania Wheat Flour (5KG Sado)',
-    availableQuanta: 120, // 6 Sados (6 * 20)
-    unitPriceTzs: 1250,
-    lowStockThresholdQuanta: 30,
-    unitType: 'SADO',
-    lastRestockedEat: 'Leo 10:15 EAT'
-  },
-  {
-    itemId: 'item-003',
-    sku: 'MBY-RICE-25KG',
-    productNameSw: 'Mchele wa Mbeya (Gunia 25KG)',
-    productNameEn: 'Mbeya Super Rice (25KG Sack)',
-    availableQuanta: 400, // 4 Sacks
-    unitPriceTzs: 1250,
-    lowStockThresholdQuanta: 80,
-    unitType: 'GUNIA',
-    lastRestockedEat: 'Jana 16:45 EAT'
-  }
-];
-
-const IDB_NAME = 'sokokuu_inventory_units_db';
-const IDB_STORE = 'shelf_store';
-
-async function persistToIndexedDB(items: DukaInventoryItem[]) {
-  return new Promise<void>((resolve) => {
-    if (typeof window === 'undefined' || !window.indexedDB) {
-      resolve();
-      return;
-    }
-    const req = window.indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        db.createObjectStore(IDB_STORE, { keyPath: 'itemId' });
-      }
-    };
-    req.onsuccess = () => {
-      const db = req.result;
-      const tx = db.transaction(IDB_STORE, 'readwrite');
-      const store = tx.objectStore(IDB_STORE);
-      items.forEach((item) => store.put(item));
-      tx.oncomplete = () => resolve();
-    };
-    req.onerror = () => resolve();
-  });
+function mapPaymentMethodToPosDto(
+  method: 'CASH' | 'M-PESA' | 'TIGO-PESA'
+): 'CASH' | 'M_PESA' | 'TIGO_PESA' {
+  if (method === 'M-PESA') return 'M_PESA';
+  if (method === 'TIGO-PESA') return 'TIGO_PESA';
+  return 'CASH';
 }
 
-// ============================================================================
-// InventoryAndUnitManager.tsx
-// Imeunganishwa moja kwa moja na AppBar (POS Mauzo / Hifadhi & Bidhaa).
-// Hakuna tab za marudio za Vipimo Maalum au Hifadhi & Rafu ndani ya POS Mauzo.
-// ============================================================================
 export function InventoryAndUnitManager({
   locale = 'en',
   activeSection = 'pos_register',
+  businessId,
 }: {
   locale?: Locale;
   activeSection?: 'pos_register' | 'inventory_shelf';
+  businessId?: string | null;
 }) {
   const isSw = locale === 'sw';
 
-  const [isOnline, setIsOnline] = useState<boolean>(
-    typeof window !== 'undefined' ? window.navigator.onLine : true
+  const [resolvedBusinessId, setResolvedBusinessId] = useState<string | null>(
+    isUuid(businessId) ? businessId : SokoApiClient.getActiveUser()?.businessId ?? null
   );
+  const [backendOffline, setBackendOffline] = useState<boolean>(
+    typeof window !== 'undefined' ? !window.navigator.onLine : false
+  );
+  const [loadingLive, setLoadingLive] = useState<boolean>(false);
 
-  const [customUnits, setCustomUnits] = useState<MerchantCustomUnit[]>(DEFAULT_CUSTOM_UNITS);
-  const [globalCatalog, setGlobalCatalog] = useState<GlobalCatalogEntry[]>(() =>
-    loadGlobalCatalogEntries()
-  );
-  const [shelfItems, setShelfItems] = useState<DukaInventoryItem[]>(INITIAL_SHELF_ITEMS);
+  const [customUnits, setCustomUnits] = useState<MerchantCustomUnit[]>([]);
+  const [globalCatalog, setGlobalCatalog] = useState<GlobalCatalogEntry[]>([]);
+  const [clonedItems, setClonedItems] = useState<ClonedCatalogItemRecord[]>([]);
+  const [shelfItems, setShelfItems] = useState<DukaInventoryItem[]>([]);
   const [receiptLedger, setReceiptLedger] = useState<PosReceiptRecord[]>([]);
   const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  // Dynamic POS Quantity Prompt Modal State
+  // Dynamic POS Modal State
   const [selectedItemForSale, setSelectedItemForSale] = useState<DukaInventoryItem | null>(null);
-  const [promptQuantity, setPromptQuantity] = useState<number>(4); // Default 1 KG (4 quanta)
+  const [promptQuantity, setPromptQuantity] = useState<number>(4);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'CASH' | 'M-PESA' | 'TIGO-PESA'>('CASH');
+  const [submittingPos, setSubmittingPos] = useState<boolean>(false);
 
   // New Custom Unit Form State
+  const [targetUnitProductId, setTargetUnitProductId] = useState<string>('');
+  const [newUnitCode, setNewUnitCode] = useState('');
   const [newUnitName, setNewUnitName] = useState('');
-  const [newBaseKg, setNewBaseKg] = useState<number>(10);
+  const [newBaseKg, setNewBaseKg] = useState<number>(18);
+  const [newUnitPriceTzs, setNewUnitPriceTzs] = useState<number>(1);
+  const [newUnitIsWholesale, setNewUnitIsWholesale] = useState<boolean>(false);
+  const [savingUnit, setSavingUnit] = useState<boolean>(false);
 
-  // New Manual Shelf Ingestion State
-  const [newSku, setNewSku] = useState('SKU-NEW');
-  const [newNameSw, setNewNameSw] = useState('Sukari ya Kupimia');
-  const [newQuantaQty, setNewQuantaQty] = useState<number>(40);
+  // New Shelf Product Ingestion Form State
+  const [newSku, setNewSku] = useState('');
+  const [newNameSw, setNewNameSw] = useState('');
+  const [newNameEn, setNewNameEn] = useState('');
+  const [newUnitPriceTzsForm, setNewUnitPriceTzsForm] = useState<number>(0);
+  const [newCartonPriceTzsForm, setNewCartonPriceTzsForm] = useState<number>(0);
+  const [newQuantaQty, setNewQuantaQty] = useState<number>(0);
+  const [newSealedQty, setNewSealedQty] = useState<number>(0);
+  const [savingProduct, setSavingProduct] = useState<boolean>(false);
 
-  const flushPendingClones = async () => {
-    const pending = await loadPendingGlobalClones();
-    if (pending.length === 0) return;
+  // Standard / Amended Price Modal for a Cloned Global Catalog SKU
+  const [pricingModalClone, setPricingModalClone] = useState<ClonedCatalogItemRecord | null>(null);
+  const [pricingModalUnits, setPricingModalUnits] = useState<GlobalProductUnitDto[]>([]);
+  const [pricingModalStandards, setPricingModalStandards] = useState<StandardPriceDto[]>([]);
+  const [selectedGlobalUnitId, setSelectedGlobalUnitId] = useState<string>('');
+  const [selectedStandardPriceId, setSelectedStandardPriceId] = useState<string>('');
+  const [amendedPriceInput, setAmendedPriceInput] = useState<string>('');
+  const [loadingPriceModal, setLoadingPriceModal] = useState<boolean>(false);
+  const [savingPriceModal, setSavingPriceModal] = useState<boolean>(false);
 
-    const idsToSync = pending.map((p) => p.globalCatalogId);
-    await markGlobalClonesSynced(idsToSync);
+  // External Purchase Receipt Modal for a Cloned Global Catalog SKU
+  const [purchaseModalClone, setPurchaseModalClone] = useState<ClonedCatalogItemRecord | null>(null);
+  const [purchaseModalUnits, setPurchaseModalUnits] = useState<GlobalProductUnitDto[]>([]);
+  const [purchaseUnitId, setPurchaseUnitId] = useState<string>('');
+  const [purchaseSupplierName, setPurchaseSupplierName] = useState<string>('');
+  const [purchaseSupplierRef, setPurchaseSupplierRef] = useState<string>('');
+  const [purchaseStatus, setPurchaseStatus] = useState<'GOODS_RECEIVED' | 'ORDER_CONFIRMED'>('GOODS_RECEIVED');
+  const [purchaseQtyUnits, setPurchaseQtyUnits] = useState<number>(1);
+  const [purchaseQuantaPerUnit, setPurchaseQuantaPerUnit] = useState<number>(4);
+  const [purchaseTotalCostTzs, setPurchaseTotalCostTzs] = useState<number>(0);
+  const [savingPurchaseModal, setSavingPurchaseModal] = useState<boolean>(false);
 
-    let updatedCatalog = globalCatalog;
-    for (const id of idsToSync) {
-      updatedCatalog = incrementCatalogCloneCounter(id);
+  const loadLiveWorkspaceData = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.navigator.onLine) {
+      setBackendOffline(true);
+      return;
     }
-    setGlobalCatalog(updatedCatalog);
 
-    setShelfItems((prev) =>
-      prev.map((item) =>
-        item.globalCatalogId && idsToSync.includes(item.globalCatalogId)
-          ? { ...item, syncStatus: 'SYNCED' }
-          : item
-      )
-    );
+    setLoadingLive(true);
+    setBackendOffline(false);
+    setErrorNotice(null);
 
-    setToastNotice(
-      isSw
-        ? `Mtandao umerejea: Bidhaa ${pending.length} zilizokuwa zinasubiri zimesawazishwa na Hifadhidata ya SokoKuu.`
-        : `Back online: ${pending.length} staged catalog item(s) synced to Cloud Database Core.`
-    );
-  };
+    try {
+      let targetBizId = isUuid(businessId)
+        ? businessId
+        : SokoApiClient.getActiveUser()?.businessId ?? null;
+
+      if (!isUuid(targetBizId) && SokoApiClient.hasAccessToken()) {
+        const me = await SokoApiClient.get<{ businessId?: string | null }>('/auth/me');
+        targetBizId = me?.businessId ?? null;
+      }
+      setResolvedBusinessId(isUuid(targetBizId) ? targetBizId : null);
+
+      const [liveCatalog, liveClones, liveProducts] = await Promise.all([
+        SokoApiClient.get<
+          Array<{
+            id: string;
+            canonicalSku: string;
+            fixedNameSw: string;
+            fixedNameEn: string;
+            categoryCode: string;
+            staticImageUrl: string;
+            imagekitCdnUrl: string;
+            baseQuantumUnit: string;
+            clonedByStoresCount: number;
+          }>
+        >('/marketplace/catalog'),
+        SokoApiClient.hasAccessToken()
+          ? SokoApiClient.get<ClonedCatalogItemRecord[]>(
+              `/merchant/catalog/clones${isUuid(targetBizId) ? `?businessId=${encodeURIComponent(targetBizId)}` : ''}`
+            ).catch((err) => {
+              if (err instanceof SokoHttpError && (err.status === 403 || err.status === 401)) {
+                return [] as ClonedCatalogItemRecord[];
+              }
+              throw err;
+            })
+          : Promise.resolve([] as ClonedCatalogItemRecord[]),
+        isUuid(targetBizId)
+          ? SokoApiClient.get<
+              Array<{
+                productId: string;
+                sellerBusinessId: string;
+                sku: string;
+                nameSw: string;
+                nameEn: string;
+                unitPriceTzs: number;
+                cartonPriceTzs: number;
+                availableQuarterQuanta: number;
+                sealedBulkPackagesStock: number;
+                priceTiers: Array<{
+                  id: string;
+                  unitType: string;
+                  quarterQuantaPerUnit: number;
+                  priceTzs: number;
+                  isWholesaleTier: boolean;
+                }>;
+                customUnits: Array<{
+                  id: string;
+                  unitCode: string;
+                  unitLabel: string;
+                  baseKg: number;
+                  quarterQuantaPerUnit: number;
+                  priceTzs: number;
+                  isWholesaleTier: boolean;
+                }>;
+              }>
+            >(`/products/active?businessId=${encodeURIComponent(targetBizId)}`)
+          : Promise.resolve([]),
+      ]);
+
+      setGlobalCatalog(
+        Array.isArray(liveCatalog)
+          ? liveCatalog.map((c) => ({
+              globalCatalogId: c.id,
+              canonicalSku: c.canonicalSku,
+              fixedNameSw: c.fixedNameSw,
+              fixedNameEn: c.fixedNameEn,
+              category: c.categoryCode,
+              categoryCode: c.categoryCode,
+              imagekitCdnUrl: c.imagekitCdnUrl || c.staticImageUrl,
+              staticImageUrl: c.staticImageUrl,
+              defaultBaseUnitSw: c.baseQuantumUnit,
+              defaultBaseUnitEn: c.baseQuantumUnit,
+              clonedByStoresCount: Number(c.clonedByStoresCount ?? 0),
+              updatedAtEat: new Date().toISOString(),
+            }))
+          : []
+      );
+
+      setClonedItems(Array.isArray(liveClones) ? liveClones : []);
+
+      const mappedShelf: DukaInventoryItem[] = Array.isArray(liveProducts)
+        ? liveProducts.map((p) => ({
+            itemId: p.productId,
+            sku: p.sku,
+            productNameSw: p.nameSw,
+            productNameEn: p.nameEn,
+            availableQuanta: p.availableQuarterQuanta,
+            sealedBulkPackagesStock: p.sealedBulkPackagesStock,
+            unitPriceTzs: p.unitPriceTzs,
+            cartonPriceTzs: p.cartonPriceTzs,
+            lowStockThresholdQuanta: 20,
+            unitType: p.priceTiers?.[0]?.unitType ?? 'UNIT',
+            lastRestockedEat: new Date().toLocaleDateString(),
+          }))
+        : [];
+
+      setShelfItems(mappedShelf);
+      if (
+        mappedShelf.length > 0 &&
+        (!targetUnitProductId || !mappedShelf.some((s) => s.itemId === targetUnitProductId))
+      ) {
+        setTargetUnitProductId(mappedShelf[0].itemId);
+      }
+
+      const aggregatedCustomUnits: MerchantCustomUnit[] = [];
+      for (const p of Array.isArray(liveProducts) ? liveProducts : []) {
+        for (const u of p.customUnits ?? []) {
+          aggregatedCustomUnits.push({
+            unitId: u.id,
+            productId: p.productId,
+            productSku: p.sku,
+            unitCode: u.unitCode,
+            unitName: u.unitLabel,
+            baseMultiplierKg: u.baseKg,
+            quantaEquivalent: u.quarterQuantaPerUnit,
+            priceTzs: u.priceTzs,
+            isWholesaleTier: u.isWholesaleTier,
+            descriptionSw: `${p.sku} · ${u.baseKg} KG (${u.quarterQuantaPerUnit} Quanta) · TZS ${u.priceTzs.toLocaleString('en-US')}`,
+          });
+        }
+      }
+      setCustomUnits(aggregatedCustomUnits);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else if (err instanceof SokoHttpError) {
+        setErrorNotice(err.message);
+      }
+    } finally {
+      setLoadingLive(false);
+    }
+  }, [businessId, targetUnitProductId]);
+
+  const flushPendingClones = useCallback(async () => {
+    const pending = await loadPendingGlobalClones();
+    if (pending.length === 0 || !SokoApiClient.hasAccessToken()) return;
+
+    const syncedIds: string[] = [];
+    for (const p of pending) {
+      if (!isUuid(p.globalCatalogId)) {
+        syncedIds.push(p.globalCatalogId);
+        continue;
+      }
+      try {
+        await SokoApiClient.post('/marketplace/catalog/clone-standard', {
+          globalCatalogId: p.globalCatalogId,
+          ...(isUuid(resolvedBusinessId) ? { retailerBusinessId: resolvedBusinessId } : {}),
+        });
+        syncedIds.push(p.globalCatalogId);
+      } catch (err) {
+        if (isSokoNetworkError(err)) {
+          return;
+        }
+        syncedIds.push(p.globalCatalogId);
+      }
+    }
+
+    if (syncedIds.length > 0) {
+      await markGlobalClonesSynced(syncedIds);
+      setToastNotice(
+        isSw
+          ? `Mtandao umerejea: Bidhaa ${syncedIds.length} zimesawazishwa na Hifadhidata ya SokoKuu.`
+          : `Back online: ${syncedIds.length} staged catalog item(s) synced to PostgreSQL.`
+      );
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    }
+  }, [resolvedBusinessId, isSw]);
 
   useEffect(() => {
-    const refreshCatalog = () => setGlobalCatalog(loadGlobalCatalogEntries());
-    const handleOnline = () => {
-      setIsOnline(true);
-      void flushPendingClones();
+    void loadLiveWorkspaceData();
+  }, [loadLiveWorkspaceData]);
+
+  useEffect(() => {
+    const handleCatalogUpdated = () => {
+      void loadLiveWorkspaceData();
     };
-    const handleOffline = () => setIsOnline(false);
+    const handleOnline = () => {
+      setBackendOffline(false);
+      void flushPendingClones().then(() => loadLiveWorkspaceData());
+    };
+    const handleOffline = () => setBackendOffline(true);
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    window.addEventListener('sokokuu:catalog-updated', refreshCatalog);
+    window.addEventListener('sokokuu:catalog-updated', handleCatalogUpdated);
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
-      window.removeEventListener('sokokuu:catalog-updated', refreshCatalog);
+      window.removeEventListener('sokokuu:catalog-updated', handleCatalogUpdated);
     };
-  }, [isSw]);
+  }, [flushPendingClones, loadLiveWorkspaceData]);
 
-  useEffect(() => {
-    persistToIndexedDB(shelfItems);
-  }, [shelfItems]);
-
-  const handleCreateCustomUnit = (e: React.FormEvent) => {
+  const handleCreateCustomUnit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUnitName.trim()) return;
+    if (!newUnitName.trim() || !newUnitCode.trim()) return;
+    setErrorNotice(null);
 
-    const calculatedQuanta = Math.round(newBaseKg * 4); // Math.multiplyExact equivalent scale
-    const newUnit: MerchantCustomUnit = {
-      unitId: 'unit-' + Math.random().toString(36).substring(2, 8),
-      unitName: newUnitName.trim(),
-      baseMultiplierKg: newBaseKg,
-      quantaEquivalent: calculatedQuanta,
-      descriptionSw: `Kipimo maalum kilichosanifiwa na duka (${newBaseKg} KG / ${calculatedQuanta} Quanta).`
-    };
+    const calculatedQuanta = Math.round(newBaseKg * 4);
+    if (Math.abs(newBaseKg * 4 - calculatedQuanta) > 0.001) {
+      setErrorNotice(
+        isSw
+          ? 'Uzito lazima uwe kigawe halisi cha 0.25 KG (mf. 0.25, 0.5, 1, 5, 18).'
+          : 'Base KG must be an exact multiple of 0.25 (e.g. 0.25, 0.5, 1, 5, 18).'
+      );
+      return;
+    }
 
-    setCustomUnits((prev) => [...prev, newUnit]);
-    setToastNotice(
-      isSw
-        ? `Kipimo kipya cha "${newUnit.unitName}" kimesajiliwa kikamilifu (${calculatedQuanta} Quanta).`
-        : `Custom unit "${newUnit.unitName}" successfully registered (${calculatedQuanta} Quanta).`
-    );
-    setNewUnitName('');
-    setNewBaseKg(10);
+    if (!isUuid(targetUnitProductId)) {
+      setErrorNotice(
+        isSw
+          ? 'Sajili au chagua bidhaa hai dukani kabla ya kuongeza kipimo maalum.'
+          : 'Select an active PostgreSQL product SKU before attaching a custom unit.'
+      );
+      return;
+    }
+
+    setSavingUnit(true);
+    try {
+      await SokoApiClient.post(`/products/${targetUnitProductId}/custom-units`, {
+        unitCode: newUnitCode.trim().toUpperCase(),
+        unitLabel: newUnitName.trim(),
+        baseKg: Number(newBaseKg),
+        priceTzs: Math.max(1, Math.round(newUnitPriceTzs)),
+        isWholesaleTier: newUnitIsWholesale,
+      });
+
+      setToastNotice(
+        isSw
+          ? `Kipimo kipya cha "${newUnitName.trim()}" kimesajiliwa kwenye PostgreSQL (${calculatedQuanta} Quanta).`
+          : `Custom unit "${newUnitName.trim()}" saved in PostgreSQL (${calculatedQuanta} Quanta).`
+      );
+      setNewUnitName('');
+      setNewUnitCode('');
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setErrorNotice(
+          isSw
+            ? 'Seva haipatikani: Huwezi kuhifadhi kipimo maalum bila muunganisho wa NestJS API.'
+            : 'Backend Offline: Saving custom units requires a live NestJS API connection.'
+        );
+      } else {
+        setErrorNotice(err instanceof Error ? err.message : 'Failed to save custom unit.');
+      }
+    } finally {
+      setSavingUnit(false);
+    }
   };
 
   const handleOpenPosModal = (item: DukaInventoryItem) => {
-    if (item.availableQuanta <= 0 || item.unitPriceTzs <= 0) {
+    setErrorNotice(null);
+    if (item.availableQuanta <= 0 && (item.sealedBulkPackagesStock ?? 0) <= 0) {
       setToastNotice(
         isSw
-          ? `Bidhaa "${item.sku}" ina hifadhi 0 au bei TZS 0. Weka stoo na bei kwenye kichupo cha Hifadhi kabla ya kuuza.`
-          : `Item "${item.sku}" has 0 stock or 0 TZS price. Restock and set unit price in Inventory first.`
+          ? `Bidhaa "${item.sku}" haina hifadhi. Ongeza stoo kwanza.`
+          : `Item "${item.sku}" has 0 shelf & sealed stock. Restock first.`
+      );
+      return;
+    }
+    if (item.unitPriceTzs <= 0) {
+      setToastNotice(
+        isSw
+          ? `Bidhaa "${item.sku}" ina bei TZS 0. Weka bei kwanza.`
+          : `Item "${item.sku}" has 0 TZS price. Set unit price first.`
       );
       return;
     }
     setSelectedItemForSale(item);
-    setPromptQuantity(Math.min(4, item.availableQuanta));
+    setPromptQuantity(Math.min(4, Math.max(1, item.availableQuanta || 4)));
     setSelectedPaymentMethod('CASH');
   };
 
-  const handleExecutePosSale = (e: React.FormEvent) => {
+  const handleExecutePosSale = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedItemForSale) return;
+    setErrorNotice(null);
 
-    if (promptQuantity > selectedItemForSale.availableQuanta) {
-      setToastNotice(
-        isSw
-          ? `Kosa la Uhifadhi: Idadi inayoombwa (${promptQuantity} Quanta) inazidi kiwango kilichopo rafu (${selectedItemForSale.availableQuanta} Quanta).`
-          : `Stock Error: Requested quantity (${promptQuantity} Quanta) exceeds available shelf stock (${selectedItemForSale.availableQuanta} Quanta).`
+    if (!isUuid(selectedItemForSale.itemId)) {
+      setErrorNotice(
+        isSw ? 'Kitambulisho cha bidhaa si halali.' : 'Selected product lacks a valid PostgreSQL UUID.'
       );
       return;
     }
 
-    const pricePerQuantum = selectedItemForSale.unitPriceTzs || 1250;
-    const totalTzs = promptQuantity * pricePerQuantum;
-    const receiptId = 'RCP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-
-    // Atomic state update with overflow-checked boundaries
-    setShelfItems((prev) =>
-      prev.map((i) =>
-        i.itemId === selectedItemForSale.itemId
-          ? { ...i, availableQuanta: Math.max(0, i.availableQuanta - promptQuantity) }
-          : i
-      )
-    );
-
-    const newRecord: PosReceiptRecord = {
-      receiptId,
-      inventoryId: selectedItemForSale.itemId,
-      sku: selectedItemForSale.sku,
-      quantaSold: promptQuantity,
-      paymentMethod: selectedPaymentMethod,
-      totalTzs,
-      timestampEat: new Date().toLocaleTimeString(),
-      synced: isOnline
-    };
-
-    if (isOnline) {
-      void SokoApiClient.post('/retailer/pos/sales-receipt', {
-        receiptId,
-        inventoryId: selectedItemForSale.itemId,
-        sku: selectedItemForSale.sku,
-        quantaSold: promptQuantity,
-        paymentMethod: selectedPaymentMethod,
-        totalTzs,
-      }).catch(() => {
-        // Continue with local IndexedDB persistence
+    setSubmittingPos(true);
+    try {
+      const res = await SokoApiClient.post<{
+        receiptId: string;
+        productId: string;
+        inventoryId: string;
+        quantaSold: number;
+        paymentMethod: string;
+        totalTzs: number;
+        remainingLooseQuanta: number;
+        remainingSealedPackages: number;
+        bulkPackagesBroken: number;
+        timestampEat: string;
+      }>('/retailer/pos/sales-receipt', {
+        productId: selectedItemForSale.itemId,
+        quantityRequested: promptQuantity,
+        paymentMethod: mapPaymentMethodToPosDto(selectedPaymentMethod),
       });
+
+      setShelfItems((prev) =>
+        prev.map((i) =>
+          i.itemId === selectedItemForSale.itemId
+            ? {
+                ...i,
+                availableQuanta: res.remainingLooseQuanta,
+                sealedBulkPackagesStock: res.remainingSealedPackages,
+              }
+            : i
+        )
+      );
+
+      const newRecord: PosReceiptRecord = {
+        receiptId: res.receiptId,
+        inventoryId: res.inventoryId || res.productId,
+        sku: selectedItemForSale.sku,
+        quantaSold: res.quantaSold,
+        paymentMethod: selectedPaymentMethod,
+        totalTzs: res.totalTzs,
+        timestampEat: new Date(res.timestampEat).toLocaleTimeString(),
+        synced: true,
+      };
+      setReceiptLedger((prev) => [newRecord, ...prev]);
+
+      const brokenMsg =
+        res.bulkPackagesBroken > 0
+          ? isSw
+            ? ` · Kifurushi ${res.bulkPackagesBroken} kimevunjwa kiotomatiki!`
+            : ` · ${res.bulkPackagesBroken} bulk package(s) auto-broken!`
+          : '';
+      setToastNotice(
+        isSw
+          ? `Stakabadhi ${res.receiptId} imerekodiwa PostgreSQL! ${selectedPaymentMethod} · Jumla: TZS ${res.totalTzs.toLocaleString('en-US')}${brokenMsg}`
+          : `POS Receipt ${res.receiptId} committed! ${selectedPaymentMethod} · Total: TZS ${res.totalTzs.toLocaleString('en-US')}${brokenMsg}`
+      );
+      setSelectedItemForSale(null);
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setErrorNotice(
+          isSw
+            ? 'Mtandao umekatika: Stakabadhi ya POS inahitaji muunganisho wa seva ya NestJS.'
+            : 'Backend Offline: Unable to post POS receipt without live NestJS connection.'
+        );
+      } else {
+        setErrorNotice(
+          err instanceof Error ? err.message : 'POS sale rejected by backend.'
+        );
+      }
+    } finally {
+      setSubmittingPos(false);
     }
-
-    setReceiptLedger((prev) => [newRecord, ...prev]);
-    setToastNotice(
-      isSw
-        ? `Stakabadhi ya Mauzo ${receiptId} imekamilika! Njia: ${selectedPaymentMethod} · Jumla: TZS ${totalTzs.toLocaleString('en-US')}`
-        : `POS Receipt ${receiptId} generated! Method: ${selectedPaymentMethod} · Total: TZS ${totalTzs.toLocaleString('en-US')}`
-    );
-
-    setSelectedItemForSale(null);
   };
 
-  // Kunakili bidhaa kutoka soko kuu la kawaida (soko_global_catalog) kwenda duka la ndani
-  // ikiwa na idadi ya 0 na bei ya TZS 0. Kama hakuna mtandao, inahifadhiwa IndexedDB
-  // ikiwa na bendera ya PENDING_GLOBAL_CLONE_SYNC.
   const handleCloneGlobalCatalogItem = async (entry: GlobalCatalogEntry) => {
-    const alreadyCloned = shelfItems.some(
-      (i) => i.globalCatalogId === entry.globalCatalogId || i.sku === entry.canonicalSku
-    );
+    setErrorNotice(null);
+    const alreadyCloned =
+      clonedItems.some((c) => c.globalCatalogId === entry.globalCatalogId) ||
+      shelfItems.some((i) => i.globalCatalogId === entry.globalCatalogId);
+
     if (alreadyCloned) {
       setToastNotice(
         isSw
-          ? `Bidhaa "${entry.canonicalSku}" tayari ipo kwenye wasifu wako wa duka.`
-          : `Catalog SKU "${entry.canonicalSku}" is already cloned into your shop workspace.`
+          ? `Bidhaa "${entry.canonicalSku}" tayari imeshanakiliwa dukani.`
+          : `Catalog SKU "${entry.canonicalSku}" is already cloned into your Merchant inventory.`
       );
       return;
     }
 
-    const syncStatus: GlobalCloneSyncStatus = isOnline ? 'SYNCED' : 'PENDING_GLOBAL_CLONE_SYNC';
-    const itemId = 'item-' + Math.random().toString(36).substring(2, 8);
+    if (!isUuid(entry.globalCatalogId)) return;
 
-    const clonedItem: DukaInventoryItem = {
-      itemId,
-      globalCatalogId: entry.globalCatalogId,
-      imagekitCdnUrl: entry.imagekitCdnUrl, // Direct ImageKit CDN pointer (no local binary duplicate)
-      syncStatus,
-      sku: entry.canonicalSku,
-      productNameSw: entry.fixedNameSw,
-      productNameEn: entry.fixedNameEn,
-      availableQuanta: 0, // Initialized with strictly 0 stock
-      unitPriceTzs: 0,    // Initialized with strictly 0 currency config
-      lowStockThresholdQuanta: 10,
-      unitType: 'QUANTA_ZERO',
-      lastRestockedEat: isSw ? 'Imenakiliwa (0 Stock · 0 TZS)' : 'Cloned (0 Stock · 0 TZS)'
-    };
-
-    if (!isOnline) {
-      await stageOfflineGlobalClone({
-        cloneRecordId: itemId,
+    try {
+      const res = await SokoApiClient.post<{
+        canonicalSku: string;
+        updatedClonedByStoresCount: number;
+        idempotentReplay?: boolean;
+      }>('/marketplace/catalog/clone-standard', {
         globalCatalogId: entry.globalCatalogId,
-        canonicalSku: entry.canonicalSku,
-        fixedNameSw: entry.fixedNameSw,
-        fixedNameEn: entry.fixedNameEn,
-        imagekitCdnUrl: entry.imagekitCdnUrl,
-        initializedStockQuanta: 0,
-        initializedPriceTzs: 0,
-        syncStatus: 'PENDING_GLOBAL_CLONE_SYNC',
-        stagedAtIso: new Date().toISOString(),
+        ...(isUuid(resolvedBusinessId) ? { retailerBusinessId: resolvedBusinessId } : {}),
       });
-    } else {
-      try {
-        await SokoApiClient.post('/marketplace/catalog/clone-standard', {
+      setToastNotice(
+        isSw
+          ? `Imenakiliwa dukani (PostgreSQL): ${res.canonicalSku} @ 0 Stock · 0 TZS (Wafanyabiashara: ${res.updatedClonedByStoresCount}).`
+          : `Cloned to PostgreSQL inventory: ${res.canonicalSku} @ 0 Stock · 0 TZS (Merchants: ${res.updatedClonedByStoresCount}).`
+      );
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        await stageOfflineGlobalClone({
+          cloneRecordId: entry.globalCatalogId,
           globalCatalogId: entry.globalCatalogId,
+          canonicalSku: entry.canonicalSku,
+          fixedNameSw: entry.fixedNameSw,
+          fixedNameEn: entry.fixedNameEn,
+          imagekitCdnUrl: entry.imagekitCdnUrl,
+          initializedStockQuanta: 0,
+          initializedPriceTzs: 0,
+          syncStatus: 'PENDING_GLOBAL_CLONE_SYNC',
+          stagedAtIso: new Date().toISOString(),
         });
-      } catch {
-        // Fallback to local catalog increment
+        setToastNotice(
+          isSw
+            ? `Nje ya Mtandao: Ombi la kunakili ${entry.canonicalSku} limewekwa kwenye foleni ya IndexedDB kusubiri seva.`
+            : `Offline: Clone request for ${entry.canonicalSku} queued in IndexedDB until NestJS reconnects.`
+        );
+      } else {
+        setErrorNotice(
+          err instanceof Error ? err.message : 'Failed to clone global catalog SKU.'
+        );
       }
-      setGlobalCatalog(incrementCatalogCloneCounter(entry.globalCatalogId));
+    }
+  };
+
+  const openPricingModal = async (clone: ClonedCatalogItemRecord) => {
+    setPricingModalClone(clone);
+    setLoadingPriceModal(true);
+    setErrorNotice(null);
+    try {
+      const data = await SokoApiClient.get<{
+        units: GlobalProductUnitDto[];
+        standardPrices: StandardPriceDto[];
+      }>(`/marketplace/catalog/${clone.globalCatalogId}/standard-prices`);
+      const units = data.units ?? [];
+      const prices = data.standardPrices ?? [];
+      setPricingModalUnits(units);
+      setPricingModalStandards(prices);
+
+      const firstUnit = units[0]?.id ?? '';
+      setSelectedGlobalUnitId(firstUnit);
+      const matchingPrice = prices.find((p) => p.globalProductUnitId === firstUnit) ?? prices[0];
+      setSelectedStandardPriceId(matchingPrice?.id ?? '');
+      setAmendedPriceInput('');
+    } catch (err) {
+      if (isSokoNetworkError(err)) setBackendOffline(true);
+      setErrorNotice(err instanceof Error ? err.message : 'Failed to load standard pricing.');
+      setPricingModalClone(null);
+    } finally {
+      setLoadingPriceModal(false);
+    }
+  };
+
+  const handleSaveMerchantPrice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pricingModalClone || !selectedGlobalUnitId || !selectedStandardPriceId) return;
+    setSavingPriceModal(true);
+    setErrorNotice(null);
+    try {
+      const amendedVal = amendedPriceInput.trim()
+        ? Math.max(1, parseInt(amendedPriceInput.trim(), 10))
+        : undefined;
+      await SokoApiClient.post(
+        `/merchant/catalog/${pricingModalClone.clonedProductId}/select-or-amend-price`,
+        {
+          globalProductUnitId: selectedGlobalUnitId,
+          standardPriceId: selectedStandardPriceId,
+          ...(amendedVal !== undefined ? { amendedSellingPriceTzs: amendedVal } : {}),
+        }
+      );
+      setToastNotice(
+        isSw
+          ? `Bei ya ${pricingModalClone.canonicalSku} imehifadhiwa kikamilifu!`
+          : `Selling price for ${pricingModalClone.canonicalSku} saved to PostgreSQL!`
+      );
+      setPricingModalClone(null);
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) setBackendOffline(true);
+      setErrorNotice(err instanceof Error ? err.message : 'Failed to save selling price.');
+    } finally {
+      setSavingPriceModal(false);
+    }
+  };
+
+  const handleResetPriceToStandard = async () => {
+    if (!pricingModalClone || !selectedGlobalUnitId) return;
+    setSavingPriceModal(true);
+    setErrorNotice(null);
+    try {
+      await SokoApiClient.post(
+        `/merchant/catalog/${pricingModalClone.clonedProductId}/reset-price`,
+        { globalProductUnitId: selectedGlobalUnitId }
+      );
+      setToastNotice(
+        isSw
+          ? `Bei ya ${pricingModalClone.canonicalSku} imerejeshwa kuwa Bei Kuu ya SokoKuu.`
+          : `Override cleared for ${pricingModalClone.canonicalSku} — reverted to Standard Price.`
+      );
+      setPricingModalClone(null);
+      await loadLiveWorkspaceData();
+    } catch (err) {
+      if (isSokoNetworkError(err)) setBackendOffline(true);
+      setErrorNotice(err instanceof Error ? err.message : 'Failed to reset price.');
+    } finally {
+      setSavingPriceModal(false);
+    }
+  };
+
+  const openPurchaseModal = async (clone: ClonedCatalogItemRecord) => {
+    setPurchaseModalClone(clone);
+    setErrorNotice(null);
+    setPurchaseSupplierName('');
+    setPurchaseSupplierRef('');
+    setPurchaseTotalCostTzs(0);
+    setPurchaseQtyUnits(1);
+    try {
+      const units = await SokoApiClient.get<GlobalProductUnitDto[]>(
+        `/admin/marketplace/catalog/${clone.globalCatalogId}/units`
+      );
+      setPurchaseModalUnits(units ?? []);
+      if (units && units.length > 0) {
+        setPurchaseUnitId(units[0].id);
+        setPurchaseQuantaPerUnit(units[0].quarterQuantaPerUnit);
+      } else {
+        setPurchaseUnitId('');
+        setPurchaseQuantaPerUnit(4);
+      }
+    } catch {
+      setPurchaseModalUnits([]);
+      setPurchaseUnitId('');
+    }
+  };
+
+  const handleSaveExternalPurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!purchaseModalClone || !purchaseSupplierName.trim() || purchaseTotalCostTzs <= 0) return;
+    setSavingPurchaseModal(true);
+    setErrorNotice(null);
+    try {
+      const res = await SokoApiClient.post<{
+        receiptStatus: string;
+        stockAddedQuanta: number;
+        newAvailableQuantaStock: number;
+        lastBuyingPricePerQuantumTzs: number;
+        weightedAvgBuyingCostPerQuantumTzs: number;
+      }>('/merchant/purchases/external-receipt', {
+        clonedProductId: purchaseModalClone.clonedProductId,
+        ...(purchaseUnitId
+          ? { globalProductUnitId: purchaseUnitId }
+          : { quarterQuantaPerUnit: purchaseQuantaPerUnit }),
+        supplierName: purchaseSupplierName.trim(),
+        ...(purchaseSupplierRef.trim() ? { supplierReference: purchaseSupplierRef.trim() } : {}),
+        receiptStatus: purchaseStatus,
+        quantityUnits: purchaseQtyUnits,
+        agreedTotalCostTzs: purchaseTotalCostTzs,
+      });
+
+      setToastNotice(
+        isSw
+          ? `Manunuzi yamesajiliwa (${res.receiptStatus}): +${res.stockAddedQuanta}Q · Wastani wa Ununuzi: TZS ${res.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}/Q`
+          : `Purchase recorded (${res.receiptStatus}): +${res.stockAddedQuanta}Q · Weighted Avg Cost: TZS ${res.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}/Q`
+      );
+      setPurchaseModalClone(null);
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) setBackendOffline(true);
+      setErrorNotice(err instanceof Error ? err.message : 'Failed to record purchase receipt.');
+    } finally {
+      setSavingPurchaseModal(false);
+    }
+  };
+
+  const handleIngestShelfItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorNotice(null);
+    const skuClean = newSku.trim().toUpperCase().slice(0, 8);
+    if (!skuClean || !newNameSw.trim() || newUnitPriceTzsForm <= 0 || newCartonPriceTzsForm <= 0) {
+      setErrorNotice(
+        isSw
+          ? 'Weka msimbo wa SKU, jina la bidhaa, bei ya kipimo, na bei ya katoni.'
+          : 'Enter SKU code, product name, unit price (TZS), and carton price (TZS).'
+      );
+      return;
     }
 
-    setShelfItems((prev) => [clonedItem, ...prev]);
-    setToastNotice(
-      !isOnline
-        ? isSw
-          ? `Nje ya Mtandao: ${entry.canonicalSku} imehifadhiwa ndani ikisubiri mtandao (0 Stock · 0 TZS).`
-          : `Offline: ${entry.canonicalSku} staged locally for sync (0 Stock · 0 TZS).`
-        : isSw
-          ? `Imenakiliwa kutoka Katalogi Kuu: ${entry.canonicalSku} (ImageKit pointer +1 duka).`
-          : `Cloned ${entry.canonicalSku} at 0 stock & 0 TZS (ImageKit CDN pointer copied · adoption +1).`
-    );
+    setSavingProduct(true);
+    try {
+      await SokoApiClient.post('/products', {
+        smsItemCode: skuClean,
+        nameSw: newNameSw.trim(),
+        nameEn: newNameEn.trim() || newNameSw.trim(),
+        unitPriceTzs: Math.max(1, Math.round(newUnitPriceTzsForm)),
+        packPriceTzs: Math.max(1, Math.round(newUnitPriceTzsForm * 4)),
+        dozenPriceTzs: Math.max(1, Math.round(newUnitPriceTzsForm * 12)),
+        cartonPriceTzs: Math.max(1, Math.round(newCartonPriceTzsForm)),
+        baseQuarterQuantaStock: Math.max(0, Math.round(newQuantaQty)),
+        sealedBulkPackagesStock: Math.max(0, Math.round(newSealedQty)),
+      });
+
+      setToastNotice(
+        isSw
+          ? `Bidhaa ${skuClean} imesajiliwa moja kwa moja kwenye PostgreSQL!`
+          : `Product ${skuClean} created directly in PostgreSQL!`
+      );
+      setNewSku('');
+      setNewNameSw('');
+      setNewNameEn('');
+      setNewUnitPriceTzsForm(0);
+      setNewCartonPriceTzsForm(0);
+      setNewQuantaQty(0);
+      setNewSealedQty(0);
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setErrorNotice(
+          isSw
+            ? 'Seva haipatikani: Usajili wa bidhaa unahitaji muunganisho wa NestJS API.'
+            : 'Backend Offline: Creating products requires a live NestJS API connection.'
+        );
+      } else {
+        setErrorNotice(err instanceof Error ? err.message : 'Product creation failed.');
+      }
+    } finally {
+      setSavingProduct(false);
+    }
   };
 
-  const handleIngestShelfItem = (e: React.FormEvent) => {
-    e.preventDefault();
-    const item: DukaInventoryItem = {
-      itemId: 'item-' + Math.random().toString(36).substring(2, 8),
-      sku: newSku.toUpperCase(),
-      productNameSw: newNameSw,
-      productNameEn: newNameSw,
-      availableQuanta: newQuantaQty,
-      unitPriceTzs: 1250,
-      lowStockThresholdQuanta: 15,
-      unitType: 'CUSTOM',
-      lastRestockedEat: isSw ? 'Sasa Hivi' : 'Just Now'
-    };
-
-    setShelfItems((prev) => [item, ...prev]);
-    setToastNotice(
-      isSw
-        ? `Bidhaa mpya ${item.sku} imewekwa kwenye rafu za duka.`
-        : `New item ${item.sku} successfully ingested onto shop shelf.`
-    );
-    setNewSku('SKU-NEW');
-    setNewNameSw('');
-    setNewQuantaQty(40);
-  };
+  const maxPosQuanta = selectedItemForSale
+    ? Math.max(
+        1,
+        selectedItemForSale.availableQuanta + (selectedItemForSale.sealedBulkPackagesStock ?? 0) * 100
+      )
+    : 100;
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      {/* Toast Notice */}
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          onRetry={() => void loadLiveWorkspaceData()}
+          retrying={loadingLive}
+        />
+      )}
+
+      {errorNotice && (
+        <div
+          role="alert"
+          className="border border-rose-200 bg-rose-50 rounded-lg p-4 shadow-sm flex items-center justify-between gap-3 text-xs font-semibold text-rose-900"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-hidden="true" />
+            <span>{errorNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorNotice(null)}
+            className="text-rose-500 hover:text-rose-900 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {toastNotice && (
         <div
           role="status"
@@ -447,120 +907,137 @@ export function InventoryAndUnitManager({
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
             <span>{toastNotice}</span>
           </div>
-          <button type="button" onClick={() => setToastNotice(null)} className="text-slate-500 hover:text-slate-900">
+          <button
+            type="button"
+            onClick={() => setToastNotice(null)}
+            className="text-slate-500 hover:text-slate-900 cursor-pointer"
+          >
             ✕
           </button>
         </div>
       )}
 
-      {/* Network State Header with Offline Test Toggle */}
-      <div className="bg-white border border-slate-100 rounded-lg shadow-sm p-4 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5">
-          {isOnline ? (
-            <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
-              <Wifi className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isSw ? 'Mtandao Upo · Hifadhidata ya SokoKuu Iko Tayari' : 'Online · Live System Sync Engine Active'}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-100">
-              <WifiOff className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isSw ? 'Nje ya Mtandao · IndexedDB CoD Backup Hai' : 'Offline · IndexedDB CoD Backup Active'}</span>
-            </div>
-          )}
+      {/* Database Sync Status Header */}
+      {!backendOffline && (
+        <div className="bg-white border border-slate-100 rounded-lg shadow-sm p-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
+            <Wifi className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>
+              {loadingLive
+                ? isSw
+                  ? 'Inapakia Hifadhidata...'
+                  : 'Syncing PostgreSQL...'
+                : isSw
+                  ? 'Hifadhidata ya PostgreSQL Iko Hai'
+                  : 'Live PostgreSQL Inventory Connected'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadLiveWorkspaceData()}
+            disabled={loadingLive}
+            className="text-[11px] font-mono font-semibold px-2.5 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 cursor-pointer disabled:opacity-50"
+          >
+            {isSw ? 'Onyesha Upya' : 'Refresh DB'}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            const nextOnline = !isOnline;
-            setIsOnline(nextOnline);
-            if (nextOnline) {
-              void flushPendingClones();
-            }
-          }}
-          className="text-[11px] font-mono font-semibold px-2.5 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 cursor-pointer"
-        >
-          {isOnline
-            ? isSw
-              ? 'Jaribu Offline'
-              : 'Simulate Offline'
-            : isSw
-              ? 'Rejesha Mtandao & Sync'
-              : 'Restore Online & Sync'}
-        </button>
-      </div>
+      )}
 
-      {/* VIEW 1: POS MAUZO (Directly from Top AppBar — zero inner sub-tabs) */}
+      {/* VIEW 1: POS MAUZO */}
       {activeSection === 'pos_register' && (
         <div className="space-y-5">
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
             <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-950">
-                  {isSw ? 'Sanduku la Mauzo la POS (Dynamic Registry)' : 'POS Sales Registry (Dynamic Prompt)'}
+                  {isSw ? 'Sanduku la Mauzo la POS (Live PostgreSQL)' : 'POS Sales Registry (Live DB)'}
                 </h3>
                 <p className="text-xs text-slate-500">
                   {isSw
-                    ? 'Bonyeza bidhaa yoyote kufungua dirisha la kuweka idadi na njia ya malipo (CASH / M-PESA / TIGO-PESA).'
-                    : 'Click any product to open the dynamic quantity prompt dialog and select payment channel.'}
+                    ? 'Bonyeza bidhaa kufungua dirisha la kuweka Quanta na njia ya malipo (CASH / M-PESA / TIGO-PESA).'
+                    : 'Click any active product to execute atomic Quarter-Quanta POS deduction & bulk auto-breaking.'}
                 </p>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {shelfItems.map((item) => {
-                const isLow = item.availableQuanta <= item.lowStockThresholdQuanta;
-                return (
-                  <button
-                    key={item.itemId}
-                    type="button"
-                    onClick={() => handleOpenPosModal(item)}
-                    className="text-left bg-white border border-slate-200 hover:border-emerald-600 rounded-lg p-4 shadow-sm transition-all cursor-pointer space-y-2 group"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="font-mono text-xs font-bold text-emerald-700">{item.sku}</div>
-                      <span className="text-[11px] font-medium bg-slate-100 px-2 py-0.5 rounded text-slate-700">
-                        {formatUnitTypeLabel(item.unitType, locale)}
-                      </span>
-                    </div>
-                    <div className="text-sm font-bold text-slate-950 group-hover:text-emerald-700 transition-colors">
-                      {isSw ? item.productNameSw : item.productNameEn}
-                    </div>
-                    <div className="flex items-center justify-between text-xs text-slate-600 pt-1 border-t border-slate-100">
-                      <span>
-                        {isSw ? 'Iliyopo:' : 'Available:'}{' '}
-                        <strong className="font-mono text-slate-950">{item.availableQuanta} Quanta</strong>
-                      </span>
-                      {isLow && (
-                        <span className="text-amber-700 font-semibold flex items-center gap-1">
-                          <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
-                          {isSw ? 'Imebaki Chache!' : 'Low Stock!'}
+            {shelfItems.length === 0 ? (
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Hakuna bidhaa dukani bado"
+                titleEn="No active merchant products yet"
+                descriptionSw="Sajili bidhaa mpya au nakili kutoka Katalogi Kuu kwenye kichupo cha Hifadhi & Bidhaa."
+                descriptionEn="Register a new product or clone from the Global Catalog under Inventory & Shelf."
+              />
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {shelfItems.map((item) => {
+                  const isLow = item.availableQuanta <= item.lowStockThresholdQuanta;
+                  return (
+                    <button
+                      key={item.itemId}
+                      type="button"
+                      onClick={() => handleOpenPosModal(item)}
+                      className="text-left bg-white border border-slate-200 hover:border-emerald-600 rounded-lg p-4 shadow-sm transition-all cursor-pointer space-y-2 group"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="font-mono text-xs font-bold text-emerald-700">{item.sku}</div>
+                        <span className="text-[11px] font-medium bg-slate-100 px-2 py-0.5 rounded text-slate-700">
+                          {formatUnitTypeLabel(item.unitType, locale)}
                         </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                      </div>
+                      <div className="text-sm font-bold text-slate-950 group-hover:text-emerald-700 transition-colors">
+                        {isSw ? item.productNameSw : item.productNameEn}
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-slate-600 pt-1 border-t border-slate-100">
+                        <span>
+                          {isSw ? 'Wazi:' : 'Loose:'}{' '}
+                          <strong className="font-mono text-slate-950">{item.availableQuanta}Q</strong>
+                          {typeof item.sealedBulkPackagesStock === 'number' && (
+                            <span className="text-slate-500 font-mono">
+                              {' '}· +{item.sealedBulkPackagesStock} sealed
+                            </span>
+                          )}
+                        </span>
+                        {isLow && (
+                          <span className="text-amber-700 font-semibold flex items-center gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+                            {isSw ? 'Chache!' : 'Low!'}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          {/* Recent POS Sales Receipt Ledger */}
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-3">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              {isSw ? 'Stakabadhi za Hivi Punde za POS (Leja ya Duka)' : 'Recent POS Receipts Ledger'}
+              {isSw ? 'Stakabadhi za Hivi Punde za POS' : 'Recent POS Receipts Ledger'}
             </h4>
             {receiptLedger.length === 0 ? (
-              <p className="text-xs text-slate-500 py-3 text-center">
-                {isSw ? 'Hakuna mauzo yaliyorekodiwa leo bado.' : 'No POS sales recorded today yet.'}
-              </p>
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Hakuna stakabadhi za POS bado"
+                titleEn="No POS receipts yet"
+                descriptionSw="Mauzo yatakayorekodiwa kupitia POS yataorodheshwa hapa moja kwa moja."
+                descriptionEn="POS sales committed to PostgreSQL in this session will appear here."
+              />
             ) : (
               <div className="space-y-2">
                 {receiptLedger.map((rcp) => (
-                  <div key={rcp.receiptId} className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-center justify-between text-xs">
+                  <div
+                    key={rcp.receiptId}
+                    className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-center justify-between text-xs"
+                  >
                     <div className="space-y-0.5">
-                      <div className="font-mono font-bold text-slate-950">{rcp.receiptId} · SKU: {rcp.sku}</div>
+                      <div className="font-mono font-bold text-slate-950">
+                        {rcp.receiptId} · SKU: {rcp.sku}
+                      </div>
                       <div className="text-slate-600">
-                        {rcp.quantaSold} Quanta · {isSw ? 'Njia:' : 'Method:'}{' '}
-                        <strong className="text-emerald-700">{rcp.paymentMethod}</strong> · {rcp.timestampEat}
+                        {rcp.quantaSold} Quanta · <strong className="text-emerald-700">{rcp.paymentMethod}</strong> ·{' '}
+                        {rcp.timestampEat}
                       </div>
                     </div>
                     <div className="text-right font-mono font-bold text-emerald-700">
@@ -574,10 +1051,10 @@ export function InventoryAndUnitManager({
         </div>
       )}
 
-      {/* VIEW 2: HIFADHI & BIDHAA (Global Catalog, Shelf Ingestion, & Custom Units) */}
+      {/* VIEW 2: HIFADHI & BIDHAA */}
       {activeSection === 'inventory_shelf' && (
         <div className="space-y-5">
-          {/* Standardized Global Catalog Registry (soko_global_catalog) */}
+          {/* Global Standard Catalog Registry */}
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
             <div className="border-b border-slate-100 pb-3 flex items-start justify-between gap-3">
               <div>
@@ -591,253 +1068,525 @@ export function InventoryAndUnitManager({
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                   {isSw
-                    ? 'Nakili bidhaa sanifu zenye picha rasmi kwenda kwenye duka lako zikiwa na Hifadhi 0 na Bei 0 TZS.'
-                    : 'Clone standardized items with fixed titles & static imagery directly into your local shop initialized at 0 stock & 0 TZS.'}
+                    ? 'Nakili bidhaa sanifu kwenda dukani kwako zikiwa na Hifadhi 0 na Bei 0 TZS.'
+                    : 'Clone standardized catalog SKUs into your Merchant shelf initialized at 0 stock & 0 TZS.'}
                 </p>
               </div>
               <span className="text-[11px] font-mono text-emerald-700 shrink-0">
-                POST /catalog/clone-standard
+                GET /marketplace/catalog
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {globalCatalog.map((entry) => {
-                const isCloned = shelfItems.some(
-                  (i) => i.globalCatalogId === entry.globalCatalogId || i.sku === entry.canonicalSku
-                );
-                return (
+            {globalCatalog.length === 0 ? (
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Katalogi Kuu haina bidhaa bado"
+                titleEn="Global catalog is empty"
+                descriptionSw="Hakuna bidhaa sanifu zilizosajiliwa kwenye soko_global_catalog."
+                descriptionEn="No standardized SKUs exist in soko_global_catalog yet."
+              />
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {globalCatalog.map((entry) => {
+                  const isCloned =
+                    clonedItems.some((c) => c.globalCatalogId === entry.globalCatalogId) ||
+                    shelfItems.some((i) => i.globalCatalogId === entry.globalCatalogId);
+                  return (
+                    <div
+                      key={entry.globalCatalogId}
+                      className="border border-slate-200 rounded-lg p-3.5 bg-white flex flex-col justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-3">
+                        <img
+                          src={entry.imagekitCdnUrl || entry.staticImageUrl}
+                          alt={isSw ? entry.fixedNameSw : entry.fixedNameEn}
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            const target = e.currentTarget;
+                            if (entry.staticImageUrl && target.src !== entry.staticImageUrl) {
+                              target.src = entry.staticImageUrl;
+                            }
+                          }}
+                          className="w-12 h-12 rounded-md object-cover border border-slate-100 shrink-0 bg-slate-50"
+                        />
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex items-center justify-between gap-2 font-mono text-[11px]">
+                            <span className="font-bold text-emerald-700 truncate">
+                              {entry.canonicalSku}
+                            </span>
+                            <span className="text-slate-500 tabular-nums shrink-0">
+                              {entry.clonedByStoresCount} {isSw ? 'wafanyabiashara' : 'merchants'}
+                            </span>
+                          </div>
+                          <div className="text-xs font-bold text-slate-950 leading-snug">
+                            {isSw ? entry.fixedNameSw : entry.fixedNameEn}
+                          </div>
+                          <div className="text-[11px] text-slate-500 truncate">
+                            {entry.category} · {isSw ? entry.defaultBaseUnitSw : entry.defaultBaseUnitEn}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={isCloned}
+                        onClick={() => void handleCloneGlobalCatalogItem(entry)}
+                        className={`w-full min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                          isCloned
+                            ? 'bg-slate-100 text-slate-500 cursor-default'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
+                        }`}
+                      >
+                        <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>
+                          {isCloned
+                            ? isSw
+                              ? 'Imeshanakiliwa'
+                              : 'Cloned'
+                            : isSw
+                              ? 'Nakili Dukani (0 Stock · 0 TZS)'
+                              : 'Clone SKU (0 Stock · 0 TZS)'}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Cloned Catalog SKUs */}
+          {clonedItems.length > 0 && (
+            <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
+              <div className="border-b border-slate-100 pb-3">
+                <h3 className="text-sm font-bold text-slate-950">
+                  {isSw
+                    ? 'Bidhaa Zilizotoka Katalogi Kuu — Bei Sanifu & Gharama ya Ununuzi'
+                    : 'Cloned Global SKUs — Standard Pricing & Purchase Costing'}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {isSw
+                    ? 'Chagua bei ya SokoKuu au rekebisha bei yako ya mfanyabiashara, na ingiza risiti za manunuzi ya nje.'
+                    : 'Adopt or amend Admin Standard Prices and log external supplier purchase receipts.'}
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {clonedItems.map((clone) => (
                   <div
-                    key={entry.globalCatalogId}
-                    className="border border-slate-200 rounded-lg p-3.5 bg-white flex flex-col justify-between gap-3"
+                    key={clone.clonedProductId}
+                    className="border border-slate-200 rounded-lg p-3.5 bg-slate-50/70 space-y-3"
                   >
-                    <div className="flex items-start gap-3">
-                      <img
-                        src={entry.imagekitCdnUrl || entry.staticImageUrl}
-                        alt={isSw ? entry.fixedNameSw : entry.fixedNameEn}
-                        referrerPolicy="no-referrer"
-                        onError={(e) => {
-                          const target = e.currentTarget;
-                          if (entry.staticImageUrl && target.src !== entry.staticImageUrl) {
-                            target.src = entry.staticImageUrl;
-                          }
-                        }}
-                        className="w-12 h-12 rounded-md object-cover border border-slate-100 shrink-0 bg-slate-50"
-                      />
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="flex items-center justify-between gap-2 font-mono text-[11px]">
-                          <span className="font-bold text-emerald-700 truncate">
-                            {entry.canonicalSku}
-                          </span>
-                          <span className="text-slate-500 tabular-nums shrink-0">
-                            {entry.clonedByStoresCount}{' '}
-                            {isSw ? 'maduka' : 'stores'}
-                          </span>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="font-mono text-xs font-bold text-emerald-700">
+                          {clone.canonicalSku}
                         </div>
-                        <div className="text-xs font-bold text-slate-950 leading-snug">
-                          {isSw ? entry.fixedNameSw : entry.fixedNameEn}
+                        <div className="text-sm font-bold text-slate-950">
+                          {isSw ? clone.fixedNameSw : clone.fixedNameEn}
                         </div>
-                        <div className="text-[11px] text-slate-500 truncate">
-                          {entry.category} · {isSw ? entry.defaultBaseUnitSw : entry.defaultBaseUnitEn}
+                      </div>
+                      <div className="text-right font-mono text-xs">
+                        <div className="font-bold text-slate-950">
+                          {clone.availableQuantaStock} Quanta
+                        </div>
+                        <div className="text-emerald-700 font-semibold">
+                          Sell: TZS {clone.unitPriceTzs.toLocaleString('en-US')}
                         </div>
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={isCloned}
-                      onClick={() => handleCloneGlobalCatalogItem(entry)}
-                      className={`w-full min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
-                        isCloned
-                          ? 'bg-slate-100 text-slate-500 cursor-default'
-                          : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
-                      }`}
-                    >
-                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>
-                        {isCloned
-                          ? isSw
-                            ? 'Imeshanakiliwa Dukani'
-                            : 'Cloned in Shop'
-                          : isSw
-                            ? 'Nakili Dukani (0 Stock · 0 TZS)'
-                            : 'Clone to Shop (0 Stock · 0 TZS)'}
-                      </span>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px] font-mono bg-white border border-slate-200 rounded p-2.5">
+                      <div>
+                        <div className="text-slate-500">Last Cost/Q</div>
+                        <div className="font-bold text-slate-900">
+                          TZS {clone.lastBuyingPricePerQuantumTzs.toLocaleString('en-US')}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Weighted Avg/Q</div>
+                        <div className="font-bold text-slate-900">
+                          TZS {clone.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Valuation</div>
+                        <div className="font-bold text-emerald-700">
+                          TZS {clone.inventoryValueTzs.toLocaleString('en-US')}
+                        </div>
+                      </div>
+                    </div>
 
+                    {clone.unitPricingOverrides.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {clone.unitPricingOverrides.map((ov) => (
+                          <span
+                            key={ov.overrideId}
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                              ov.isOverridden
+                                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                            }`}
+                          >
+                            {ov.unitCode}: TZS {ov.effectiveSellingPriceTzs.toLocaleString('en-US')}
+                            {ov.isOverridden ? ' (Amended)' : ' (Std)'}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void openPricingModal(clone)}
+                        className="flex-1 min-h-[36px] px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-md text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Tag className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                        <span>{isSw ? 'Bei Sanifu / Rekebisha' : 'Standard / Amend Price'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void openPurchaseModal(clone)}
+                        className="flex-1 min-h-[36px] px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <PackagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{isSw ? 'Ingiza Manunuzi (Stock-In)' : 'Record Stock-In Receipt'}</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Create Active Sellable Merchant Product */}
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
             <div className="border-b border-slate-100 pb-3">
               <h3 className="text-sm font-bold text-slate-950">
-                {isSw ? 'Usajili wa Bidhaa Mpya Kwenye Rafu (Mali ya Nje)' : 'New Shelf Ingestion & Stock-In'}
+                {isSw ? 'Usajili wa Bidhaa Mpya Kwenye Rafu (PostgreSQL)' : 'Create Active Merchant Product'}
               </h3>
               <p className="text-xs text-slate-500">
-                {isSw ? 'Ongeza bidhaa moja kwa moja kwenye hesabu za duka na kuziunganisha na PostgreSQL.' : 'Ingest new stock directly into duka shelves synced with PostgreSQL.'}
+                {isSw
+                  ? 'Ongeza bidhaa inayouzika dukani moja kwa moja kwenye PostgreSQL.'
+                  : 'Register a live sellable Merchant SKU synced directly to PostgreSQL.'}
               </p>
             </div>
 
-            <form onSubmit={handleIngestShelfItem} className="space-y-4 bg-slate-50 p-4 rounded-lg border border-slate-200">
+            <form
+              onSubmit={handleIngestShelfItem}
+              className="space-y-4 bg-slate-50 p-4 rounded-lg border border-slate-200"
+            >
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700">SKU Code</label>
+                  <label className="text-xs font-semibold text-slate-700">SMS SKU Code (max 8)</label>
                   <input
                     type="text"
+                    maxLength={8}
                     value={newSku}
                     onChange={(e) => setNewSku(e.target.value)}
-                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    placeholder="SGR01"
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 uppercase"
                     required
                   />
                 </div>
-                <div className="space-y-1.5 sm:col-span-2">
+                <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-700">
-                    {isSw ? 'Jina la Bidhaa' : 'Product Name'}
+                    {isSw ? 'Jina (Kiswahili)' : 'Name (Swahili)'}
                   </label>
                   <input
                     type="text"
                     value={newNameSw}
                     onChange={(e) => setNewNameSw(e.target.value)}
+                    placeholder={isSw ? 'Jina la bidhaa...' : 'Product name (Swahili)...'}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Jina (English)' : 'Name (English)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={newNameEn}
+                    onChange={(e) => setNewNameEn(e.target.value)}
+                    placeholder={isSw ? 'Jina kwa Kiingereza...' : 'Product name (English)...'}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">Unit TZS (1KG)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={newUnitPriceTzsForm || ''}
+                    onChange={(e) => setNewUnitPriceTzsForm(parseInt(e.target.value, 10) || 0)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">Carton/Bulk TZS</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={newCartonPriceTzsForm || ''}
+                    onChange={(e) => setNewCartonPriceTzsForm(parseInt(e.target.value, 10) || 0)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">Loose Quanta</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={newQuantaQty}
+                    onChange={(e) => setNewQuantaQty(parseInt(e.target.value, 10) || 0)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">Sealed Sacks/Ctn</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={newSealedQty}
+                    onChange={(e) => setNewSealedQty(parseInt(e.target.value, 10) || 0)}
                     className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
                     required
                   />
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700">
-                  {isSw ? 'Idadi ya Quanta (Hifadhi ya Msingi)' : 'Quanta Quantity (Base Stock)'}
-                </label>
-                <input
-                  type="number"
-                  min="4"
-                  value={newQuantaQty}
-                  onChange={(e) => setNewQuantaQty(parseInt(e.target.value) || 4)}
-                  className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
-                  required
-                />
-              </div>
-
               <button
                 type="submit"
-                className="w-full min-h-[42px] px-4 py-2 bg-slate-950 hover:bg-slate-900 text-white font-semibold text-xs rounded-lg shadow-sm transition-colors cursor-pointer"
+                disabled={savingProduct}
+                className="w-full min-h-[42px] px-4 py-2 bg-slate-950 hover:bg-slate-900 disabled:opacity-60 text-white font-semibold text-xs rounded-lg shadow-sm transition-colors cursor-pointer"
               >
-                {isSw ? 'Weka Bidhaa Hii Kwenye Rafu' : 'Ingest Item onto Shelf'}
+                {savingProduct
+                  ? isSw
+                    ? 'Inahifadhi...'
+                    : 'Saving...'
+                  : isSw
+                    ? 'Sajili Bidhaa Kwenye Rafu'
+                    : 'Create Product in PostgreSQL'}
               </button>
             </form>
 
-            {/* Current Shop Shelf Overview (including cloned 0-stock / 0-TZS rows) */}
+            {/* Current Merchant Shelf Overview */}
             <div className="space-y-2 pt-2 border-t border-slate-100">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                {isSw ? 'Hifadhi ya Sasa Dukani' : 'Current Shop Shelf Ledger'}
+                {isSw ? 'Hifadhi ya Sasa ya Mfanyabiashara' : 'Current Merchant Shelf Ledger'}
               </h4>
-              <div className="space-y-2">
-                {shelfItems.map((item) => (
-                  <div
-                    key={item.itemId}
-                    className="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 font-mono font-bold text-slate-950 truncate">
-                        <span>{item.sku}</span>
-                        {item.syncStatus === 'PENDING_GLOBAL_CLONE_SYNC' && (
-                          <span className="text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-200 px-1.5 py-0.5 rounded">
-                            {isSw ? 'Inasubiri Usawazishaji' : 'Pending Sync'}
-                          </span>
-                        )}
+              {shelfItems.length === 0 ? (
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna bidhaa kwenye rafu bado"
+                  titleEn="No shelf products yet"
+                  descriptionSw="Ongeza bidhaa mpya hapo juu ili kuona leja ya rafu."
+                  descriptionEn="Register a product above to populate the Merchant shelf ledger."
+                />
+              ) : (
+                <div className="space-y-2">
+                  {shelfItems.map((item) => (
+                    <div
+                      key={item.itemId}
+                      className="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 font-mono font-bold text-slate-950 truncate">
+                          <span>{item.sku}</span>
+                        </div>
+                        <div className="text-slate-600 truncate">
+                          {isSw ? item.productNameSw : item.productNameEn}
+                        </div>
                       </div>
-                      <div className="text-slate-600 truncate">
-                        {isSw ? item.productNameSw : item.productNameEn}
+                      <div className="text-right font-mono shrink-0">
+                        <div className="font-bold text-slate-950">
+                          {item.availableQuanta}Q{' '}
+                          {typeof item.sealedBulkPackagesStock === 'number'
+                            ? `(+${item.sealedBulkPackagesStock} sealed)`
+                            : ''}
+                        </div>
+                        <div className="text-[11px] text-emerald-700">
+                          TZS {item.unitPriceTzs.toLocaleString('en-US')} / unit
+                        </div>
                       </div>
                     </div>
-                    <div className="text-right font-mono shrink-0">
-                      <div className="font-bold text-slate-950">{item.availableQuanta} Quanta</div>
-                      <div className="text-[11px] text-emerald-700">
-                        TZS {item.unitPriceTzs.toLocaleString('en-US')} / Q
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Merchant Custom Units Configurator (Strictly under Inventory & Catalogs) */}
+          {/* Merchant Custom Units Configurator */}
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
             <div className="border-b border-slate-100 pb-3">
               <h3 className="text-sm font-bold text-slate-950">
-                {isSw ? 'Vipimo Maalum vya Duka (Merchant Custom Units)' : 'Merchant Custom Units Configurator'}
+                {isSw ? 'Vipimo Maalum vya Mfanyabiashara (Merchant Custom Units)' : 'Merchant Custom Units Configurator'}
               </h3>
               <p className="text-xs text-slate-500">
                 {isSw
-                  ? 'Sanidi vipimo vya kienyeji (kama Debe, Sado, Dumu) vinavyobadilishwa kuwa Quanta kamili (KG * 4).'
-                  : 'Configure bespoke local units (Debe, Sado, Dumu) mapped to integer Quanta scale (KG * 4).'}
+                  ? 'Sanidi vipimo vya kienyeji (Debe, Sado, Dumu) kwa bidhaa husika vikibadilishwa kuwa Quarter Quanta (KG × 4).'
+                  : 'Attach bespoke local units (Debe, Sado, Dumu) to a specific product mapped to integer Quarter-Quanta (KG × 4).'}
               </p>
             </div>
 
-            <form onSubmit={handleCreateCustomUnit} className="space-y-4 bg-slate-50 p-4 rounded-lg border border-slate-200">
+            <form
+              onSubmit={handleCreateCustomUnit}
+              className="space-y-4 bg-slate-50 p-4 rounded-lg border border-slate-200"
+            >
+              {shelfItems.some((s) => isUuid(s.itemId)) && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Bidhaa Husika (Product SKU)' : 'Target Product SKU'}
+                  </label>
+                  <select
+                    value={targetUnitProductId}
+                    onChange={(e) => setTargetUnitProductId(e.target.value)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  >
+                    {shelfItems
+                      .filter((s) => isUuid(s.itemId))
+                      .map((s) => (
+                        <option key={s.itemId} value={s.itemId}>
+                          {s.sku} — {isSw ? s.productNameSw : s.productNameEn}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-700">
-                    {isSw ? 'Jina la Kipimo (Mf. Debe, Sado)' : 'Unit Name (e.g. Debe, Sado)'}
+                    {isSw ? 'Msimbo (Mf. DEBE, SADO)' : 'Unit Code (e.g. DEBE, SADO)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={newUnitCode}
+                    onChange={(e) => setNewUnitCode(e.target.value)}
+                    placeholder="DEBE"
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 uppercase"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Jina la Kipimo (Mf. Debe 18KG)' : 'Unit Label (e.g. Debe 18KG)'}
                   </label>
                   <input
                     type="text"
                     value={newUnitName}
                     onChange={(e) => setNewUnitName(e.target.value)}
-                    placeholder={isSw ? 'Mf. Debe la Pamba' : 'e.g. Debe Special'}
-                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    placeholder={isSw ? 'Debe la Mafuta (18 KG)' : 'Debe Special (18 KG)'}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
                     required
                   />
                 </div>
-
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-700">
-                    {isSw ? 'Uzito wa Kilo (Base KG)' : 'Base Weight in KG'}
+                    {isSw ? 'Uzito wa Kilo (0.25×)' : 'Base Weight in KG (0.25 step)'}
                   </label>
                   <input
                     type="number"
-                    step="0.5"
+                    step="0.25"
                     min="0.25"
                     value={newBaseKg}
-                    onChange={(e) => setNewBaseKg(parseFloat(e.target.value) || 1)}
-                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    onChange={(e) => setNewBaseKg(parseFloat(e.target.value) || 0.25)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Bei ya Kipimo (TZS)' : 'Unit Selling Price (TZS)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={newUnitPriceTzs}
+                    onChange={(e) => setNewUnitPriceTzs(parseInt(e.target.value, 10) || 1)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
                     required
                   />
                 </div>
               </div>
 
+              <label className="flex items-center gap-2 text-xs text-slate-700 font-medium cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={newUnitIsWholesale}
+                  onChange={(e) => setNewUnitIsWholesale(e.target.checked)}
+                  className="rounded border-slate-300 accent-emerald-600"
+                />
+                <span>
+                  {isSw ? 'Hiki ni Kipimo cha Jumla (Wholesale Tier)' : 'Mark as Wholesale Tier (Channel Harmony)'}
+                </span>
+              </label>
+
               <div className="text-[11px] text-emerald-800 font-mono bg-emerald-50 p-2.5 rounded border border-emerald-100">
-                {isSw ? 'Ubadilishaji wa Hisabati:' : 'Conversion Formula:'} {newBaseKg} KG × 4 ={' '}
+                {isSw ? 'Ubadilishaji:' : 'Conversion:'} {newBaseKg} KG × 4 ={' '}
                 <strong>{Math.round(newBaseKg * 4)} Quarter Quanta</strong>
               </div>
 
               <button
                 type="submit"
-                className="w-full min-h-[42px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg shadow-sm transition-colors cursor-pointer flex items-center justify-center gap-2"
+                disabled={savingUnit || !isUuid(targetUnitProductId)}
+                className="w-full min-h-[42px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold text-xs rounded-lg shadow-sm transition-colors cursor-pointer flex items-center justify-center gap-2"
               >
                 <PlusCircle className="w-4 h-4" aria-hidden="true" />
-                <span>{isSw ? 'Hifadhi Kipimo Kipya (Hifadhidata ya SokoKuu)' : 'Save Custom Unit to Cloud Database Core'}</span>
+                <span>
+                  {savingUnit
+                    ? isSw
+                      ? 'Inahifadhi...'
+                      : 'Saving...'
+                    : isSw
+                      ? 'Hifadhi Kipimo Kipya (PostgreSQL)'
+                      : 'Save Custom Unit to PostgreSQL'}
+                </span>
               </button>
             </form>
 
             <div className="space-y-2 pt-2">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                {isSw ? 'Vipimo Vinavyotumika Sasa' : 'Active Merchant Units'}
+                {isSw ? 'Vipimo Vinavyotumika Sasa' : 'Active Merchant Custom Units'}
               </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {customUnits.map((u) => (
-                  <div key={u.unitId} className="bg-white border border-slate-200 rounded-lg p-3 space-y-1 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-xs text-slate-950">{u.unitName}</span>
-                      <span className="font-mono text-xs text-emerald-700 font-semibold">{u.quantaEquivalent} Quanta</span>
+              {customUnits.length === 0 ? (
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna vipimo maalum bado"
+                  titleEn="No custom units yet"
+                  descriptionSw="Ongeza kipimo maalum hapo juu (mf. Debe au Sado) kwa bidhaa yako."
+                  descriptionEn="Save a custom unit above to attach local measures to your products."
+                />
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {customUnits.map((u) => (
+                    <div
+                      key={u.unitId}
+                      className="bg-white border border-slate-200 rounded-lg p-3 space-y-1 shadow-sm"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-slate-950">{u.unitName}</span>
+                        <span className="font-mono text-xs text-emerald-700 font-semibold">
+                          {u.quantaEquivalent}Q
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600">{u.descriptionSw}</p>
+                      <div className="text-[10px] font-mono text-slate-400">
+                        {u.productSku ? `${u.productSku} · ` : ''}Base: {u.baseMultiplierKg} KG · TZS{' '}
+                        {u.priceTzs.toLocaleString('en-US')}
+                      </div>
                     </div>
-                    <p className="text-[11px] text-slate-600">{u.descriptionSw}</p>
-                    <div className="text-[10px] font-mono text-slate-400">Base: {u.baseMultiplierKg} KG</div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -846,10 +1595,12 @@ export function InventoryAndUnitManager({
       {/* DYNAMIC POS QUANTITY PROMPT MODAL OVERLAY */}
       {selectedItemForSale && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden p-6 space-y-5">
             <div className="flex items-start justify-between border-b border-slate-100 pb-3">
               <div>
-                <div className="font-mono text-xs font-bold text-emerald-700">{selectedItemForSale.sku}</div>
+                <div className="font-mono text-xs font-bold text-emerald-700">
+                  {selectedItemForSale.sku}
+                </div>
                 <h3 className="text-base font-bold text-slate-950 mt-0.5">
                   {isSw ? selectedItemForSale.productNameSw : selectedItemForSale.productNameEn}
                 </h3>
@@ -872,15 +1623,18 @@ export function InventoryAndUnitManager({
                 <input
                   type="range"
                   min="1"
-                  max={selectedItemForSale.availableQuanta}
+                  max={maxPosQuanta}
                   value={promptQuantity}
-                  onChange={(e) => setPromptQuantity(parseInt(e.target.value) || 1)}
+                  onChange={(e) => setPromptQuantity(parseInt(e.target.value, 10) || 1)}
                   className="w-full accent-emerald-600 cursor-pointer"
                 />
                 <div className="flex justify-between text-[11px] font-mono text-slate-500">
-                  <span>1 Quanta (250g)</span>
+                  <span>1 Quanta (250g/mL)</span>
                   <span>
-                    {isSw ? 'Upeo:' : 'Max:'} {selectedItemForSale.availableQuanta} Quanta
+                    Loose: {selectedItemForSale.availableQuanta}Q
+                    {typeof selectedItemForSale.sealedBulkPackagesStock === 'number'
+                      ? ` · Sealed: ${selectedItemForSale.sealedBulkPackagesStock}`
+                      : ''}
                   </span>
                 </div>
               </div>
@@ -908,9 +1662,14 @@ export function InventoryAndUnitManager({
               </div>
 
               <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-3.5 flex items-center justify-between text-xs">
-                <span className="text-slate-700 font-medium">{isSw ? 'Jumla ya Mauzo:' : 'Total Payable Amount:'}</span>
+                <span className="text-slate-700 font-medium">
+                  {isSw ? 'Makadirio ya Mauzo:' : 'Estimated POS Total:'}
+                </span>
                 <span className="font-mono font-bold text-emerald-800 text-sm">
-                  TZS {(promptQuantity * (selectedItemForSale.unitPriceTzs || 1250)).toLocaleString('en-US')}
+                  TZS{' '}
+                  {Math.round(
+                    (promptQuantity * selectedItemForSale.unitPriceTzs) / 4
+                  ).toLocaleString('en-US')}
                 </span>
               </div>
 
@@ -920,14 +1679,305 @@ export function InventoryAndUnitManager({
                   onClick={() => setSelectedItemForSale(null)}
                   className="flex-1 min-h-[44px] px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold text-xs rounded-xl cursor-pointer transition-colors"
                 >
-                  {isSw ? 'Ghairi (Cancel)' : 'Cancel'}
+                  {isSw ? 'Ghairi' : 'Cancel'}
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 min-h-[44px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-xl shadow-sm cursor-pointer transition-colors flex items-center justify-center gap-2"
+                  disabled={submittingPos}
+                  className="flex-1 min-h-[44px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold text-xs rounded-xl shadow-sm cursor-pointer transition-colors flex items-center justify-center gap-2"
                 >
                   <DollarSign className="w-4 h-4" aria-hidden="true" />
-                  <span>{isSw ? 'Thibitisha & Kata Mauzo' : 'Confirm & Deduct Stock'}</span>
+                  <span>
+                    {submittingPos
+                      ? isSw
+                        ? 'Inakata...'
+                        : 'Processing...'
+                      : isSw
+                        ? 'Thibitisha & Kata Mauzo'
+                        : 'Confirm & Deduct Stock'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* STANDARD / AMENDED PRICE MODAL FOR CLONED GLOBAL SKU */}
+      {pricingModalClone && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div>
+                <div className="font-mono text-xs font-bold text-emerald-700">
+                  {pricingModalClone.canonicalSku}
+                </div>
+                <h3 className="text-base font-bold text-slate-950">
+                  {isSw ? 'Chagua Bei Kuu / Rekebisha Bei' : 'Standard & Amended Selling Price'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPricingModalClone(null)}
+                className="text-slate-400 hover:text-slate-900 p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {loadingPriceModal ? (
+              <p className="text-xs text-slate-500 py-4 text-center">Loading standard prices...</p>
+            ) : pricingModalUnits.length === 0 || pricingModalStandards.length === 0 ? (
+              <p className="text-xs text-slate-600 py-4">
+                {isSw
+                  ? 'Hakuna bei kuu zilizochapishwa na Super Admin kwa bidhaa hii bado.'
+                  : 'No Super Admin standard prices published for this SKU yet.'}
+              </p>
+            ) : (
+              <form onSubmit={handleSaveMerchantPrice} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Kipimo cha Bidhaa' : 'Product Unit'}
+                  </label>
+                  <select
+                    value={selectedGlobalUnitId}
+                    onChange={(e) => {
+                      const nextUnitId = e.target.value;
+                      setSelectedGlobalUnitId(nextUnitId);
+                      const firstMatch = pricingModalStandards.find(
+                        (p) => p.globalProductUnitId === nextUnitId
+                      );
+                      if (firstMatch) setSelectedStandardPriceId(firstMatch.id);
+                    }}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  >
+                    {pricingModalUnits.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.displayLabelSw || u.systemUnit?.nameSw} ({u.quarterQuantaPerUnit}Q)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Bei Kuu ya SokoKuu (Standard Tier)' : 'Published Standard Price'}
+                  </label>
+                  <select
+                    value={selectedStandardPriceId}
+                    onChange={(e) => setSelectedStandardPriceId(e.target.value)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  >
+                    {pricingModalStandards
+                      .filter((p) => p.globalProductUnitId === selectedGlobalUnitId)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          [{p.profileType} v{p.version}] Min {p.minQty} — TZS{' '}
+                          {p.standardPriceTzs.toLocaleString('en-US')}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw
+                      ? 'Marekebisho ya Bei Yako ya Mfanyabiashara (Hiari - acha wazi kutumia Bei Kuu)'
+                      : 'Custom Selling Price Amendment (optional — leave blank to adopt Standard Price)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={amendedPriceInput}
+                    onChange={(e) => setAmendedPriceInput(e.target.value)}
+                    placeholder={isSw ? 'Weka bei (TZS)...' : 'Enter price (TZS)...'}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={savingPriceModal}
+                    onClick={() => void handleResetPriceToStandard()}
+                    className="px-3 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{isSw ? 'Rejesha Bei Kuu' : 'Reset Override'}</span>
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingPriceModal}
+                    className="flex-1 min-h-[40px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                  >
+                    {savingPriceModal
+                      ? isSw
+                        ? 'Inahifadhi...'
+                        : 'Saving...'
+                      : isSw
+                        ? 'Hifadhi Bei'
+                        : 'Save Price'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* EXTERNAL PURCHASE RECEIPT MODAL */}
+      {purchaseModalClone && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div>
+                <div className="font-mono text-xs font-bold text-emerald-700">
+                  {purchaseModalClone.canonicalSku}
+                </div>
+                <h3 className="text-base font-bold text-slate-950">
+                  {isSw ? 'Risiti ya Manunuzi ya Nje (Stock-In)' : 'External Purchase Receipt'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPurchaseModalClone(null)}
+                className="text-slate-400 hover:text-slate-900 p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveExternalPurchase} className="space-y-3.5">
+              {purchaseModalUnits.length > 0 ? (
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Kipimo cha Manunuzi' : 'Purchase Unit'}
+                  </label>
+                  <select
+                    value={purchaseUnitId}
+                    onChange={(e) => {
+                      setPurchaseUnitId(e.target.value);
+                      const found = purchaseModalUnits.find((u) => u.id === e.target.value);
+                      if (found) setPurchaseQuantaPerUnit(found.quarterQuantaPerUnit);
+                    }}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  >
+                    {purchaseModalUnits.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.displayLabelSw || u.systemUnit?.nameSw} ({u.quarterQuantaPerUnit}Q)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Quanta kwa Kifungashio' : 'Quarter-Quanta per Unit'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={purchaseQuantaPerUnit}
+                    onChange={(e) => setPurchaseQuantaPerUnit(parseInt(e.target.value, 10) || 4)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Msambazaji (Supplier)' : 'Supplier Name'}
+                  </label>
+                  <input
+                    type="text"
+                    value={purchaseSupplierName}
+                    onChange={(e) => setPurchaseSupplierName(e.target.value)}
+                    placeholder={isSw ? 'Jina la msambazaji...' : 'Supplier name...'}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Hali ya Risiti' : 'Receipt Status'}
+                  </label>
+                  <select
+                    value={purchaseStatus}
+                    onChange={(e) =>
+                      setPurchaseStatus(e.target.value as 'GOODS_RECEIVED' | 'ORDER_CONFIRMED')
+                    }
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                  >
+                    <option value="GOODS_RECEIVED">GOODS_RECEIVED (+Stock)</option>
+                    <option value="ORDER_CONFIRMED">ORDER_CONFIRMED (Pre-Arrival)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-700">
+                  {isSw ? 'Rejea ya Ankara / Risiti' : 'Supplier Reference'}
+                </label>
+                <input
+                  type="text"
+                  value={purchaseSupplierRef}
+                  onChange={(e) => setPurchaseSupplierRef(e.target.value)}
+                  placeholder="INV-..."
+                  className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 font-mono"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Idadi (Units)' : 'Quantity Units'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={purchaseQtyUnits}
+                    onChange={(e) => setPurchaseQtyUnits(parseInt(e.target.value, 10) || 1)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Jumla ya Gharama (TZS)' : 'Agreed Total Cost (TZS)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={purchaseTotalCostTzs || ''}
+                    onChange={(e) => setPurchaseTotalCostTzs(parseInt(e.target.value, 10) || 0)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-900"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPurchaseModalClone(null)}
+                  className="flex-1 min-h-[40px] px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer"
+                >
+                  {isSw ? 'Ghairi' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingPurchaseModal}
+                  className="flex-1 min-h-[40px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                >
+                  {savingPurchaseModal
+                    ? isSw
+                      ? 'Inahifadhi...'
+                      : 'Recording...'
+                    : isSw
+                      ? 'Hifadhi Risiti'
+                      : 'Commit Receipt'}
                 </button>
               </div>
             </form>

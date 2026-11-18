@@ -29,6 +29,117 @@ export class CatalogService {
     private readonly outboxService: OutboxService,
   ) {}
 
+  async listCategories() {
+    return this.prismaService.sokoCatalogCategory.findMany({
+      orderBy: { nameSw: 'asc' },
+    });
+  }
+
+  async listMarketplaceMerchants(tier?: string) {
+    const where: Prisma.BusinessProfileWhereInput = { isOpen: true };
+    if (tier && ['WHOLESALE_HUB', 'RETAIL_DUKA', 'HYBRID_STORE'].includes(tier.toUpperCase())) {
+      where.tier = tier.toUpperCase() as Prisma.EnumBusinessTierFilter['equals'];
+    }
+
+    const rows = await this.prismaService.businessProfile.findMany({
+      where,
+      include: {
+        _count: {
+          select: { products: { where: { isActive: true } } },
+        },
+      },
+      orderBy: { businessName: 'asc' },
+      take: 200,
+    });
+
+    return rows.map((row) => ({
+      merchantId: row.id,
+      smsShortCode: row.smsShortCode,
+      merchantName: row.businessName,
+      tier: row.tier,
+      ward: row.ward,
+      district: row.district,
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
+      isPlatformManaged: row.isPlatformManaged,
+      activeSkusCount: row._count.products,
+      logoUrl:
+        row.logoCdnUrl ?? 'https://ik.imagekit.io/sokokuutz/catalog/default-merchant.webp',
+    }));
+  }
+
+  async listMerchantClones(tenantContext?: TenantContext, requestedBusinessId?: string) {
+    let targetMerchantId = tenantContext?.businessId ?? null;
+    if (tenantContext?.isSuperAdmin && requestedBusinessId) {
+      targetMerchantId = requestedBusinessId;
+    } else if (
+      requestedBusinessId &&
+      targetMerchantId &&
+      requestedBusinessId !== targetMerchantId
+    ) {
+      throw new ForbiddenException('Cross-Merchant cloned catalog read denied.');
+    }
+
+    if (!targetMerchantId) {
+      throw new ForbiddenException(
+        'Authenticated Merchant tenant context is required to inspect cloned products.',
+      );
+    }
+
+    const clones = await this.prismaService.merchantClonedProduct.findMany({
+      where: { retailerBusinessId: targetMerchantId },
+      include: {
+        globalCatalog: true,
+        unitPricingOverrides: {
+          where: { isActive: true },
+          include: {
+            globalProductUnit: {
+              include: { systemUnit: true },
+            },
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    return clones.map((clone) => ({
+      clonedProductId: clone.id,
+      retailerBusinessId: clone.retailerBusinessId,
+      globalCatalogId: clone.globalCatalogId,
+      canonicalSku: clone.globalCatalog.canonicalSku,
+      fixedNameSw: clone.globalCatalog.fixedNameSw,
+      fixedNameEn: clone.globalCatalog.fixedNameEn,
+      imagekitCdnUrl: clone.imagekitCdnUrl || clone.globalCatalog.imagekitCdnUrl,
+      availableQuantaStock: clone.availableQuantaStock,
+      lowStockThresholdQuanta: clone.lowStockThresholdQuanta,
+      unitPriceTzs: Number(clone.unitPriceTzs),
+      inventoryValueTzs: Number(clone.inventoryValueTzs),
+      lastBuyingPricePerQuantumTzs: Number(clone.lastBuyingPricePerQuantumTzs),
+      weightedAvgBuyingCostPerQuantumTzs: Number(clone.weightedAvgBuyingCostPerQuantumTzs),
+      buyingPriceEstablished: clone.buyingPriceEstablished,
+      unitPricingOverrides: clone.unitPricingOverrides.map((ov) => ({
+        overrideId: ov.id,
+        globalProductUnitId: ov.globalProductUnitId,
+        unitCode: ov.globalProductUnit.systemUnit.unitCode,
+        displayLabelSw:
+          ov.globalProductUnit.displayLabelSw || ov.globalProductUnit.systemUnit.nameSw,
+        displayLabelEn:
+          ov.globalProductUnit.displayLabelEn || ov.globalProductUnit.systemUnit.nameEn,
+        quarterQuantaPerUnit: ov.globalProductUnit.quarterQuantaPerUnit,
+        standardPriceId: ov.standardPriceId,
+        standardPriceVersion: ov.standardPriceVersion,
+        selectedStandardPriceTzs: ov.selectedStandardPriceTzs
+          ? Number(ov.selectedStandardPriceTzs)
+          : null,
+        amendedSellingPriceTzs: ov.amendedSellingPriceTzs
+          ? Number(ov.amendedSellingPriceTzs)
+          : null,
+        effectiveSellingPriceTzs: Number(ov.effectiveSellingPriceTzs),
+        isOverridden: ov.isOverridden,
+      })),
+    }));
+  }
+
   async createCategory(dto: CreateCatalogCategoryDto) {
     return this.prismaService.runInTransaction('Serializable', async (tx) => {
       try {

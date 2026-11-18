@@ -22,6 +22,39 @@ export class SalesLeadsService {
     private readonly outboxService: OutboxService,
   ) {}
 
+  async listLeads(status?: string) {
+    const normalizedStatus =
+      status && ['PROSPECT', 'CONVERTED', 'ARCHIVED'].includes(status.toUpperCase())
+        ? (status.toUpperCase() as 'PROSPECT' | 'CONVERTED' | 'ARCHIVED')
+        : undefined;
+
+    const leads = await this.prismaService.sokoLead.findMany({
+      where: normalizedStatus ? { status: normalizedStatus } : undefined,
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+
+    return {
+      count: leads.length,
+      leads: leads.map((lead) => ({
+        leadId: lead.id,
+        merchantName: lead.merchantName,
+        ownerName: lead.ownerName,
+        ownerPhoneE164: lead.ownerPhoneE164,
+        wardName: lead.wardName,
+        businessTier: lead.businessTier,
+        latitude: lead.latitude,
+        longitude: lead.longitude,
+        gpsAccuracyMeters: lead.gpsAccuracyMeters,
+        status: lead.status,
+        version: Number(lead.version),
+        convertedBusinessId: lead.convertedBusinessId,
+        capturedAtEat: lead.createdAt.toISOString(),
+        convertedAtEat: lead.convertedAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
   async captureProspectLead(dto: CreateLeadDto, agentUserId: string) {
     const leadId = randomUUID();
     const accuracy = dto.gpsAccuracyMeters ?? 10;
@@ -171,6 +204,7 @@ export class SalesLeadsService {
           district,
           latitude,
           longitude,
+          location,
           is_open,
           is_platform_managed,
           geospatial_map_enabled
@@ -185,6 +219,7 @@ export class SalesLeadsService {
           ${dto.district?.trim() || 'Dar es Salaam'},
           ${existingLead.latitude}::numeric(9,6),
           ${existingLead.longitude}::numeric(9,6),
+          ST_SetSRID(ST_MakePoint(${existingLead.longitude}::double precision, ${existingLead.latitude}::double precision), 4326)::geography,
           TRUE,
           TRUE,
           FALSE

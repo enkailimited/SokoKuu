@@ -1,6 +1,13 @@
-import { useState, useMemo } from 'react';
-import { Minus, Plus, Search, Wifi, WifiOff, CheckCircle2, Send } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Minus, Plus, Search, CheckCircle2, Send, AlertTriangle } from 'lucide-react';
 import type { Locale } from '../data/i18n';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { putQueuedOrder } from '../lib/indexedDbDemo';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
 export interface CatalogCartSku {
   productId: string;
@@ -8,7 +15,7 @@ export interface CatalogCartSku {
   sku: string;
   nameSw: string;
   nameEn: string;
-  unitType: 'QUARTER_KILO_LITRE' | 'HALF_KILO_LITRE' | 'SINGLE_KILO_LITRE' | 'CARTON' | 'SACK_25KG';
+  unitType: string;
   unitLabelSw: string;
   unitLabelEn: string;
   quarterQuantaPerUnit: number;
@@ -17,99 +24,152 @@ export interface CatalogCartSku {
   wholesalePriceTzs: number;
 }
 
-const CATALOG_SKUS: CatalogCartSku[] = [
-  {
-    productId: '4b9f3c10-2001-4a99-9111-000000000001',
-    sellerBusinessId: '9a001122-3344-5566-7788-99aabbccddee',
-    sku: 'MF-KOR-1L',
-    nameSw: 'Mafuta ya Kupikia Korie (Lita)',
-    nameEn: 'Korie Cooking Oil (1L / Fraction)',
-    unitType: 'SINGLE_KILO_LITRE',
-    unitLabelSw: 'Lita 1 (Robo 4)',
-    unitLabelEn: '1 Litre (4 Quanta)',
-    quarterQuantaPerUnit: 4,
-    wholesaleThresholdUnits: 3,
-    retailPriceTzs: 6_200,
-    wholesalePriceTzs: 5_450,
-  },
-  {
-    productId: '4b9f3c10-2001-4a99-9111-000000000002',
-    sellerBusinessId: '9a001122-3344-5566-7788-99aabbccddee',
-    sku: 'SK-KLM-ROBO',
-    nameSw: 'Sukari ya Kilombero (Robo 250g)',
-    nameEn: 'Kilombero Sugar (Robo 250g)',
-    unitType: 'QUARTER_KILO_LITRE',
-    unitLabelSw: 'Robo 1/4 KG',
-    unitLabelEn: 'Quarter Kilo (1/4)',
-    quarterQuantaPerUnit: 1,
-    wholesaleThresholdUnits: 8,
-    retailPriceTzs: 1_050,
-    wholesalePriceTzs: 880,
-  },
-  {
-    productId: '4b9f3c10-2001-4a99-9111-000000000003',
-    sellerBusinessId: '9a001122-3344-5566-7788-99aabbccddee',
-    sku: 'UN-SEM-25',
-    nameSw: 'Unga wa Sembe Bora (Mfuko 25KG)',
-    nameEn: 'Sembe Maize Flour (25KG Sack)',
-    unitType: 'SACK_25KG',
-    unitLabelSw: 'Mfuko 25KG',
-    unitLabelEn: '25KG Sack',
-    quarterQuantaPerUnit: 100,
-    wholesaleThresholdUnits: 2,
-    retailPriceTzs: 44_000,
-    wholesalePriceTzs: 39_500,
-  },
-];
-
-async function signCompactSmsHmac(payloadWithoutSig: string): Promise<string> {
-  const keyBytes = new TextEncoder().encode('sokokuu-duka-offline-hmac-2026');
-  const msgBytes = new TextEncoder().encode(payloadWithoutSig);
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sigBuffer = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
-  return Array.from(new Uint8Array(sigBuffer))
-    .slice(0, 3)
-    .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
-    .join('');
+interface MarketplaceMerchantOption {
+  businessId: string;
+  businessName: string;
+  tier: string;
+  ward: string;
 }
 
-// ============================================================================
-// RetailerCheckoutCart.tsx — Refactored to max-w-2xl mx-auto container layout
-// Inazuia kukunjuka kwenye kompyuta kubwa na kuleta muonekano safi wa simu (mobile UI).
-// ============================================================================
-export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
+interface ActiveProductDto {
+  productId: string;
+  sellerBusinessId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  unitPriceTzs: number;
+  cartonPriceTzs: number;
+  wholesaleThresholdUnits: number;
+  priceTiers: Array<{
+    unitType: string;
+    quarterQuantaPerUnit: number;
+    priceTzs: number;
+    isWholesaleTier: boolean;
+  }>;
+}
+
+export function RetailerCheckoutCart({
+  locale = 'en',
+  sellerBusinessId,
+}: {
+  locale?: Locale;
+  sellerBusinessId?: string | null;
+}) {
   const isSw = locale === 'sw';
+  const [merchants, setMerchants] = useState<MarketplaceMerchantOption[]>([]);
+  const [selectedMerchantId, setSelectedMerchantId] = useState<string>(sellerBusinessId || '');
+  const [catalogSkus, setCatalogSkus] = useState<CatalogCartSku[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [isOffline, setIsOffline] = useState(false);
-  const [quantities, setQuantities] = useState<Record<string, number>>({
-    '4b9f3c10-2001-4a99-9111-000000000001': 3,
-    '4b9f3c10-2001-4a99-9111-000000000002': 4,
-    '4b9f3c10-2001-4a99-9111-000000000003': 1,
-  });
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [backendOffline, setBackendOffline] = useState<boolean>(
+    typeof window !== 'undefined' ? !window.navigator.onLine : false
+  );
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [submissionNote, setSubmissionNote] = useState<{
-    mode: 'API' | 'SMS';
+    mode: 'API' | 'QUEUED_OFFLINE';
     orderRef: string;
     headline: string;
     summaryLine: string;
-    smsPayload?: string;
   } | null>(null);
+
+  const loadMerchantsAndCatalog = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.navigator.onLine) {
+      setBackendOffline(true);
+      return;
+    }
+
+    setLoading(true);
+    setBackendOffline(false);
+    setErrorNotice(null);
+
+    try {
+      const merchantList = await SokoApiClient.get<MarketplaceMerchantOption[]>(
+        '/marketplace/merchants',
+        false
+      );
+      const suppliers = (Array.isArray(merchantList) ? merchantList : []).filter(
+        (m) => m.tier === 'WHOLESALE_HUB' || m.tier === 'HYBRID_STORE'
+      );
+      const selectable = suppliers.length > 0 ? suppliers : Array.isArray(merchantList) ? merchantList : [];
+      setMerchants(selectable);
+
+      const targetSellerId =
+        selectedMerchantId && selectable.some((m) => m.businessId === selectedMerchantId)
+          ? selectedMerchantId
+          : selectable[0]?.businessId ?? '';
+
+      if (!targetSellerId) {
+        setSelectedMerchantId('');
+        setCatalogSkus([]);
+        return;
+      }
+
+      if (targetSellerId !== selectedMerchantId) {
+        setSelectedMerchantId(targetSellerId);
+      }
+
+      const activeProducts = await SokoApiClient.get<ActiveProductDto[]>(
+        `/products/active?businessId=${encodeURIComponent(targetSellerId)}`,
+        false
+      );
+
+      const mapped: CatalogCartSku[] = (Array.isArray(activeProducts) ? activeProducts : []).map(
+        (p) => {
+          const retailTier =
+            p.priceTiers?.find((t) => !t.isWholesaleTier) ?? p.priceTiers?.[0];
+          const wholesaleTier =
+            p.priceTiers?.find((t) => t.isWholesaleTier && t.unitType === retailTier?.unitType) ??
+            p.priceTiers?.find((t) => t.isWholesaleTier) ??
+            retailTier;
+          const unitType = retailTier?.unitType ?? wholesaleTier?.unitType ?? 'SINGLE_KILO_LITRE';
+          const retailPriceTzs = Number(retailTier?.priceTzs ?? p.unitPriceTzs ?? 0);
+          const wholesalePriceTzs = Number(wholesaleTier?.priceTzs ?? retailPriceTzs);
+
+          return {
+            productId: p.productId,
+            sellerBusinessId: p.sellerBusinessId,
+            sku: p.sku,
+            nameSw: p.nameSw,
+            nameEn: p.nameEn,
+            unitType,
+            unitLabelSw: unitType,
+            unitLabelEn: unitType,
+            quarterQuantaPerUnit: Number(retailTier?.quarterQuantaPerUnit ?? 4),
+            wholesaleThresholdUnits: Math.max(1, Number(p.wholesaleThresholdUnits ?? 10)),
+            retailPriceTzs,
+            wholesalePriceTzs,
+          };
+        }
+      );
+
+      setCatalogSkus(mapped);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else if (err instanceof SokoHttpError) {
+        setErrorNotice(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedMerchantId]);
+
+  useEffect(() => {
+    void loadMerchantsAndCatalog();
+  }, [loadMerchantsAndCatalog]);
 
   const visibleCatalog = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    if (!q) return CATALOG_SKUS;
-    return CATALOG_SKUS.filter(
+    if (!q) return catalogSkus;
+    return catalogSkus.filter(
       (item) =>
         item.nameSw.toLowerCase().includes(q) ||
         item.nameEn.toLowerCase().includes(q) ||
         item.sku.toLowerCase().includes(q)
     );
-  }, [searchTerm]);
+  }, [catalogSkus, searchTerm]);
 
   const adjustQuantity = (productId: string, delta: number) => {
     setQuantities((prev) => ({
@@ -125,7 +185,7 @@ export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
     let totalUnits = 0;
     const bareTokenItems: Array<{ productId: string; unitType: string; quantity: number }> = [];
 
-    for (const item of CATALOG_SKUS) {
+    for (const item of catalogSkus) {
       const qty = quantities[item.productId] ?? 0;
       if (qty <= 0) continue;
 
@@ -134,7 +194,7 @@ export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
       totalTzs += qty * activeUnitPrice;
       totalUnits += qty;
       totalSavingsTzs += wholesaleApplied
-        ? qty * (item.retailPriceTzs - item.wholesalePriceTzs)
+        ? Math.max(0, qty * (item.retailPriceTzs - item.wholesalePriceTzs))
         : 0;
 
       bareTokenItems.push({
@@ -145,50 +205,103 @@ export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
     }
 
     return { totalTzs, totalSavingsTzs, totalUnits, bareTokenItems };
-  }, [quantities]);
+  }, [catalogSkus, quantities]);
 
   const handleCompleteCheckout = async () => {
-    if (cartSummary.bareTokenItems.length === 0) return;
+    if (cartSummary.bareTokenItems.length === 0 || !selectedMerchantId) return;
+    setErrorNotice(null);
+    setSubmissionNote(null);
+    setSubmitting(true);
 
-    const ref8 = Math.random().toString(36).substring(2, 10).toUpperCase();
-
-    if (isOffline) {
-      const compactItems = cartSummary.bareTokenItems
-        .map((i, idx) => `I${idx + 1}:${i.quantity}`)
-        .join(',');
-      const unsigned = `SK#${ref8}#K99#${compactItems}`;
-      const sig6 = await signCompactSmsHmac(unsigned);
-      const fullSms = `${unsigned}#${sig6}`;
-
-      setSubmissionNote({
-        mode: 'SMS',
-        orderRef: ref8,
-        headline: isSw
-          ? 'Ujumbe wa WebCrypto NextSMS Uko Tayari'
-          : 'Offline NextSMS Order Ready',
-        summaryLine: isSw
-          ? `Oda ${ref8} · Herufi ${fullSms.length}/160 · Lipa Taslimu Mkononi (CoD)`
-          : `Ref ${ref8} · ${fullSms.length}/160 GSM-7 chars · Cash on Delivery`,
-        smsPayload: fullSms,
+    try {
+      const res = await SokoApiClient.post<{
+        orderId: string;
+        orderRef8: string;
+        status: string;
+        totalCashDueTzs: number;
+      }>('/marketplace/orders/submit-request', {
+        sellerBusinessId: selectedMerchantId,
+        originChannel: 'PWA_ONLINE',
+        paymentMethod: 'CASH',
+        deliveryFeeTzs: 0,
+        items: cartSummary.bareTokenItems,
       });
-      return;
-    }
 
-    setSubmissionNote({
-      mode: 'API',
-      orderRef: ref8,
-      headline: isSw
-        ? 'Ombi la Oda Limepokelewa · Hali: PLACED'
-        : 'B2B Purchase Request Placed · Status: PLACED',
-      summaryLine: isSw
-        ? `Oda #${ref8} · Bidhaa ${cartSummary.bareTokenItems.length} (${cartSummary.totalUnits} vipimo) · TZS ${cartSummary.totalTzs.toLocaleString('en-US')} (Imethibitishwa na Seva)`
-        : `Order #${ref8} · ${cartSummary.bareTokenItems.length} SKUs (${cartSummary.totalUnits} units) · Server-verified CoD TZS ${cartSummary.totalTzs.toLocaleString('en-US')}`,
-    });
+      setQuantities({});
+      setSubmissionNote({
+        mode: 'API',
+        orderRef: res.orderRef8,
+        headline: isSw
+          ? `Ombi la Oda Limepokelewa · Hali: ${res.status}`
+          : `B2B Purchase Request Placed · Status: ${res.status}`,
+        summaryLine: isSw
+          ? `Oda #${res.orderRef8} · Bidhaa ${cartSummary.bareTokenItems.length} (${cartSummary.totalUnits} vipimo) · TZS ${res.totalCashDueTzs.toLocaleString('en-US')}`
+          : `Order #${res.orderRef8} · ${cartSummary.bareTokenItems.length} SKUs (${cartSummary.totalUnits} units) · Server-verified CoD TZS ${res.totalCashDueTzs.toLocaleString('en-US')}`,
+      });
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        const idempotencyKey = crypto.randomUUID();
+        const sellerName =
+          merchants.find((m) => m.businessId === selectedMerchantId)?.businessName ??
+          selectedMerchantId;
+        await putQueuedOrder({
+          idempotencyKey,
+          sellerBusinessId: selectedMerchantId,
+          sellerHub: sellerName,
+          compactSmsBody: `${cartSummary.bareTokenItems.length} SKU(s) queued`,
+          totalTzs: cartSummary.totalTzs,
+          items: cartSummary.bareTokenItems,
+          clientCreatedAt: new Date().toISOString(),
+          syncStatus: 'QUEUED_OFFLINE',
+          retryCount: 0,
+        });
+        setSubmissionNote({
+          mode: 'QUEUED_OFFLINE',
+          orderRef: idempotencyKey.slice(0, 8).toUpperCase(),
+          headline: isSw
+            ? 'Oda Imehifadhiwa kwenye Foleni ya Nje ya Mtandao (IndexedDB)'
+            : 'Order Queued in Offline Outbox (IndexedDB)',
+          summaryLine: isSw
+            ? `Itatumwa kwa seva ya NestJS mtandao ukirejea · TZS ${cartSummary.totalTzs.toLocaleString('en-US')}`
+            : `Will sync to NestJS backend when connectivity resumes · TZS ${cartSummary.totalTzs.toLocaleString('en-US')}`,
+        });
+      } else {
+        setErrorNotice(
+          err instanceof Error ? err.message : 'Order submission failed.'
+        );
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
-      {/* Top Catalog Search & Network Context Switcher */}
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          onRetry={() => void loadMerchantsAndCatalog()}
+          retrying={loading}
+        />
+      )}
+
+      {errorNotice && (
+        <div
+          role="alert"
+          className="border border-rose-200 bg-rose-50 rounded-lg p-4 flex items-center justify-between gap-3 text-xs font-semibold text-rose-900"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-hidden="true" />
+            <span>{errorNotice}</span>
+          </div>
+          <button type="button" onClick={() => setErrorNotice(null)} className="cursor-pointer">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Search & Supplier Selector */}
       <section className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="relative flex-1 min-w-0">
           <Search
@@ -200,121 +313,123 @@ export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder={
-              isSw ? 'Tafuta sukari, mafuta, unga...' : 'Search sugar, oil, flour...'
+              isSw ? 'Tafuta bidhaa au SKU...' : 'Search catalog products or SKU...'
             }
             className="w-full min-h-[44px] pl-10 pr-4 text-sm bg-white border border-slate-200 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
           />
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setIsOffline((prev) => !prev);
-            setSubmissionNote(null);
-          }}
-          className={`inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2 text-xs font-medium rounded-md border whitespace-nowrap shrink-0 cursor-pointer shadow-xs ${
-            isOffline
-              ? 'bg-orange-50 border-orange-200 text-orange-900'
-              : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-          }`}
-        >
-          {isOffline ? (
-            <WifiOff className="w-4 h-4 text-orange-600" aria-hidden="true" />
-          ) : (
-            <Wifi className="w-4 h-4 text-emerald-600" aria-hidden="true" />
-          )}
-          <span>
-            {isOffline
-              ? isSw
-                ? 'Mtandao: Nje ya Mtandao (SMS)'
-                : 'Offline Mode (NextSMS)'
-              : isSw
-                ? 'Mtandao: Uko Mtandaoni'
-                : 'Online Mode (Direct API)'}
-          </span>
-        </button>
+        {merchants.length > 0 && (
+          <select
+            value={selectedMerchantId}
+            onChange={(e) => {
+              setSelectedMerchantId(e.target.value);
+              setQuantities({});
+              setSubmissionNote(null);
+            }}
+            className="min-h-[44px] px-3 py-2 text-xs font-medium rounded-md border border-slate-200 bg-white text-slate-800"
+          >
+            {merchants.map((m) => (
+              <option key={m.businessId} value={m.businessId}>
+                {m.businessName} ({m.ward})
+              </option>
+            ))}
+          </select>
+        )}
       </section>
 
       {/* Checkout Item List */}
       <section className="bg-white border border-slate-100 rounded-lg shadow-sm divide-y divide-slate-100">
-        {visibleCatalog.map((item) => {
-          const qty = quantities[item.productId] ?? 0;
-          const wholesaleActive = qty >= item.wholesaleThresholdUnits;
-          const activePrice = wholesaleActive ? item.wholesalePriceTzs : item.retailPriceTzs;
+        {visibleCatalog.length === 0 ? (
+          <div className="p-4">
+            <EmptyStateCard
+              locale={locale}
+              titleSw="Hakuna bidhaa zilizopatikana"
+              titleEn="No catalog items available"
+              descriptionSw="Hakuna bidhaa zinazouzwa kwa mfanyabiashara aliyechaguliwa kwenye PostgreSQL."
+              descriptionEn="No active PostgreSQL products found for the selected Merchant."
+            />
+          </div>
+        ) : (
+          visibleCatalog.map((item) => {
+            const qty = quantities[item.productId] ?? 0;
+            const wholesaleActive = qty >= item.wholesaleThresholdUnits;
+            const activePrice = wholesaleActive ? item.wholesalePriceTzs : item.retailPriceTzs;
 
-          return (
-            <div
-              key={item.productId}
-              className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-            >
-              <div className="space-y-1 min-w-0">
-                <div className="text-sm font-semibold text-slate-900">
-                  {isSw ? item.nameSw : item.nameEn}
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
-                  <span className="font-mono">{item.sku}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{isSw ? item.unitLabelSw : item.unitLabelEn}</span>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono tabular-nums">
-                    {isSw
-                      ? `Jumla kuanzia ${item.wholesaleThresholdUnits}+`
-                      : `Wholesale at ${item.wholesaleThresholdUnits}+`}
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2.5 pt-1">
-                  <span
-                    className={`text-sm font-bold font-mono tabular-nums ${
-                      wholesaleActive ? 'text-emerald-600' : 'text-slate-900'
-                    }`}
-                  >
-                    TZS {activePrice.toLocaleString('en-US')}
-                  </span>
-
-                  {wholesaleActive && (
-                    <span className="text-xs font-semibold text-emerald-600">
-                      Bei ya Jumla Applied 🎉
+            return (
+              <div
+                key={item.productId}
+                className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+              >
+                <div className="space-y-1 min-w-0">
+                  <div className="text-sm font-semibold text-slate-900">
+                    {isSw ? item.nameSw : item.nameEn}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                    <span className="font-mono">{item.sku}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{isSw ? item.unitLabelSw : item.unitLabelEn}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono tabular-nums">
+                      {isSw
+                        ? `Jumla kuanzia ${item.wholesaleThresholdUnits}+`
+                        : `Wholesale at ${item.wholesaleThresholdUnits}+`}
                     </span>
-                  )}
-                </div>
-              </div>
+                  </div>
 
-              {/* Increment Controls [-] quantity [+] */}
-              <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
-                <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
-                  <button
-                    type="button"
-                    aria-label={`Decrease ${item.sku}`}
-                    onClick={() => adjustQuantity(item.productId, -1)}
-                    className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
-                  >
-                    <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-                  </button>
-                  <span className="w-8 text-center text-sm font-bold font-mono tabular-nums text-slate-900">
-                    {qty}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={`Increase ${item.sku}`}
-                    onClick={() => adjustQuantity(item.productId, 1)}
-                    className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                    <span
+                      className={`text-sm font-bold font-mono tabular-nums ${
+                        wholesaleActive ? 'text-emerald-600' : 'text-slate-900'
+                      }`}
+                    >
+                      TZS {activePrice.toLocaleString('en-US')}
+                    </span>
+
+                    {wholesaleActive && (
+                      <span className="text-xs font-semibold text-emerald-600">
+                        Bei ya Jumla Applied
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                <div className="text-right font-mono tabular-nums">
-                  <div className="text-sm font-bold text-slate-900">
-                    TZS {(qty * activePrice).toLocaleString('en-US')}
+                {/* Increment Controls */}
+                <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
+                  <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
+                    <button
+                      type="button"
+                      aria-label={`Decrease ${item.sku}`}
+                      onClick={() => adjustQuantity(item.productId, -1)}
+                      className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    >
+                      <Minus className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                    <span className="w-8 text-center text-sm font-bold font-mono tabular-nums text-slate-900">
+                      {qty}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Increase ${item.sku}`}
+                      onClick={() => adjustQuantity(item.productId, 1)}
+                      className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+
+                  <div className="text-right font-mono tabular-nums">
+                    <div className="text-sm font-bold text-slate-900">
+                      TZS {(qty * activePrice).toLocaleString('en-US')}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
 
-        {/* Aligned Checkout Summary & Dynamic Submit CTA */}
+        {/* Checkout Summary & Submit CTA */}
         <div className="p-4 sm:p-5 bg-slate-50/50 space-y-4">
           <div className="flex items-baseline justify-between gap-4">
             <span className="text-xs font-medium text-slate-600">
@@ -338,18 +453,16 @@ export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
 
           <button
             type="button"
-            disabled={cartSummary.bareTokenItems.length === 0}
-            onClick={handleCompleteCheckout}
-            className={`w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md transition-colors flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer shadow-xs ${
-              isOffline
-                ? 'bg-orange-600 hover:bg-orange-700'
-                : 'bg-emerald-600 hover:bg-emerald-700'
-            } disabled:bg-slate-200 disabled:text-slate-500`}
+            disabled={cartSummary.bareTokenItems.length === 0 || submitting}
+            onClick={() => void handleCompleteCheckout()}
+            className="w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md transition-colors flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer shadow-xs bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-500"
           >
             <Send className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>
-              {isOffline
-                ? 'Tuma Oda kwa SMS 📡'
+              {submitting
+                ? isSw
+                  ? 'Inatuma Oda...'
+                  : 'Submitting...'
                 : isSw
                   ? 'Tuma Ombi la Oda (CoD)'
                   : 'Submit B2B Purchase Request'}
@@ -363,11 +476,6 @@ export function RetailerCheckoutCart({ locale = 'en' }: { locale?: Locale }) {
                 <span>{submissionNote.headline}</span>
               </div>
               <div className="text-xs text-slate-700">{submissionNote.summaryLine}</div>
-              {submissionNote.smsPayload && (
-                <div className="text-xs font-mono text-slate-800 bg-white border border-emerald-200 rounded px-2.5 py-1.5 mt-1.5 break-all">
-                  {submissionNote.smsPayload}
-                </div>
-              )}
             </div>
           )}
         </div>

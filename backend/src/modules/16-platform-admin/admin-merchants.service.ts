@@ -12,6 +12,8 @@ export interface MerchantDirectoryRecord {
   ward: string;
   district: string;
   streetAddress: string;
+  latitude: number;
+  longitude: number;
   isOpen: boolean;
   isPlatformManaged: boolean;
   geospatialMapEnabled: boolean;
@@ -73,6 +75,8 @@ export class AdminMerchantsService {
       ward: row.ward,
       district: row.district,
       streetAddress: row.streetAddress,
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
       isOpen: row.isOpen,
       isPlatformManaged: row.isPlatformManaged,
       geospatialMapEnabled: row.geospatialMapEnabled,
@@ -188,5 +192,68 @@ export class AdminMerchantsService {
         updatedAtEat: updated.updatedAt.toISOString(),
       };
     });
+  }
+
+  async getPlatformMetrics() {
+    const [
+      totalMerchants,
+      managedMerchants,
+      geoEnabledMerchants,
+      totalUsers,
+      totalCatalogEntries,
+      totalCatalogCategories,
+      totalActiveProducts,
+      totalOrders,
+      pendingDispatchedTraces,
+      disputedLedgers,
+      totalLeads,
+      convertedLeads,
+      pendingOutboxEvents,
+      deadLetterOutboxEvents,
+      smsSentCount,
+    ] = await Promise.all([
+      this.prismaService.businessProfile.count(),
+      this.prismaService.businessProfile.count({ where: { isPlatformManaged: true } }),
+      this.prismaService.businessProfile.count({ where: { geospatialMapEnabled: true } }),
+      this.prismaService.user.count(),
+      this.prismaService.sokoGlobalCatalog.count(),
+      this.prismaService.sokoCatalogCategory.count(),
+      this.prismaService.product.count({ where: { isActive: true } }),
+      this.prismaService.order.count(),
+      this.prismaService.orderDispatchAuditTrace.count({
+        where: { helpdeskStatus: 'OPEN' },
+      }),
+      this.prismaService.cashDeliveryLedger.count({
+        where: { verificationStatus: 'DISPUTED' },
+      }),
+      this.prismaService.sokoLead.count(),
+      this.prismaService.sokoLead.count({ where: { status: 'CONVERTED' } }),
+      this.prismaService.domainOutboxEvent.count({
+        where: { status: { in: ['PENDING', 'PROCESSING'] } },
+      }),
+      this.prismaService.domainOutboxEvent.count({
+        where: { status: 'DEAD_LETTER' },
+      }),
+      this.prismaService.smsDeliveryLog.count(),
+    ]);
+
+    return {
+      totalMerchants,
+      managedMerchants,
+      geoEnabledMerchants,
+      totalUsers,
+      totalCatalogEntries,
+      totalCatalogCategories,
+      totalActiveProducts,
+      totalOrders,
+      pendingDispatchedTraces,
+      disputedLedgers,
+      totalLeads,
+      convertedLeads,
+      pendingOutboxEvents,
+      deadLetterOutboxEvents,
+      smsSentCount,
+      sampledAtEat: new Date().toISOString(),
+    };
   }
 }

@@ -14,8 +14,9 @@ export function configureApp(app: INestApplication): void {
   app.use(helmet());
 
   const allowedOriginsRaw =
+    configService.get<string>('CORS_ORIGINS') ??
     configService.get<string>('CORS_ALLOWED_ORIGINS') ??
-    'http://localhost:3000,http://localhost:5173,https://sokokuu.tz';
+    'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,https://sokokuu.tz';
   const allowedOrigins = allowedOriginsRaw
     .split(',')
     .map((origin) => origin.trim())

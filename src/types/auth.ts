@@ -10,6 +10,11 @@ export type AccountMode =
 
 export interface UserProfile {
   userId: string;
+  businessId?: string | null;
+  smsShortCode?: string | null;
+  tier?: string | null;
+  geospatialMapEnabled?: boolean;
+  isPlatformManaged?: boolean;
   fullName: string;
   phone: string;
   email: string;
@@ -20,7 +25,29 @@ export interface UserProfile {
   mode: AccountMode;
   smsAlertsEnabled: boolean;
   offlineSmsFallbackEnabled: boolean;
-  pinCode: string;
+}
+
+export function normalizeTzPhoneE164(raw: string): string {
+  const compact = raw.replace(/[\s\-()]/g, '').trim();
+  if (/^0[67][0-9]{8}$/.test(compact)) {
+    return `+255${compact.slice(1)}`;
+  }
+  if (/^255[67][0-9]{8}$/.test(compact)) {
+    return `+${compact}`;
+  }
+  return compact;
+}
+
+export function mapTierToAccountMode(
+  role: PlatformRole,
+  tier?: string | null
+): AccountMode {
+  if (role === 'SUPER_ADMIN') return 'PLATFORM_ADMIN';
+  if (role === 'DRIVER') return 'FLEET_RIDER';
+  if (role === 'CONSUMER') return 'END_CONSUMER';
+  if (tier === 'HYBRID_STORE') return 'HYBRID_STORE';
+  if (tier === 'WHOLESALE_HUB') return 'WHOLESALE_HUB';
+  return role === 'WHOLESALER' ? 'WHOLESALE_HUB' : 'RETAIL_DUKA';
 }
 
 export const ROLE_LABELS: Record<PlatformRole, { en: string; sw: string }> = {
@@ -38,77 +65,4 @@ export const MODE_LABELS: Record<AccountMode, { en: string; sw: string }> = {
   HYBRID_STORE: { en: 'Hybrid Store Mode (Jumla + Rejareja)', sw: 'Hali ya Duka Mseto (Jumla + Rejareja)' },
   FLEET_RIDER: { en: 'Fleet Rider Mode (Dual-PIN)', sw: 'Hali ya Dereva (Dual-PIN CoD)' },
   PLATFORM_ADMIN: { en: 'Platform Governance Mode', sw: 'Hali ya Usimamizi Mkuu' },
-};
-
-export const SEED_PLATFORM_ACCOUNTS: Record<PlatformRole, UserProfile> = {
-  CONSUMER: {
-    userId: 'usr-con-kinondoni-07',
-    fullName: 'Neema John',
-    phone: '+255 713 440 812',
-    email: 'neema.john@sokokuu.tz',
-    businessLabel: 'Household Buyer · Kinondoni',
-    ward: 'Kinondoni Studio',
-    streetAddress: 'Mtaa wa Vijana, Nyumba Na. 18',
-    role: 'CONSUMER',
-    mode: 'END_CONSUMER',
-    smsAlertsEnabled: true,
-    offlineSmsFallbackEnabled: true,
-    pinCode: '1234',
-  },
-  RETAILER: {
-    userId: 'usr-rt-sinza-04',
-    fullName: 'Amina Hassan',
-    phone: '+255 754 210 904',
-    email: 'amina.duka@sokokuu.tz',
-    businessLabel: 'Sinza Corner Duka',
-    ward: 'Sinza Mori',
-    streetAddress: 'Barabara ya Shekilango, Kiwanja 42',
-    role: 'RETAILER',
-    mode: 'RETAIL_DUKA',
-    smsAlertsEnabled: true,
-    offlineSmsFallbackEnabled: true,
-    pinCode: '1234',
-  },
-  WHOLESALER: {
-    userId: 'usr-ws-kariakoo-01',
-    fullName: 'Amani Mwinyi',
-    phone: '+255 784 900 112',
-    email: 'amani.bulk@sokokuu.tz',
-    businessLabel: 'Kariakoo Bulk Foods Hub',
-    ward: 'Kariakoo',
-    streetAddress: 'Mtaa wa Congo & Aggrey, Ghala 09',
-    role: 'WHOLESALER',
-    mode: 'HYBRID_STORE',
-    smsAlertsEnabled: true,
-    offlineSmsFallbackEnabled: true,
-    pinCode: '1234',
-  },
-  DRIVER: {
-    userId: 'usr-drv-bodaboda-09',
-    fullName: 'Juma Bakari',
-    phone: '+255 655 318 409',
-    email: 'juma.rider@sokokuu.tz',
-    businessLabel: 'Rider · MC 418 DKP',
-    ward: 'Ilala / Kariakoo',
-    streetAddress: 'Kituo cha Bodaboda Msimbazi',
-    role: 'DRIVER',
-    mode: 'FLEET_RIDER',
-    smsAlertsEnabled: true,
-    offlineSmsFallbackEnabled: true,
-    pinCode: '1234',
-  },
-  SUPER_ADMIN: {
-    userId: 'usr-adm-root-00',
-    fullName: 'Baraka Masanja',
-    phone: '+255 712 000 001',
-    email: 'admin@sokokuu.tz',
-    businessLabel: 'SokoKuu Platform Admin',
-    ward: 'Posta / CBD',
-    streetAddress: 'Samora Avenue, Dar es Salaam',
-    role: 'SUPER_ADMIN',
-    mode: 'PLATFORM_ADMIN',
-    smsAlertsEnabled: true,
-    offlineSmsFallbackEnabled: false,
-    pinCode: '1234',
-  },
 };

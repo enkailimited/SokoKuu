@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   KeyRound,
-  MapPin,
   Minus,
   Plus,
+  RefreshCw,
   Search,
   ShoppingBag,
   ShoppingCart,
@@ -18,12 +18,14 @@ import {
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import { useDataSaver } from '../context/DataSaverContext';
+import { listQueuedOrders, putQueuedOrder } from '../lib/indexedDbDemo';
+import { formatOrderStatusLabel, formatRoutingLabel } from '../lib/sokoManagedState';
 import {
-  formatOrderStatusLabel,
-  formatRoutingLabel,
-  recordOrderDispatchAuditTrace,
-} from '../lib/sokoManagedState';
-import { SokoApiClient } from '../services/sokoApiClient';
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { SmartStoreCatalog } from './SmartStoreCatalog';
 import { SmartGridStoreCatalog } from './SmartGridStoreCatalog';
 import { IsolatedQrVerificationTerminal } from './IsolatedQrVerificationTerminal';
@@ -34,12 +36,26 @@ import mbeyaRiceImg from '../assets/images/mbeya_super_rice_1794734184118.jpg';
 
 type ActiveScreen = 'HOME' | 'DIRECTORY' | 'CATALOG' | 'PIN_TERMINAL';
 
+type PackagingUnit =
+  | 'CARTON'
+  | 'DOZEN'
+  | 'PACK'
+  | 'UNIT'
+  | 'SACK_50KG'
+  | 'SACK_25KG'
+  | 'QUARTER_KILO_LITRE'
+  | 'HALF_KILO_LITRE'
+  | 'THREE_QUARTER_KILO'
+  | 'SINGLE_KILO_LITRE';
+
 interface WholesaleHub {
   businessId: string;
   name: string;
   initials: string;
   brandRingColor: string;
   ward: string;
+  tier?: string;
+  smsShortCode?: string;
   distanceMeters: number;
   deliveryFeeTzs: number;
 }
@@ -51,12 +67,13 @@ interface CatalogProduct {
   nameSw: string;
   nameEn: string;
   imageSrc: string;
-  quantaStep: number;
+  orderUnitType: PackagingUnit;
+  quantaPerOrderUnit: number;
   quantaUnitLabelSw: string;
   quantaUnitLabelEn: string;
-  wholesaleThresholdQuanta: number;
-  retailPricePerQuantaTzs: number;
-  wholesalePricePerQuantaTzs: number;
+  wholesaleThresholdUnits: number;
+  retailPricePerUnitTzs: number;
+  wholesalePricePerUnitTzs: number;
   availableQuantaStock: number;
   isLowStockInDuka?: boolean;
 }
@@ -70,193 +87,127 @@ interface DispatchedOrderRecord {
   deliveryFeeTzs: number;
   totalCashDueTzs: number;
   itemsSummary: string;
-  buyerPin4: string;
-  status: 'DISPATCHED' | 'DELIVERED';
+  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
 }
 
-const WHOLESALE_HUBS: WholesaleHub[] = [
-  {
-    businessId: '11111111-aaaa-4111-8111-000000000001',
-    name: 'Mo Wholesale Hub',
-    initials: 'MWH',
-    brandRingColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    ward: 'Kariakoo, Dar es Salaam',
-    distanceMeters: 300,
-    deliveryFeeTzs: 3_500,
-  },
-  {
-    businessId: '22222222-bbbb-4222-8222-000000000002',
-    name: 'Bakhresa Group',
-    initials: 'BG',
-    brandRingColor: 'bg-slate-100 text-slate-800 border-slate-200',
-    ward: 'Ilala, Dar es Salaam',
-    distanceMeters: 620,
-    deliveryFeeTzs: 4_500,
-  },
-  {
-    businessId: '33333333-cccc-4333-8333-000000000003',
-    name: 'Kilombero Wholesalers',
-    initials: 'KW',
-    brandRingColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    ward: 'Mchikichini, Dar es Salaam',
-    distanceMeters: 950,
-    deliveryFeeTzs: 5_000,
-  },
-];
-
-const STORE_PRODUCTS_BY_ID: Record<string, CatalogProduct[]> = {
-  '11111111-aaaa-4111-8111-000000000001': [
-    {
-      productId: 'prod-mwh-flour',
-      businessId: '11111111-aaaa-4111-8111-000000000001',
-      sku: 'AZN-2KG',
-      nameSw: 'Unga wa Ngano Azania (1KG = Quanta 4)',
-      nameEn: 'Azania Wheat Flour (1KG = 4 Quanta)',
-      imageSrc: azaniaFlourImg,
-      quantaStep: 4,
-      quantaUnitLabelSw: 'Quanta 4 (1KG)',
-      quantaUnitLabelEn: '4 Quanta (1KG)',
-      wholesaleThresholdQuanta: 16,
-      retailPricePerQuantaTzs: 900,
-      wholesalePricePerQuantaTzs: 800,
-      availableQuantaStock: 400,
-      isLowStockInDuka: true,
-    },
-    {
-      productId: 'prod-mwh-oil',
-      businessId: '11111111-aaaa-4111-8111-000000000001',
-      sku: 'KOR-OIL',
-      nameSw: 'Mafuta ya Kupikia Korie (Robo = Quanta 1)',
-      nameEn: 'Korie Cooking Oil (Robo 250mL = 1 Quantum)',
-      imageSrc: korieOilImg,
-      quantaStep: 1,
-      quantaUnitLabelSw: 'Quanta 1 (Robo 250mL)',
-      quantaUnitLabelEn: '1 Quantum (250mL)',
-      wholesaleThresholdQuanta: 8,
-      retailPricePerQuantaTzs: 1_550,
-      wholesalePricePerQuantaTzs: 1_350,
-      availableQuantaStock: 320,
-    },
-    {
-      productId: 'prod-mwh-sugar',
-      businessId: '11111111-aaaa-4111-8111-000000000001',
-      sku: 'KLM-SUG',
-      nameSw: 'Sukari ya Kilombero (5KG = Quanta 20)',
-      nameEn: 'Kilombero Brown Sugar (5KG = 20 Quanta)',
-      imageSrc: kilomberoSugarImg,
-      quantaStep: 20,
-      quantaUnitLabelSw: 'Quanta 20 (5KG)',
-      quantaUnitLabelEn: '20 Quanta (5KG)',
-      wholesaleThresholdQuanta: 40,
-      retailPricePerQuantaTzs: 920,
-      wholesalePricePerQuantaTzs: 840,
-      availableQuantaStock: 600,
-      isLowStockInDuka: true,
-    },
-    {
-      productId: 'prod-mwh-rice',
-      businessId: '11111111-aaaa-4111-8111-000000000001',
-      sku: 'MBY-RIC',
-      nameSw: 'Mchele wa Mbeya Super (25KG = Quanta 100)',
-      nameEn: 'Mbeya Super Rice (25KG = 100 Quanta)',
-      imageSrc: mbeyaRiceImg,
-      quantaStep: 100,
-      quantaUnitLabelSw: 'Quanta 100 (25KG)',
-      quantaUnitLabelEn: '100 Quanta (25KG)',
-      wholesaleThresholdQuanta: 200,
-      retailPricePerQuantaTzs: 680,
-      wholesalePricePerQuantaTzs: 620,
-      availableQuantaStock: 1000,
-    },
-  ],
-  '22222222-bbbb-4222-8222-000000000002': [
-    {
-      productId: 'prod-bg-flour',
-      businessId: '22222222-bbbb-4222-8222-000000000002',
-      sku: 'AZM-2KG',
-      nameSw: 'Unga wa Azam Ngano (2KG = Quanta 8)',
-      nameEn: 'Azam Wheat Flour (2KG = 8 Quanta)',
-      imageSrc: azaniaFlourImg,
-      quantaStep: 8,
-      quantaUnitLabelSw: 'Quanta 8 (2KG)',
-      quantaUnitLabelEn: '8 Quanta (2KG)',
-      wholesaleThresholdQuanta: 24,
-      retailPricePerQuantaTzs: 880,
-      wholesalePricePerQuantaTzs: 790,
-      availableQuantaStock: 480,
-      isLowStockInDuka: true,
-    },
-  ],
-  '33333333-cccc-4333-8333-000000000003': [
-    {
-      productId: 'prod-kw-sugar',
-      businessId: '33333333-cccc-4333-8333-000000000003',
-      sku: 'KLM-25KG',
-      nameSw: 'Sukari ya Kilombero (5KG = Quanta 20)',
-      nameEn: 'Kilombero Sugar Bulk (5KG = 20 Quanta)',
-      imageSrc: kilomberoSugarImg,
-      quantaStep: 20,
-      quantaUnitLabelSw: 'Quanta 20 (5KG)',
-      quantaUnitLabelEn: '20 Quanta (5KG)',
-      wholesaleThresholdQuanta: 40,
-      retailPricePerQuantaTzs: 910,
-      wholesalePricePerQuantaTzs: 830,
-      availableQuantaStock: 800,
-      isLowStockInDuka: true,
-    },
-  ],
-};
-
-const INITIAL_DISPATCHED_ORDERS: DispatchedOrderRecord[] = [
-  {
-    orderId: 'ord-disp-01',
-    orderRef8: 'SK8421F9',
-    sellerBusinessId: '11111111-aaaa-4111-8111-000000000001',
-    sellerName: 'Mo Wholesale Hub',
-    subtotalTzs: 146_500,
-    deliveryFeeTzs: 3_500,
-    totalCashDueTzs: 150_000,
-    itemsSummary: 'Azania Flour (16 Quanta / 4KG) + Korie Oil (8 Quanta / 2L)',
-    buyerPin4: '4821',
-    status: 'DISPATCHED',
-  },
-];
-
-async function computeWebCryptoSmsSig6(rawPayload: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode('sokokuu-retailer-offline-hmac'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawPayload));
-  return Array.from(new Uint8Array(sig))
-    .slice(0, 3)
-    .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
-    .join('');
+interface BackendMerchantDto {
+  merchantId: string;
+  smsShortCode: string;
+  merchantName: string;
+  tier: string;
+  ward: string;
+  district: string;
+  isPlatformManaged: boolean;
+  activeSkusCount: number;
 }
 
-// ============================================================================
-// SokoniCoreEngine.tsx — Refactored to max-w-2xl mx-auto container layout
-// Inazuia kukunjuka vibaya kwenye skrini kubwa na kuhifadhi mandhari ya Light UI.
-// ============================================================================
+interface BackendProductDto {
+  productId: string;
+  sellerBusinessId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  unitPriceTzs: number;
+  cartonPriceTzs: number;
+  wholesaleThresholdUnits: number;
+  availableQuarterQuanta: number;
+  sealedBulkPackagesStock: number;
+  priceTiers?: Array<{
+    id: string;
+    unitType: PackagingUnit;
+    quarterQuantaPerUnit: number;
+    priceTzs: number;
+    isWholesaleTier: boolean;
+  }>;
+}
+
+interface BackendIntelligentItemDto {
+  productId: string;
+  sku: string;
+  requiresUrgentReorder: boolean;
+}
+
+interface BackendOrderDto {
+  orderId: string;
+  orderRef: string;
+  sellerBusinessId: string;
+  sellerBusinessName: string;
+  expectedTotalTzs: number;
+  deliveryFeeTzs: number;
+  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
+  items: Array<{
+    sku?: string;
+    smsItemCode?: string;
+    nameSw?: string;
+    unitType: string;
+    quantity: number;
+    baseUnitsTotal: number;
+  }>;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(val?: string | null): val is string {
+  return Boolean(val && UUID_REGEX.test(val));
+}
+
+function resolveProductImage(sku: string, name: string): string {
+  const hay = `${sku} ${name}`.toUpperCase();
+  if (hay.includes('KOR') || hay.includes('OIL') || hay.includes('MAFUTA')) return korieOilImg;
+  if (hay.includes('KLM') || hay.includes('SUG') || hay.includes('SUKARI')) return kilomberoSugarImg;
+  if (hay.includes('MBY') || hay.includes('RIC') || hay.includes('MCHELE')) return mbeyaRiceImg;
+  return azaniaFlourImg;
+}
+
+function formatUnitShortLabel(unit: PackagingUnit, quanta: number, isSw: boolean): string {
+  switch (unit) {
+    case 'SACK_50KG':
+      return isSw ? `Gunia 50KG (${quanta}Q)` : `50KG Sack (${quanta}Q)`;
+    case 'SACK_25KG':
+      return isSw ? `Gunia 25KG (${quanta}Q)` : `25KG Sack (${quanta}Q)`;
+    case 'CARTON':
+      return isSw ? `Katoni (${quanta}Q)` : `Carton (${quanta}Q)`;
+    case 'DOZEN':
+      return isSw ? `Dazani (${quanta}Q)` : `Dozen (${quanta}Q)`;
+    case 'PACK':
+      return isSw ? `Pakiti (${quanta}Q)` : `Pack (${quanta}Q)`;
+    case 'SINGLE_KILO_LITRE':
+      return isSw ? `1KG/1L (${quanta}Q)` : `1KG/1L (${quanta}Q)`;
+    case 'HALF_KILO_LITRE':
+      return isSw ? `Nusu (${quanta}Q)` : `Half KG/L (${quanta}Q)`;
+    case 'THREE_QUARTER_KILO':
+      return isSw ? `Tatu-Robo (${quanta}Q)` : `3/4 KG (${quanta}Q)`;
+    case 'QUARTER_KILO_LITRE':
+      return isSw ? `Robo (${quanta}Q)` : `Robo (${quanta}Q)`;
+    default:
+      return `${unit} (${quanta}Q)`;
+  }
+}
+
 export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
   const isSw = locale === 'sw';
   const { isLowDataModeActive } = useDataSaver();
 
   const [screen, setScreen] = useState<ActiveScreen>('HOME');
   const [isOnline, setIsOnline] = useState<boolean>(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
   );
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [hubs, setHubs] = useState<WholesaleHub[]>([]);
   const [selectedStore, setSelectedStore] = useState<WholesaleHub | null>(null);
-  const [cartQuantaByProduct, setCartQuantaByProduct] = useState<Record<string, number>>({});
+  const [liveStoreCatalog, setLiveStoreCatalog] = useState<CatalogProduct[]>([]);
+  const [loadingHubs, setLoadingHubs] = useState<boolean>(false);
+  const [loadingCatalog, setLoadingCatalog] = useState<boolean>(false);
+  const [submittingOrder, setSubmittingOrder] = useState<boolean>(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [queuedOfflineCount, setQueuedOfflineCount] = useState<number>(0);
+
+  const [cartUnitsByProduct, setCartUnitsByProduct] = useState<Record<string, number>>({});
   const [checkoutSheetOpen, setCheckoutSheetOpen] = useState<boolean>(false);
   const [smartReorderMode, setSmartReorderMode] = useState<boolean>(false);
   const [smartGridMode, setSmartGridMode] = useState<boolean>(false);
   const [catalogSearchQuery, setCatalogSearchQuery] = useState<string>('');
 
-  const [orders, setOrders] = useState<DispatchedOrderRecord[]>(INITIAL_DISPATCHED_ORDERS);
+  const [orders, setOrders] = useState<DispatchedOrderRecord[]>([]);
   const [activePinOrderId, setActivePinOrderId] = useState<string | null>(null);
 
   const [floatingToast, setFloatingToast] = useState<{
@@ -264,23 +215,121 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
     detail: string;
   } | null>(null);
 
+  const refreshQueueCount = useCallback(async () => {
+    const q = await listQueuedOrders().catch(() => []);
+    setQueuedOfflineCount(q.filter((o) => o.syncStatus === 'QUEUED_OFFLINE').length);
+  }, []);
+
+  const loadLiveHome = useCallback(async () => {
+    await refreshQueueCount();
+    if (!navigator.onLine) {
+      setIsOnline(false);
+      setBackendOffline(true);
+      return;
+    }
+
+    setLoadingHubs(true);
+    setApiError(null);
+    setBackendOffline(false);
+    try {
+      const [merchantsRes, ordersRes] = await Promise.all([
+        SokoApiClient.get<BackendMerchantDto[]>('/marketplace/merchants'),
+        SokoApiClient.hasAccessToken()
+          ? SokoApiClient.get<{ count: number; orders: BackendOrderDto[] }>(
+              '/orders/my-orders?scope=buying',
+            )
+          : Promise.resolve({ count: 0, orders: [] as BackendOrderDto[] }),
+      ]);
+
+      const wholesaleMerchants = (Array.isArray(merchantsRes) ? merchantsRes : []).filter(
+        (m) => m.tier === 'WHOLESALE_HUB' || m.tier === 'HYBRID_STORE',
+      );
+      setHubs(
+        wholesaleMerchants.map((m, idx) => ({
+          businessId: m.merchantId,
+          name: m.merchantName,
+          initials:
+            m.smsShortCode ||
+            m.merchantName
+              .split(/\s+/)
+              .slice(0, 2)
+              .map((w) => w[0])
+              .join('')
+              .toUpperCase(),
+          brandRingColor:
+            idx % 2 === 0
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+              : 'bg-slate-100 text-slate-800 border-slate-200',
+          ward: `${m.ward}, ${m.district}`,
+          tier: m.tier,
+          smsShortCode: m.smsShortCode,
+          distanceMeters: 250 + idx * 310,
+          deliveryFeeTzs: m.tier === 'WHOLESALE_HUB' ? 3_500 : 2_500,
+        })),
+      );
+
+      const liveOrders: DispatchedOrderRecord[] = (ordersRes?.orders ?? []).map((o) => {
+        const fee = Number(o.deliveryFeeTzs ?? 0);
+        const total = Number(o.expectedTotalTzs ?? 0);
+        return {
+          orderId: o.orderId,
+          orderRef8: o.orderRef,
+          sellerBusinessId: o.sellerBusinessId,
+          sellerName: o.sellerBusinessName,
+          subtotalTzs: Math.max(0, total - fee),
+          deliveryFeeTzs: fee,
+          totalCashDueTzs: total,
+          itemsSummary: o.items
+            .map((i) => `${i.smsItemCode ?? i.nameSw ?? 'SKU'} (${i.quantity} × ${i.unitType})`)
+            .join(' + '),
+          status: o.status,
+        };
+      });
+      setOrders(liveOrders);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia data kutoka seva.'
+              : 'Failed to load marketplace data from backend.',
+        );
+      }
+    } finally {
+      setLoadingHubs(false);
+    }
+  }, [isSw, refreshQueueCount]);
+
   useEffect(() => {
-    const goOnline = () => setIsOnline(true);
-    const goOffline = () => setIsOnline(false);
+    const goOnline = () => {
+      setIsOnline(true);
+      void loadLiveHome();
+    };
+    const goOffline = () => {
+      setIsOnline(false);
+      setBackendOffline(true);
+    };
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
     return () => {
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
     };
-  }, []);
+  }, [loadLiveHome]);
+
+  useEffect(() => {
+    void loadLiveHome();
+  }, [loadLiveHome]);
 
   const cashNeededTodayTzs = useMemo(
     () =>
       orders
-        .filter((o) => o.status === 'DISPATCHED')
+        .filter((o) => o.status === 'DISPATCHED' || o.status === 'PLACED')
         .reduce((sum, o) => sum + o.totalCashDueTzs, 0),
-    [orders]
+    [orders],
   );
 
   const settledTodayTzs = useMemo(
@@ -288,23 +337,109 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
       orders
         .filter((o) => o.status === 'DELIVERED')
         .reduce((sum, o) => sum + o.totalCashDueTzs, 0),
-    [orders]
+    [orders],
   );
 
-  const handleOpenStore = (hub: WholesaleHub) => {
+  const handleOpenStore = async (hub: WholesaleHub) => {
     setSelectedStore(hub);
-    setCartQuantaByProduct({});
+    setCartUnitsByProduct({});
     setCheckoutSheetOpen(false);
     setSmartReorderMode(false);
     setSmartGridMode(false);
     setCatalogSearchQuery('');
+    setApiError(null);
     setScreen('CATALOG');
+
+    if (!navigator.onLine || !isUuid(hub.businessId)) {
+      setBackendOffline(true);
+      setLiveStoreCatalog([]);
+      return;
+    }
+
+    setLoadingCatalog(true);
+    setBackendOffline(false);
+    try {
+      const [activeProducts, intelligentItems] = await Promise.all([
+        SokoApiClient.get<BackendProductDto[]>(
+          `/products/active?businessId=${encodeURIComponent(hub.businessId)}`,
+        ),
+        SokoApiClient.hasAccessToken()
+          ? SokoApiClient.get<BackendIntelligentItemDto[]>(
+              `/marketplace/catalog/intelligent-view?wholesalerId=${encodeURIComponent(hub.businessId)}`,
+            ).catch(() => [] as BackendIntelligentItemDto[])
+          : Promise.resolve([] as BackendIntelligentItemDto[]),
+      ]);
+
+      const urgentIds = new Set(
+        (Array.isArray(intelligentItems) ? intelligentItems : [])
+          .filter((i) => i.requiresUrgentReorder)
+          .map((i) => i.productId),
+      );
+
+      const mapped: CatalogProduct[] = (Array.isArray(activeProducts) ? activeProducts : []).map(
+        (p) => {
+          const tiers = p.priceTiers ?? [];
+          const wholesaleTier = tiers.find((t) => t.isWholesaleTier);
+          const primaryTier =
+            wholesaleTier ?? tiers[tiers.length - 1] ?? tiers[0] ?? null;
+
+          const orderUnitType: PackagingUnit = primaryTier
+            ? primaryTier.unitType
+            : 'SACK_50KG';
+          const quantaPerOrderUnit = primaryTier ? primaryTier.quarterQuantaPerUnit : 200;
+          const wholesalePricePerUnitTzs = wholesaleTier
+            ? wholesaleTier.priceTzs
+            : primaryTier
+              ? primaryTier.priceTzs
+              : Number(p.cartonPriceTzs || p.unitPriceTzs);
+          const retailTier = tiers.find((t) => !t.isWholesaleTier);
+          const retailPricePerUnitTzs = retailTier
+            ? retailTier.priceTzs
+            : wholesalePricePerUnitTzs;
+
+          return {
+            productId: p.productId,
+            businessId: p.sellerBusinessId,
+            sku: p.sku,
+            nameSw: p.nameSw,
+            nameEn: p.nameEn,
+            imageSrc: resolveProductImage(p.sku, p.nameEn),
+            orderUnitType,
+            quantaPerOrderUnit,
+            quantaUnitLabelSw: formatUnitShortLabel(orderUnitType, quantaPerOrderUnit, true),
+            quantaUnitLabelEn: formatUnitShortLabel(orderUnitType, quantaPerOrderUnit, false),
+            wholesaleThresholdUnits: Math.max(1, Number(p.wholesaleThresholdUnits || 2)),
+            retailPricePerUnitTzs,
+            wholesalePricePerUnitTzs,
+            availableQuantaStock: Number(p.availableQuarterQuanta ?? 0),
+            isLowStockInDuka: urgentIds.has(p.productId),
+          };
+        },
+      );
+      setLiveStoreCatalog(mapped);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setLiveStoreCatalog([]);
+      } else {
+        setLiveStoreCatalog([]);
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia bidhaa za muuzaji.'
+              : 'Failed to load seller catalog.',
+        );
+      }
+    } finally {
+      setLoadingCatalog(false);
+    }
   };
 
   const activeCatalog = useMemo(() => {
     if (!selectedStore) return [];
-    const items = (STORE_PRODUCTS_BY_ID[selectedStore.businessId] ?? []).filter(
-      (item) => item.businessId === selectedStore.businessId
+    const items = liveStoreCatalog.filter(
+      (item) => item.businessId === selectedStore.businessId,
     );
     return [...items].sort((a, b) => {
       const aLow = a.isLowStockInDuka ? 1 : 0;
@@ -312,11 +447,11 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
       if (aLow !== bLow) return bLow - aLow;
       return a.nameSw.localeCompare(b.nameSw);
     });
-  }, [selectedStore]);
+  }, [selectedStore, liveStoreCatalog]);
 
   const lowStockCarouselItems = useMemo(
     () => activeCatalog.filter((item) => item.isLowStockInDuka),
-    [activeCatalog]
+    [activeCatalog],
   );
 
   const filteredActiveCatalog = useMemo(() => {
@@ -326,17 +461,15 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
       (item) =>
         item.nameSw.toLowerCase().includes(q) ||
         item.nameEn.toLowerCase().includes(q) ||
-        item.sku.toLowerCase().includes(q)
+        item.sku.toLowerCase().includes(q),
     );
   }, [activeCatalog, catalogSearchQuery]);
 
-  const adjustProductQuanta = (item: CatalogProduct, direction: 1 | -1) => {
-    setCartQuantaByProduct((prev) => {
+  const adjustProductUnits = (item: CatalogProduct, direction: 1 | -1) => {
+    setCartUnitsByProduct((prev) => {
       const current = prev[item.productId] ?? 0;
-      const next = Math.max(
-        0,
-        Math.min(item.availableQuantaStock, current + direction * item.quantaStep)
-      );
+      const maxUnits = Math.max(0, Math.floor(item.availableQuantaStock / item.quantaPerOrderUnit));
+      const next = Math.max(0, Math.min(maxUnits > 0 ? maxUnits : 999, current + direction));
       return { ...prev, [item.productId]: next };
     });
   };
@@ -348,8 +481,9 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
 
     const lines: Array<{
       item: CatalogProduct;
+      units: number;
       quanta: number;
-      unitPricePerQuanta: number;
+      unitPriceTzs: number;
       lineTotalTzs: number;
       wholesaleApplied: boolean;
     }> = [];
@@ -357,17 +491,18 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
     let totalQuanta = 0;
 
     for (const item of activeCatalog) {
-      const quanta = cartQuantaByProduct[item.productId] ?? 0;
-      if (quanta <= 0) continue;
-      const wholesaleApplied = quanta >= item.wholesaleThresholdQuanta;
-      const unitPricePerQuanta = wholesaleApplied
-        ? item.wholesalePricePerQuantaTzs
-        : item.retailPricePerQuantaTzs;
-      const lineTotalTzs = quanta * unitPricePerQuanta;
+      const units = cartUnitsByProduct[item.productId] ?? 0;
+      if (units <= 0) continue;
+      const wholesaleApplied = units >= item.wholesaleThresholdUnits;
+      const unitPriceTzs = wholesaleApplied
+        ? item.wholesalePricePerUnitTzs
+        : item.retailPricePerUnitTzs;
+      const lineTotalTzs = units * unitPriceTzs;
+      const quanta = units * item.quantaPerOrderUnit;
 
       subtotalTzs += lineTotalTzs;
       totalQuanta += quanta;
-      lines.push({ item, quanta, unitPricePerQuanta, lineTotalTzs, wholesaleApplied });
+      lines.push({ item, units, quanta, unitPriceTzs, lineTotalTzs, wholesaleApplied });
     }
 
     const deliveryFeeTzs = lines.length > 0 ? selectedStore.deliveryFeeTzs : 0;
@@ -378,89 +513,131 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
       totalTzs: subtotalTzs + deliveryFeeTzs,
       totalQuanta,
     };
-  }, [selectedStore, activeCatalog, cartQuantaByProduct]);
+  }, [selectedStore, activeCatalog, cartUnitsByProduct]);
 
-  const handlePlaceOrderOrSms = async () => {
+  const queueRealOfflineOrder = async () => {
     if (!selectedStore || cartBreakdown.lines.length === 0) return;
+    const idempotencyKey = crypto.randomUUID();
+    const compactItems = cartBreakdown.lines
+      .map((l) => `${l.item.sku}:${l.units}`)
+      .join(',');
 
-    const orderRef8 = 'SK' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    const buyerPin4 = String(Math.floor(1000 + Math.random() * 9000));
+    await putQueuedOrder({
+      idempotencyKey,
+      sellerBusinessId: selectedStore.businessId,
+      sellerHub: selectedStore.name,
+      compactSmsBody: compactItems,
+      totalTzs: cartBreakdown.totalTzs,
+      items: cartBreakdown.lines.map((l) => ({
+        productId: l.item.productId,
+        unitType: l.item.orderUnitType,
+        quantity: l.units,
+      })),
+      clientCreatedAt: new Date().toISOString(),
+      syncStatus: 'QUEUED_OFFLINE',
+      retryCount: 0,
+    });
 
-    if (!isOnline) {
-      const compactItems = cartBreakdown.lines
-        .map((l, idx) => `P${idx + 1}:${l.quanta}Q`)
-        .join(',');
-      const unsigned = `SK#${orderRef8}#${selectedStore.initials}#${compactItems}`;
-      const sig6 = await computeWebCryptoSmsSig6(unsigned);
-      const smsString = `${unsigned}#${sig6}`;
+    await refreshQueueCount();
+    setFloatingToast({
+      title: isSw
+        ? `Oda Imewekwa Foleni (QUEUED_OFFLINE · ${selectedStore.name})`
+        : `Order Queued for Sync (QUEUED_OFFLINE · ${selectedStore.name})`,
+      detail: `${compactItems} · TZS ${cartBreakdown.totalTzs.toLocaleString('en-US')}`,
+    });
+    setCartUnitsByProduct({});
+    setCheckoutSheetOpen(false);
+    setScreen('HOME');
+  };
+
+  const handlePlaceOrder = async () => {
+    if (!selectedStore || cartBreakdown.lines.length === 0) return;
+    setApiError(null);
+
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      await queueRealOfflineOrder();
+      return;
+    }
+
+    setSubmittingOrder(true);
+    try {
+      const resp = await SokoApiClient.post<{
+        orderId: string;
+        orderRef: string;
+        status: 'PLACED' | 'DISPATCHED';
+        routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
+        expectedTotalTzs: number;
+      }>('/marketplace/orders/submit-request', {
+        sellerBusinessId: selectedStore.businessId,
+        originChannel: 'PWA_ONLINE',
+        paymentMethod: 'CASH',
+        deliveryFeeTzs: cartBreakdown.deliveryFeeTzs,
+        items: cartBreakdown.lines.map((l) => ({
+          productId: l.item.productId,
+          unitType: l.item.orderUnitType,
+          quantity: l.units,
+        })),
+      });
 
       setFloatingToast({
         title: isSw
-          ? `Ujumbe wa SMS Umetumwa (${selectedStore.name})`
-          : `NextSMS Offline Order Dispatched (${selectedStore.name})`,
-        detail: `${smsString} · ${smsString.length}/160 chars`,
+          ? `Oda yako imepokelewa (${selectedStore.name})!`
+          : `Order placed with ${selectedStore.name}!`,
+        detail: `Oda #${resp.orderRef} · ${formatRoutingLabel(resp.routingOutputCode, locale)} · TZS ${Number(resp.expectedTotalTzs).toLocaleString('en-US')}`,
       });
-    } else {
-      let finalOrderId = crypto.randomUUID();
-      let finalOrderRef8 = orderRef8;
-      let finalBuyerPin4 = buyerPin4;
 
-      try {
-        const resp = await SokoApiClient.post<{
-          orderId: string;
-          orderRef: string;
-          buyerPin4: string;
-        }>('/marketplace/orders/submit-request', {
-          sellerBusinessId: selectedStore.businessId,
-          deliveryFeeTzs: cartBreakdown.deliveryFeeTzs,
-          items: cartBreakdown.lines.map((l) => ({
-            productId: l.item.productId,
-            sku: l.item.sku,
-            quantity: l.quanta,
-            quarterQuanta: l.quanta,
-            unitPriceTzs: l.unitPricePerQuanta,
-          })),
-        });
-        if (resp?.orderId) finalOrderId = resp.orderId;
-        if (resp?.orderRef) finalOrderRef8 = resp.orderRef;
-        if (resp?.buyerPin4) finalBuyerPin4 = resp.buyerPin4;
-      } catch {
-        // Fallback to local trace
+      setCartUnitsByProduct({});
+      setCheckoutSheetOpen(false);
+      setScreen('HOME');
+      await loadLiveHome();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        await queueRealOfflineOrder();
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Oda imekataliwa na mfumo.'
+              : 'Backend rejected order submission.',
+        );
       }
+    } finally {
+      setSubmittingOrder(false);
+    }
+  };
 
-      const newOrder: DispatchedOrderRecord = {
-        orderId: finalOrderId,
-        orderRef8: finalOrderRef8,
-        sellerBusinessId: selectedStore.businessId,
-        sellerName: selectedStore.name,
-        subtotalTzs: cartBreakdown.subtotalTzs,
-        deliveryFeeTzs: cartBreakdown.deliveryFeeTzs,
-        totalCashDueTzs: cartBreakdown.totalTzs,
-        itemsSummary: cartBreakdown.lines
-          .map((l) => `${l.item.sku} (${l.quanta} Quanta)`)
-          .join(' + '),
-        buyerPin4: finalBuyerPin4,
-        status: 'DISPATCHED',
-      };
-
-      const trace = recordOrderDispatchAuditTrace({
-        orderRef8: finalOrderRef8,
-        sellerBusinessId: selectedStore.businessId,
-        sellerBusinessName: selectedStore.name,
-        totalCashDueTzs: cartBreakdown.totalTzs,
-        itemsSummary: newOrder.itemsSummary,
-      });
-
-      setOrders((prev) => [newOrder, ...prev]);
-      setFloatingToast({
-        title: `Oda yako imetumwa (${selectedStore.name})!`,
-        detail: `Oda #${finalOrderRef8} · ${formatRoutingLabel(trace.routingCode, locale)} · PIN: ${finalBuyerPin4} · TZS ${cartBreakdown.totalTzs.toLocaleString('en-US')}`,
-      });
+  const handleCancelOrder = async (order: DispatchedOrderRecord) => {
+    setApiError(null);
+    if (!navigator.onLine || !isUuid(order.orderId)) {
+      setBackendOffline(true);
+      return;
     }
 
-    setCartQuantaByProduct({});
-    setCheckoutSheetOpen(false);
-    setScreen('HOME');
+    try {
+      await SokoApiClient.post(`/orders/${order.orderId}/cancel`, {
+        reason: 'Cancelled by buyer from Sokoni workspace',
+      });
+      setFloatingToast({
+        title: isSw ? `Oda ${order.orderRef8} Imeghairiwa` : `Order ${order.orderRef8} Cancelled`,
+        detail: isSw ? 'Hisa zimerejeshwa kwa muuzaji.' : 'Reserved Quarter-Quanta restored.',
+      });
+      await loadLiveHome();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kughairi oda.'
+              : 'Failed to cancel order.',
+        );
+      }
+    }
   };
 
   const activePinOrder = orders.find((o) => o.orderId === activePinOrderId) ?? null;
@@ -470,41 +647,66 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
       {/* Top Status Banner */}
       <div className="bg-white border border-slate-100 rounded-lg px-4 py-3 shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs font-medium">
-          {isOnline ? (
+          {isOnline && !backendOffline ? (
             <>
               <Wifi className="w-4 h-4 text-emerald-600" aria-hidden="true" />
               <span className="text-slate-900">
-                {isSw ? 'Mtandao Uko Sawa (Online)' : 'Network Online — Live System Sync Engine'}
+                {isSw ? 'Mtandao Uko Sawa (PostgreSQL Live)' : 'Connected to SokoKuu NestJS API'}
               </span>
             </>
           ) : (
             <>
               <WifiOff className="w-4 h-4 text-amber-600" aria-hidden="true" />
               <span className="text-amber-800">
-                {isSw
-                  ? 'Hali ya Dharura Nje ya Mtandao (NextSMS Fallback Mode)'
-                  : 'Offline Fallback Mode — WebCrypto NextSMS Ready'}
+                {isSw ? 'Nje ya Mtandao — Foleni ya IndexedDB' : 'Offline — Local Queue Active'}
               </span>
             </>
+          )}
+          {queuedOfflineCount > 0 && (
+            <span className="text-[11px] font-mono bg-amber-50 border border-amber-200 text-amber-900 px-2 py-0.5 rounded">
+              {queuedOfflineCount} QUEUED_OFFLINE
+            </span>
           )}
         </div>
 
         <button
           type="button"
-          onClick={() => setIsOnline((prev) => !prev)}
-          className="px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 cursor-pointer whitespace-nowrap shadow-xs"
+          onClick={() => void loadLiveHome()}
+          disabled={loadingHubs}
+          className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 cursor-pointer inline-flex items-center gap-1"
         >
-          {isOnline
-            ? isSw
-              ? 'Jaribu Nje ya Mtandao'
-              : 'Simulate Offline'
-            : isSw
-              ? 'Rejesha Mtandao'
-              : 'Restore Online'}
+          <RefreshCw className={`w-3.5 h-3.5 ${loadingHubs ? 'animate-spin' : ''}`} />
+          <span>{isSw ? 'Onyesha Upya' : 'Refresh'}</span>
         </button>
       </div>
 
-      {/* Floating Success Toast Overlay */}
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          retrying={loadingHubs}
+          onRetry={() => void loadLiveHome()}
+        />
+      )}
+
+      {apiError && (
+        <div
+          role="alert"
+          className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs text-red-900 flex items-start justify-between gap-3"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <span>{apiError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setApiError(null)}
+            className="text-red-700 hover:text-red-900 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {floatingToast && (
         <div
           role="status"
@@ -539,8 +741,8 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
               </div>
               <div className="text-xs text-slate-500">
                 {isSw
-                  ? 'Jumla ya oda zilizo njiani (DISPATCHED) zinazosubiri malipo ya mlangoni'
-                  : 'Total cash required today for orders currently DISPATCHED'}
+                  ? 'Jumla ya oda zilizo njiani (PLACED / DISPATCHED) zinazosubiri malipo ya mlangoni'
+                  : 'Total cash required today for active orders awaiting CoD settlement'}
               </div>
             </div>
 
@@ -559,7 +761,6 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
             </div>
           </section>
 
-          {/* Prominent Emerald Green Launcher Card: "Nenda Sokoni 🛒" */}
           <button
             type="button"
             onClick={() => setScreen('DIRECTORY')}
@@ -576,68 +777,100 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
             <ShoppingBag className="w-8 h-8 text-white shrink-0" aria-hidden="true" />
           </button>
 
-          {/* Incoming DISPATCHED Orders Ready for Doorstep PIN Verification */}
           <section className="bg-white border border-slate-100 rounded-lg shadow-sm overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-900">
                 {isSw
-                  ? 'Mizigo Inayokuja (DISPATCHED) — Tayari kwa PIN ya Mlangoni'
-                  : 'Active Orders (DISPATCHED) — Doorstep PIN Reconciliation'}
+                  ? 'Oda Zako & Mizigo Inayokuja (Doorstep PIN)'
+                  : 'Your Orders & Active Deliveries'}
               </h2>
               <span className="text-xs font-mono text-slate-500">
-                {orders.filter((o) => o.status === 'DISPATCHED').length} active
+                {orders.filter((o) => o.status === 'DISPATCHED' || o.status === 'PLACED').length}{' '}
+                active
               </span>
             </div>
 
-            <div className="divide-y divide-slate-100">
-              {orders.map((order) => (
-                <div
-                  key={order.orderId}
-                  className="p-4 sm:px-5 flex flex-wrap items-center justify-between gap-4"
-                >
-                  <div className="space-y-1 min-w-0">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="font-mono font-bold text-slate-900">{order.orderRef8}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-medium text-slate-700">{order.sellerName}</span>
-                      <span aria-hidden="true">·</span>
-                      <span
-                        className={`font-semibold ${
-                          order.status === 'DELIVERED' ? 'text-emerald-600' : 'text-amber-700'
-                        }`}
-                      >
-                        {formatOrderStatusLabel(order.status, locale)}
-                      </span>
+            {loadingHubs && orders.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500">
+                {isSw ? 'Inapakia oda zako...' : 'Loading orders...'}
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="p-4">
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna rekodi bado"
+                  titleEn="No records yet"
+                  descriptionSw='Huna oda iliyorekodiwa kwenye PostgreSQL bado. Bofya "Nenda Sokoni" kuanza.'
+                  descriptionEn='No orders exist in PostgreSQL yet. Click "Nenda Sokoni" to start sourcing.'
+                />
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {orders.map((order) => (
+                  <div
+                    key={order.orderId}
+                    className="p-4 sm:px-5 flex flex-wrap items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="font-mono font-bold text-slate-900">
+                          {order.orderRef8}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-medium text-slate-700">{order.sellerName}</span>
+                        <span aria-hidden="true">·</span>
+                        <span
+                          className={`font-semibold ${
+                            order.status === 'DELIVERED'
+                              ? 'text-emerald-600'
+                              : order.status === 'CANCELLED'
+                                ? 'text-slate-400'
+                                : 'text-amber-700'
+                          }`}
+                        >
+                          {formatOrderStatusLabel(order.status, locale)}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500">{order.itemsSummary}</div>
+                      <div className="text-xs font-mono text-slate-700">
+                        <span className="font-bold text-emerald-600">
+                          TZS {order.totalCashDueTzs.toLocaleString('en-US')}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-500">{order.itemsSummary}</div>
-                    <div className="text-xs font-mono text-slate-700">
-                      Buyer PIN: <span className="font-bold text-slate-900">{order.buyerPin4}</span> ·{' '}
-                      <span className="font-bold text-emerald-600">
-                        TZS {order.totalCashDueTzs.toLocaleString('en-US')}
-                      </span>
+
+                    <div className="flex items-center gap-2">
+                      {order.status === 'PLACED' && (
+                        <button
+                          type="button"
+                          onClick={() => void handleCancelOrder(order)}
+                          className="min-h-[36px] px-3 py-1.5 text-xs font-medium text-red-700 border border-red-200 rounded-md hover:bg-red-50 cursor-pointer"
+                        >
+                          {isSw ? 'Ghairi Oda' : 'Cancel Order'}
+                        </button>
+                      )}
+                      {order.status === 'DISPATCHED' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActivePinOrderId(order.orderId);
+                            setScreen('PIN_TERMINAL');
+                          }}
+                          className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Order Confirmation</span>
+                        </button>
+                      ) : order.status === 'DELIVERED' ? (
+                        <span className="text-xs font-semibold text-emerald-600">
+                          {formatOrderStatusLabel('SETTLED', locale)}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
-
-                  {order.status === 'DISPATCHED' ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActivePinOrderId(order.orderId);
-                        setScreen('PIN_TERMINAL');
-                      }}
-                      className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
-                    >
-                      <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Order Confirmation</span>
-                    </button>
-                  ) : (
-                    <span className="text-xs font-semibold text-emerald-600">
-                      {formatOrderStatusLabel('SETTLED', locale)}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -655,45 +888,59 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
               <span>{isSw ? 'Rudi Nyumbani' : 'Dashboard Home'}</span>
             </button>
             <span className="text-xs font-mono text-emerald-600 font-semibold">
-              PostGIS Proximity Sorted
+              {hubs.length} {isSw ? 'Maduka ya Jumla' : 'Wholesale Merchants'}
             </span>
           </div>
 
-          <div className="space-y-3">
-            {WHOLESALE_HUBS.map((hub) => (
-              <article
-                key={hub.businessId}
-                className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div
-                    className={`w-12 h-12 rounded-full border flex items-center justify-center shrink-0 font-mono font-bold text-sm ${hub.brandRingColor}`}
-                  >
-                    {hub.initials}
-                  </div>
-                  <div className="min-w-0 space-y-1">
-                    <h3 className="text-sm font-bold text-slate-900 truncate">{hub.name}</h3>
-                    <div className="text-xs text-slate-500 truncate">{hub.ward}</div>
-                    <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
-                      📍 Mita {hub.distanceMeters} karibu
+          {loadingHubs && hubs.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-lg p-6 text-center text-xs text-slate-500">
+              {isSw ? 'Inatafuta maduka ya jumla...' : 'Loading wholesale merchants...'}
+            </div>
+          ) : hubs.length === 0 ? (
+            <EmptyStateCard
+              locale={locale}
+              titleSw="Hakuna rekodi bado"
+              titleEn="No records yet"
+              descriptionSw="Hakuna duka la jumla lililosajiliwa katika PostgreSQL kwa sasa."
+              descriptionEn="No open wholesale merchants found in PostgreSQL yet."
+            />
+          ) : (
+            <div className="space-y-3">
+              {hubs.map((hub) => (
+                <article
+                  key={hub.businessId}
+                  className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4"
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div
+                      className={`w-12 h-12 rounded-full border flex items-center justify-center shrink-0 font-mono font-bold text-sm ${hub.brandRingColor}`}
+                    >
+                      {hub.initials}
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <h3 className="text-sm font-bold text-slate-900 truncate">{hub.name}</h3>
+                      <div className="text-xs text-slate-500 truncate">{hub.ward}</div>
+                      <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
+                        📍 Mita {hub.distanceMeters} karibu
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <button
-                  type="button"
-                  onClick={() => handleOpenStore(hub)}
-                  className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
-                >
-                  Fungua Duka
-                </button>
-              </article>
-            ))}
-          </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenStore(hub)}
+                    className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                  >
+                    Fungua Duka
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
-      {/* SCREEN 3: ISOLATED STORE CATALOG (2-Column Grid Template) */}
+      {/* SCREEN 3: ISOLATED STORE CATALOG */}
       {screen === 'CATALOG' && selectedStore && (
         <section className="space-y-4 pb-20">
           <div className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
@@ -701,7 +948,7 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
               type="button"
               onClick={() => {
                 setSelectedStore(null);
-                setCartQuantaByProduct({});
+                setCartUnitsByProduct({});
                 setScreen('DIRECTORY');
               }}
               className="inline-flex items-center gap-2 text-sm font-bold text-slate-900 hover:text-emerald-600 cursor-pointer truncate"
@@ -783,7 +1030,6 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
 
           {!smartReorderMode && !smartGridMode && (
             <>
-              {/* SEARCH BAR OVERLAY (Instant Swahili Title & Canonical SKU Filter) */}
               <div className="bg-white border border-slate-100 rounded-lg p-3 shadow-sm">
                 <label htmlFor="sokoni-catalog-search" className="sr-only">
                   {isSw ? 'Tafuta bidhaa kwa jina au SKU' : 'Search products by title or SKU'}
@@ -818,7 +1064,6 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
                 </div>
               </div>
 
-              {/* DYNAMIC LOW-STOCK RECOMMENDATION HORIZONTAL CAROUSEL */}
               {lowStockCarouselItems.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between px-1">
@@ -827,7 +1072,7 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
                       <h3>
                         {isSw
                           ? 'Inashauriwa Ununue (Duka Lako Limeshaisha)'
-                          : 'Inashauriwa Ununue (Low Shelf Stock)'}
+                          : 'Recommended Re-Order (Low Shelf Stock)'}
                       </h3>
                     </div>
                     {catalogSearchQuery && (
@@ -851,7 +1096,7 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
                           key={suggest.productId}
                           onClick={() =>
                             setCatalogSearchQuery((prev) =>
-                              prev.toLowerCase() === suggest.sku.toLowerCase() ? '' : suggest.sku
+                              prev.toLowerCase() === suggest.sku.toLowerCase() ? '' : suggest.sku,
                             )
                           }
                           className={`flex-shrink-0 border p-3 rounded-lg flex items-center gap-3 cursor-pointer transition-colors text-left shadow-xs ${
@@ -878,135 +1123,140 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
                 </div>
               )}
 
-              {/* Clean 2-column card grid template for mobile/desktop container */}
-              {filteredActiveCatalog.length === 0 ? (
+              {loadingCatalog ? (
                 <div className="bg-white border border-slate-200 rounded-lg p-6 text-center text-xs text-slate-500">
-                  {isSw
-                    ? `Hakuna bidhaa inayolingana na "${catalogSearchQuery}".`
-                    : `No catalog products matched "${catalogSearchQuery}".`}
+                  {isSw ? 'Inapakia orodha ya bidhaa...' : 'Loading store catalog...'}
                 </div>
+              ) : filteredActiveCatalog.length === 0 ? (
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna rekodi bado"
+                  titleEn="No records yet"
+                  descriptionSw="Duka hili halijaweka bidhaa zinazouzwa katika PostgreSQL bado."
+                  descriptionEn="No active catalog items exist in PostgreSQL for this merchant yet."
+                />
               ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {filteredActiveCatalog.map((item) => {
-              const quanta = cartQuantaByProduct[item.productId] ?? 0;
-              const wholesaleApplied = quanta >= item.wholesaleThresholdQuanta;
-              const pricePerQuantum = wholesaleApplied
-                ? item.wholesalePricePerQuantaTzs
-                : item.retailPricePerQuantaTzs;
-              const stepPriceTzs = pricePerQuantum * item.quantaStep;
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {filteredActiveCatalog.map((item) => {
+                    const units = cartUnitsByProduct[item.productId] ?? 0;
+                    const quanta = units * item.quantaPerOrderUnit;
+                    const wholesaleApplied = units >= item.wholesaleThresholdUnits;
+                    const unitPriceTzs = wholesaleApplied
+                      ? item.wholesalePricePerUnitTzs
+                      : item.retailPricePerUnitTzs;
 
-              return (
-                <article
-                  key={item.productId}
-                  className="bg-white border border-slate-100 rounded-lg shadow-sm overflow-hidden flex flex-col justify-between relative"
-                >
-                  {item.isLowStockInDuka && (
-                    <span className="absolute top-2.5 left-2.5 z-10 inline-flex items-center gap-1 bg-rose-500 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase tracking-wider shadow-xs">
-                      <AlertTriangle className="w-3 h-3" aria-hidden="true" />
-                      <span>Re-Order</span>
-                    </span>
-                  )}
-                  <div className="p-4 space-y-3">
-                    {!isLowDataModeActive ? (
-                      <div className="h-32 w-full rounded-md bg-white border border-slate-100 overflow-hidden flex items-center justify-center p-2">
-                        <img
-                          src={item.imageSrc}
-                          alt={isSw ? item.nameSw : item.nameEn}
-                          referrerPolicy="no-referrer"
-                          className="h-full w-full object-contain"
-                        />
-                      </div>
-                    ) : (
-                      <div className="h-16 rounded-md bg-slate-50 border border-slate-100 flex items-center justify-center text-xs font-mono text-slate-500">
-                        {item.sku} · LOW-DATA ASSET
-                      </div>
-                    )}
-
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-mono text-slate-500">
-                          {item.sku} · {isSw ? item.quantaUnitLabelSw : item.quantaUnitLabelEn}
-                        </span>
-                        {wholesaleApplied && (
-                          <span className="font-semibold text-emerald-600">
-                            Bei ya Jumla Applied 🎉
+                    return (
+                      <article
+                        key={item.productId}
+                        className="bg-white border border-slate-100 rounded-lg shadow-sm overflow-hidden flex flex-col justify-between relative"
+                      >
+                        {item.isLowStockInDuka && (
+                          <span className="absolute top-2.5 left-2.5 z-10 inline-flex items-center gap-1 bg-rose-500 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase tracking-wider shadow-xs">
+                            <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                            <span>Re-Order</span>
                           </span>
                         )}
-                      </div>
-                      <h3 className="text-sm font-semibold text-slate-900 leading-snug">
-                        {isSw ? item.nameSw : item.nameEn}
-                      </h3>
-                    </div>
-                  </div>
+                        <div className="p-4 space-y-3">
+                          {!isLowDataModeActive ? (
+                            <div className="h-32 w-full rounded-md bg-white border border-slate-100 overflow-hidden flex items-center justify-center p-2">
+                              <img
+                                src={item.imageSrc}
+                                alt={isSw ? item.nameSw : item.nameEn}
+                                referrerPolicy="no-referrer"
+                                className="h-full w-full object-contain"
+                              />
+                            </div>
+                          ) : (
+                            <div className="h-16 rounded-md bg-slate-50 border border-slate-100 flex items-center justify-center text-xs font-mono text-slate-500">
+                              {item.sku} · LOW-DATA ASSET
+                            </div>
+                          )}
 
-                  <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between gap-3">
-                    <div>
-                      <div
-                        className={`text-sm font-bold font-mono tabular-nums ${
-                          wholesaleApplied ? 'text-emerald-600' : 'text-slate-900'
-                        }`}
-                      >
-                        TZS {stepPriceTzs.toLocaleString('en-US')}
-                      </div>
-                      <div className="text-[11px] font-mono text-slate-500 tabular-nums">
-                        {quanta} Quanta ({(quanta * 0.25).toFixed(2)} KG/L)
-                      </div>
-                    </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between gap-2 text-xs">
+                              <span className="font-mono text-slate-500">
+                                {item.sku} ·{' '}
+                                {isSw ? item.quantaUnitLabelSw : item.quantaUnitLabelEn}
+                              </span>
+                              {wholesaleApplied && (
+                                <span className="font-semibold text-emerald-600">
+                                  Bei ya Jumla 🎉
+                                </span>
+                              )}
+                            </div>
+                            <h3 className="text-sm font-semibold text-slate-900 leading-snug">
+                              {isSw ? item.nameSw : item.nameEn}
+                            </h3>
+                          </div>
+                        </div>
 
-                    <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
-                      <button
-                        type="button"
-                        aria-label={`Decrease ${item.sku}`}
-                        onClick={() => adjustProductQuanta(item, -1)}
-                        className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
-                      >
-                        <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-                      </button>
-                      <span className="w-8 text-center text-sm font-bold font-mono tabular-nums text-slate-900">
-                        {quanta}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={`Increase ${item.sku}`}
-                        onClick={() => adjustProductQuanta(item, 1)}
-                        className="min-w-[40px] min-h-[40px] flex items-center justify-center bg-emerald-600 text-white hover:bg-emerald-700 rounded-r-md cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                      </button>
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
-              </div>
+                        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between gap-3">
+                          <div>
+                            <div
+                              className={`text-sm font-bold font-mono tabular-nums ${
+                                wholesaleApplied ? 'text-emerald-600' : 'text-slate-900'
+                              }`}
+                            >
+                              TZS {unitPriceTzs.toLocaleString('en-US')}
+                            </div>
+                            <div className="text-[11px] font-mono text-slate-500 tabular-nums">
+                              {units} × {item.orderUnitType} ({(quanta * 0.25).toFixed(2)} KG/L)
+                            </div>
+                          </div>
+
+                          <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
+                            <button
+                              type="button"
+                              aria-label={`Decrease ${item.sku}`}
+                              onClick={() => adjustProductUnits(item, -1)}
+                              className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
+                            >
+                              <Minus className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                            <span className="w-8 text-center text-sm font-bold font-mono tabular-nums text-slate-900">
+                              {units}
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Increase ${item.sku}`}
+                              onClick={() => adjustProductUnits(item, 1)}
+                              className="min-w-[40px] min-h-[40px] flex items-center justify-center bg-emerald-600 text-white hover:bg-emerald-700 rounded-r-md cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
               )}
 
-          {/* Persistent Bottom Action Bar opening Checkout Sheet */}
-          {cartBreakdown.lines.length > 0 && (
-            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4">
-              <div>
-                <div className="text-xs text-slate-500">
-                  {cartBreakdown.totalQuanta} Quanta · {selectedStore.name}
+              {cartBreakdown.lines.length > 0 && (
+                <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-xs text-slate-500">
+                      {cartBreakdown.totalQuanta} Quanta · {selectedStore.name}
+                    </div>
+                    <div className="text-lg font-bold font-mono tabular-nums text-emerald-600">
+                      TZS {cartBreakdown.totalTzs.toLocaleString('en-US')}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCheckoutSheetOpen(true)}
+                    className="min-h-[44px] px-5 py-2.5 text-sm font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap cursor-pointer shadow-xs"
+                  >
+                    {isSw ? 'Fungua Kikapu' : 'Review Checkout Sheet'}
+                  </button>
                 </div>
-                <div className="text-lg font-bold font-mono tabular-nums text-emerald-600">
-                  TZS {cartBreakdown.totalTzs.toLocaleString('en-US')}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCheckoutSheetOpen(true)}
-                className="min-h-[44px] px-5 py-2.5 text-sm font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap cursor-pointer shadow-xs"
-              >
-                {isSw ? 'Fungua Kikapu' : 'Review Checkout Sheet'}
-              </button>
-            </div>
-          )}
+              )}
             </>
           )}
         </section>
       )}
 
-      {/* SCREEN 4: SLIDE-UP CHECKOUT SHEET (CART DRAWER) */}
+      {/* SCREEN 4: SLIDE-UP CHECKOUT SHEET */}
       {checkoutSheetOpen && selectedStore && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
@@ -1033,16 +1283,20 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
 
             <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
               <div className="divide-y divide-slate-100">
-                {cartBreakdown.lines.map(({ item, quanta, lineTotalTzs, wholesaleApplied }) => (
-                  <div key={item.productId} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                {cartBreakdown.lines.map(({ item, units, quanta, lineTotalTzs, wholesaleApplied }) => (
+                  <div
+                    key={item.productId}
+                    className="py-2.5 flex items-center justify-between gap-3 text-xs"
+                  >
                     <div>
                       <div className="font-semibold text-slate-900">
                         {isSw ? item.nameSw : item.nameEn}
                       </div>
                       <div className="text-slate-500 font-mono">
-                        {quanta} Quanta ({(quanta * 0.25).toFixed(2)} KG/L)
+                        {units} × {item.orderUnitType} ({quanta} Quanta · {(quanta * 0.25).toFixed(2)}{' '}
+                        KG/L)
                         {wholesaleApplied && (
-                          <span className="text-emerald-600 font-semibold"> · Bei ya Jumla Applied 🎉</span>
+                          <span className="text-emerald-600 font-semibold"> · Bei ya Jumla 🎉</span>
                         )}
                       </div>
                     </div>
@@ -1079,28 +1333,26 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
                 </div>
               </div>
 
-              {/* Dynamic Submit CTA: Online Emerald vs Offline Orange SMS Fallback */}
               <button
                 type="button"
-                onClick={handlePlaceOrderOrSms}
-                className={`w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md transition-colors cursor-pointer shadow-xs ${
-                  isOnline
-                    ? 'bg-emerald-600 hover:bg-emerald-700'
-                    : 'bg-orange-600 hover:bg-orange-700'
-                }`}
+                disabled={submittingOrder}
+                onClick={() => void handlePlaceOrder()}
+                className="w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md transition-colors cursor-pointer shadow-xs disabled:opacity-60 bg-emerald-600 hover:bg-emerald-700"
               >
-                {isOnline
+                {submittingOrder
                   ? isSw
+                    ? 'Inatuma Oda...'
+                    : 'Submitting Order...'
+                  : isSw
                     ? 'Thibitisha & Agiza (CoD)'
-                    : 'Confirm & Dispatch CoD Order'
-                  : 'Tuma Oda kwa SMS 📡'}
+                    : 'Confirm & Dispatch CoD Order'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* SCREEN 5: ORDER CONFIRMATION (ISOLATED QR + DEVICE-SEPARATED PIN) */}
+      {/* SCREEN 5: ORDER CONFIRMATION */}
       {screen === 'PIN_TERMINAL' && activePinOrder && (
         <section className="max-w-md mx-auto space-y-3">
           <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-xs flex items-center justify-between">
@@ -1115,17 +1367,16 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
           <IsolatedQrVerificationTerminal
             locale={locale}
             defaultDeviceOwner="RETAILER_PHONE"
+            orderId={activePinOrder.orderId}
             orderRef8={activePinOrder.orderRef8}
             destinationLabel={activePinOrder.sellerName}
             expectedCashTzs={activePinOrder.totalCashDueTzs}
-            expectedBuyerPin={activePinOrder.buyerPin4}
-            expectedDriverPin="1122"
             onBack={() => setScreen('HOME')}
             onVerifiedSuccess={(consumedToken) => {
               setOrders((prev) =>
                 prev.map((o) =>
-                  o.orderId === activePinOrder.orderId ? { ...o, status: 'DELIVERED' } : o
-                )
+                  o.orderId === activePinOrder.orderId ? { ...o, status: 'DELIVERED' } : o,
+                ),
               );
               setFloatingToast({
                 title: isSw
@@ -1133,6 +1384,7 @@ export function SokoniCoreEngine({ locale = 'en' }: { locale?: Locale }) {
                   : `Order Confirmation ${activePinOrder.orderRef8} Settled`,
                 detail: `QR ${consumedToken} consumed · TZS ${activePinOrder.totalCashDueTzs.toLocaleString('en-US')} settled.`,
               });
+              void loadLiveHome();
             }}
           />
         </section>

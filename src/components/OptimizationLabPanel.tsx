@@ -1,41 +1,54 @@
-import { useState } from 'react';
-import { MapPin, Wifi, AlertOctagon, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { MapPin, RefreshCw, ShieldAlert, Wifi } from 'lucide-react';
 import { useDataSaver } from '../context/DataSaverContext';
 import { OptimizedProductImage } from './OptimizedProductImage';
 import type { Locale } from '../data/i18n';
+import { SokoApiClient, isSokoNetworkError } from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { formatBusinessTierLabel } from '../lib/sokoManagedState';
 
 const DAR_WARDS = [
   { id: 'sinza', name: 'Sinza Kwaremy', lat: -6.7845, lng: 39.2224 },
   { id: 'kinondoni', name: 'Kinondoni Studio', lat: -6.7875, lng: 39.2621 },
+  { id: 'kariakoo', name: 'Kariakoo Msimbazi', lat: -6.8235, lng: 39.2764 },
   { id: 'temeke', name: 'Temeke Mwisho', lat: -6.8669, lng: 39.2672 },
-  { id: 'tabata', name: 'Tabata Segerea', lat: -6.8264, lng: 39.1932 },
 ];
 
-const WHOLESALE_VENDORS = [
-  { code: 'S12', name: 'Kariakoo Msimbazi Hub', ward: 'Kariakoo', lat: -6.8235, lng: 39.2764 },
-  { code: 'S04', name: 'Congo St. Wholesale', ward: 'Kariakoo', lat: -6.8211, lng: 39.2749 },
-  { code: 'S19', name: 'Ilala Boma Grain Depot', ward: 'Ilala', lat: -6.8281, lng: 39.2602 },
-  { code: 'S24', name: 'Sinza Mori Bulk Store', ward: 'Sinza', lat: -6.7812, lng: 39.2298 },
-  { code: 'S31', name: 'Temeke Sudan Distributors', ward: 'Temeke', lat: -6.8615, lng: 39.2611 },
-];
-
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+interface ApiGeoNode {
+  merchantId: string;
+  smsShortCode: string;
+  merchantName: string;
+  tier: string;
+  ward: string;
+  district: string;
+  distanceMeters: number;
 }
 
-interface AlertLog {
+interface ApiCatalogItem {
   id: string;
-  severity: 'INFO' | 'CRITICAL_3_STRIKE';
-  message: string;
-  time: string;
+  canonicalSku: string;
+  fixedNameSw: string;
+  fixedNameEn: string;
+  categoryCode: string;
+  imagekitCdnUrl: string;
+}
+
+interface ApiFraudAlertsResponse {
+  securityAlerts: Array<{
+    id: string;
+    eventType: string;
+    severity: 'INFO' | 'CRITICAL_3_STRIKE';
+    actorName: string | null;
+    actorPhone: string | null;
+    createdAt: string;
+  }>;
+  disputedLedgers: Array<{
+    ledgerId: string;
+    orderRef: string;
+    driverName: string;
+    varianceTzs: number;
+    updatedAt: string;
+  }>;
 }
 
 export function OptimizationLabPanel({ locale }: { locale: Locale }) {
@@ -43,69 +56,73 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
   const { isLowDataModeActive, toggleLowDataMode } = useDataSaver();
 
   const [wardId, setWardId] = useState('sinza');
-  const [maxMeters, setMaxMeters] = useState(6000);
-
-  const [driverDisputes, setDriverDisputes] = useState(1);
-  const [alertLogs, setAlertLogs] = useState<AlertLog[]>([
-    {
-      id: 'init',
-      severity: 'INFO',
-      message: 'Dispute #1 logged for Driver Hassan Bakari (Order R4T7N2W5 · TZS 282,000 variance). Threshold: 3 in 24h.',
-      time: '15:18 EAT',
-    },
-  ]);
+  const [maxMeters, setMaxMeters] = useState(12000);
+  const [nearbyNodes, setNearbyNodes] = useState<ApiGeoNode[]>([]);
+  const [catalogPreview, setCatalogPreview] = useState<ApiCatalogItem[]>([]);
+  const [fraudData, setFraudData] = useState<ApiFraudAlertsResponse>({
+    securityAlerts: [],
+    disputedLedgers: [],
+  });
+  const [loading, setLoading] = useState(true);
+  const [backendOffline, setBackendOffline] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
 
   const selectedWard = DAR_WARDS.find((w) => w.id === wardId) ?? DAR_WARDS[0];
-  const nearbyVendors = WHOLESALE_VENDORS.map((v) => ({
-    ...v,
-    distanceMeters: haversineMeters(selectedWard.lat, selectedWard.lng, v.lat, v.lng),
-  }))
-    .filter((v) => v.distanceMeters <= maxMeters)
-    .sort((a, b) => a.distanceMeters - b.distanceMeters);
 
-  const triggerDisputeEvent = () => {
-    const nextCount = driverDisputes + 1;
-    setDriverDisputes(nextCount);
-    const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + ' EAT';
+  const loadLabData = useCallback(async () => {
+    setLoading(true);
+    setGeoError(null);
+    try {
+      const [geoRes, catalogRes, fraudRes] = await Promise.all([
+        SokoApiClient.get<{ nodes: ApiGeoNode[] }>(
+          `/geospatial/stores-map-matrix?originLat=${selectedWard.lat}&originLng=${selectedWard.lng}&maxDistanceMeters=${maxMeters}`,
+        ),
+        SokoApiClient.get<ApiCatalogItem[]>('/marketplace/catalog'),
+        SokoApiClient.get<ApiFraudAlertsResponse>('/admin/audit/fraud-alerts'),
+      ]);
 
-    if (nextCount >= 3) {
-      setAlertLogs((prev) => [
-        {
-          id: crypto.randomUUID(),
-          severity: 'CRITICAL_3_STRIKE',
-          message: `NEXTSMS ADMIN ALERT SENT: Driver Hassan Bakari reached ${nextCount} DISPUTED ledgers in 24h. Account flagged for audit.`,
-          time: now,
-        },
-        ...prev,
-      ]);
-    } else {
-      setAlertLogs((prev) => [
-        {
-          id: crypto.randomUUID(),
-          severity: 'INFO',
-          message: `Dispute #${nextCount} recorded for Hassan Bakari (TZS 94,000 variance). Below 3-strike SMS escalation threshold.`,
-          time: now,
-        },
-        ...prev,
-      ]);
+      setNearbyNodes(geoRes.nodes ?? []);
+      setCatalogPreview(Array.isArray(catalogRes) ? catalogRes.slice(0, 3) : []);
+      setFraudData({
+        securityAlerts: fraudRes.securityAlerts ?? [],
+        disputedLedgers: fraudRes.disputedLedgers ?? [],
+      });
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setGeoError(err instanceof Error ? err.message : 'Failed to query backend telemetry');
+      }
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [maxMeters, selectedWard.lat, selectedWard.lng]);
 
-  const resetDisputes = () => {
-    setDriverDisputes(1);
-    setAlertLogs([
-      {
-        id: 'reset',
-        severity: 'INFO',
-        message: 'Dispute #1 logged for Driver Hassan Bakari (Order R4T7N2W5 · TZS 282,000 variance). Threshold: 3 in 24h.',
-        time: '15:18 EAT',
-      },
-    ]);
-  };
+  useEffect(() => {
+    void loadLabData();
+  }, [loadLabData]);
 
   return (
     <div className="space-y-6">
-      {/* 1. PostGIS Proximity Query Simulator */}
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          onRetry={() => void loadLabData()}
+          retrying={loading}
+        />
+      )}
+
+      {geoError && (
+        <div
+          role="alert"
+          className="border border-amber-200 bg-amber-50 rounded-lg p-3.5 text-xs font-medium text-amber-900"
+        >
+          {geoError}
+        </div>
+      )}
+
+      {/* 1. PostGIS Proximity Query Explorer */}
       <section className="border border-slate-200 bg-white rounded-lg p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -115,7 +132,8 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
                 : 'Dar es Salaam Ward PostGIS Proximity Explorer'}
             </h2>
             <p className="text-sm text-slate-600 mt-0.5 font-mono text-xs">
-              SELECT * FROM get_businesses_ordered_by_proximity({selectedWard.lat}, {selectedWard.lng}, {maxMeters});
+              GET /api/v1/geospatial/stores-map-matrix?originLat={selectedWard.lat}&amp;originLng=
+              {selectedWard.lng}&amp;maxDistanceMeters={maxMeters}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -140,34 +158,41 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
               <option value={2500}>2,500 m</option>
               <option value={6000}>6,000 m</option>
               <option value={12000}>12,000 m</option>
+              <option value={25000}>25,000 m</option>
             </select>
           </div>
         </div>
 
-        {nearbyVendors.length === 0 ? (
-          <div className="text-xs text-slate-500 py-4 text-center border border-slate-200 rounded-md">
-            {isSw
-              ? 'Hakuna duka la jumla ndani ya umbali huu. Panua kipenyo.'
-              : 'No wholesale hubs within this radius. Increase max_distance_meters.'}
-          </div>
+        {nearbyNodes.length === 0 ? (
+          <EmptyStateCard
+            locale={locale}
+            titleSw="Hakuna Wafanyabiashara ndani ya kipenyo hiki"
+            titleEn="No Merchants within this radius in PostGIS"
+          />
         ) : (
           <div className="overflow-x-auto border border-slate-200 rounded-md">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-medium">
                   <th className="py-2 px-4">Code</th>
-                  <th className="py-2 px-4">Wholesale Hub</th>
+                  <th className="py-2 px-4">{isSw ? 'Mfanyabiashara' : 'Merchant'}</th>
+                  <th className="py-2 px-4">{isSw ? 'Aina' : 'Tier'}</th>
                   <th className="py-2 px-4">Ward</th>
-                  <th className="py-2 px-4 text-right">Proximity Distance (m)</th>
+                  <th className="py-2 px-4 text-right">PostGIS Distance (m)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {nearbyVendors.map((v) => (
-                  <tr key={v.code} className="hover:bg-slate-50/70">
-                    <td className="py-2 px-4 font-mono font-semibold text-slate-900">{v.code}</td>
+                {nearbyNodes.map((v) => (
+                  <tr key={v.merchantId} className="hover:bg-slate-50/70">
+                    <td className="py-2 px-4 font-mono font-semibold text-slate-900">
+                      {v.smsShortCode}
+                    </td>
                     <td className="py-2 px-4 text-slate-800 inline-flex items-center gap-1.5">
                       <MapPin className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
-                      <span>{v.name}</span>
+                      <span>{v.merchantName}</span>
+                    </td>
+                    <td className="py-2 px-4 text-slate-600">
+                      {formatBusinessTierLabel(v.tier, locale)}
                     </td>
                     <td className="py-2 px-4 text-slate-600">{v.ward}</td>
                     <td className="py-2 px-4 text-right font-mono tabular-nums text-slate-900">
@@ -181,7 +206,7 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
         )}
       </section>
 
-      {/* 2. Ultra-Low Data Bundle Mode Live Switch */}
+      {/* 2. Ultra-Low Data Bundle Mode Live Switch (uses live Catalog SKUs) */}
       <section className="border border-slate-200 bg-white rounded-lg p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -193,7 +218,7 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
             <p className="text-sm text-slate-600 mt-0.5">
               {isSw
                 ? 'Huzuia upakuaji wa picha kubwa kwenye mtandao wa 2G/3G na kuonyesha kadi nyepesi ya maandishi.'
-                : 'Suppresses heavy image assets over expensive mobile bundles and falls back to zero-network SKU cards.'}
+                : 'Suppresses heavy image assets over expensive mobile bundles and renders zero-network SKU cards.'}
             </p>
           </div>
           <button
@@ -218,81 +243,98 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <OptimizedProductImage
-            skuCode="P01"
-            productName="Azania Wheat Flour (2kg)"
-            unitSummary="24 units / Carton"
-            priceTzs={81600}
-            estimatedFullSizeKb={210}
+        {catalogPreview.length === 0 ? (
+          <EmptyStateCard
+            locale={locale}
+            titleSw="Hakuna bidhaa za katalogi kuu bado"
+            titleEn="No Master Catalog items in PostgreSQL yet"
           />
-          <OptimizedProductImage
-            skuCode="P02"
-            productName="Korie Cooking Oil (1L)"
-            unitSummary="20 bottles / Carton"
-            priceTzs={94000}
-            estimatedFullSizeKb={185}
-          />
-          <OptimizedProductImage
-            skuCode="P04"
-            productName="Kilombero Sugar (1kg)"
-            unitSummary="12 packs / Dozen"
-            priceTzs={39600}
-            estimatedFullSizeKb={165}
-          />
-        </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {catalogPreview.map((item) => (
+              <OptimizedProductImage
+                key={item.id}
+                skuCode={item.canonicalSku}
+                productName={isSw ? item.fixedNameSw : item.fixedNameEn}
+                unitSummary={item.categoryCode}
+                imageUrl={item.imagekitCdnUrl}
+                estimatedFullSizeKb={180}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
-      {/* 3. Spring Boot 3-Strike Dispute Alert Listener Simulator */}
+      {/* 3. Live 3-Strike Delivery Dispute & Security Audit Feed */}
       <section className="border border-slate-200 bg-white rounded-lg p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              {isSw
-                ? 'Mtambo wa Tahadhari za Mizozo (DisputeAlertListener)'
-                : '3-Strike Delivery Dispute Alert Listener'}
+            <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-600" aria-hidden="true" />
+              <span>
+                {isSw
+                  ? 'Tahadhari za Usalama na Mizozo 3 ya Madereva (PostgreSQL)'
+                  : '3-Strike Driver Disputes & Security Audit Feed'}
+              </span>
             </h2>
             <p className="text-sm text-slate-600 mt-0.5">
               {isSw
-                ? 'Dereva akifikisha mizozo 3 ndani ya saa 24, Spring Boot hutuma tahadhari kwa wasimamizi via NextSMS.'
-                : 'Triggers @Async administrator NextSMS escalation when a driver accumulates >= 3 Disputed cash variances in 24h.'}
+                ? 'Inasoma moja kwa moja kutoka security_audit_logs na cash_delivery_ledgers zenye mizozo.'
+                : 'Reads directly from security_audit_logs and DISPUTED cash_delivery_ledgers.'}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={triggerDisputeEvent}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-amber-700 rounded-md hover:bg-amber-800 whitespace-nowrap cursor-pointer"
-            >
-              <AlertOctagon className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>
-                {isSw ? 'Tuma Tukio la Mzozo' : 'Emit DeliveryDisputeEvent'} ({driverDisputes}/3)
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={resetDisputes}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isSw ? 'Weka Upya' : 'Reset'}</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void loadLabData()}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            <span>{isSw ? 'Onyesha Upya' : 'Refresh'}</span>
+          </button>
         </div>
 
-        <div className="divide-y divide-slate-200 border border-slate-200 rounded-md">
-          {alertLogs.map((log) => (
-            <div
-              key={log.id}
-              className={`px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2 ${
-                log.severity === 'CRITICAL_3_STRIKE' ? 'bg-red-50 text-red-900' : 'bg-white text-slate-700'
-              }`}
-            >
-              <span className="font-mono">{log.message}</span>
-              <span className="font-mono tabular-nums text-slate-500 whitespace-nowrap">{log.time}</span>
-            </div>
-          ))}
-        </div>
+        {fraudData.securityAlerts.length === 0 && fraudData.disputedLedgers.length === 0 ? (
+          <EmptyStateCard
+            locale={locale}
+            titleSw="Hakuna tahadhari za udanganyifu au mizozo"
+            titleEn="No fraud escalations or disputed ledgers recorded"
+          />
+        ) : (
+          <div className="divide-y divide-slate-200 border border-slate-200 rounded-md">
+            {fraudData.securityAlerts.map((log) => (
+              <div
+                key={log.id}
+                className={`px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2 ${
+                  log.severity === 'CRITICAL_3_STRIKE'
+                    ? 'bg-red-50 text-red-900'
+                    : 'bg-white text-slate-700'
+                }`}
+              >
+                <span className="font-mono">
+                  {log.eventType} · {log.actorName ?? log.actorPhone ?? 'System'}
+                </span>
+                <span className="font-mono tabular-nums text-slate-500 whitespace-nowrap">
+                  {new Date(log.createdAt).toLocaleString()}
+                </span>
+              </div>
+            ))}
+            {fraudData.disputedLedgers.map((d) => (
+              <div
+                key={d.ledgerId}
+                className="px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2 bg-amber-50/70 text-amber-950"
+              >
+                <span className="font-mono">
+                  DISPUTED #{d.orderRef} · Driver: {d.driverName} · Variance: TZS{' '}
+                  {d.varianceTzs.toLocaleString('en-US')}
+                </span>
+                <span className="font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                  {new Date(d.updatedAt).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

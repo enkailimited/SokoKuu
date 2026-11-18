@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -13,7 +13,13 @@ import {
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import { useDataSaver } from '../context/DataSaverContext';
-import { recordOrderDispatchAuditTrace } from '../lib/sokoManagedState';
+import { putQueuedOrder } from '../lib/indexedDbDemo';
+import {
+  SokoApiClient,
+  SokoHttpError,
+  isSokoNetworkError,
+} from '../services/sokoApiClient';
+import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import azaniaFlourImg from '../assets/images/azania_wheat_flour_1794734183041.jpg';
 import korieOilImg from '../assets/images/korie_cooking_oil_1794734183539.jpg';
 import kilomberoSugarImg from '../assets/images/kilombero_brown_sugar_1794734184028.jpg';
@@ -25,62 +31,29 @@ export interface GridProduct {
   nameSw: string;
   nameEn: string;
   priceTzs: number;
+  unitType?: string;
   minMoq: string;
   minMoqEn: string;
   imageSrc: string;
   isLowStockInDuka: boolean;
 }
 
-const DEFAULT_SMART_GRID_PRODUCTS: GridProduct[] = [
-  {
-    id: 'P01',
-    sku: 'GC-AZN-WHEAT',
-    nameSw: 'Azania Wheat Flour (2kg)',
-    nameEn: 'Azania Wheat Flour (2kg)',
-    priceTzs: 81_600,
-    minMoq: 'Katoni 2',
-    minMoqEn: '2 Cartons',
-    imageSrc: azaniaFlourImg,
-    isLowStockInDuka: true,
-  },
-  {
-    id: 'P02',
-    sku: 'GC-KOR-OIL',
-    nameSw: 'Korie Cooking Oil (1L)',
-    nameEn: 'Korie Cooking Oil (1L)',
-    priceTzs: 94_000,
-    minMoq: 'Katoni 1',
-    minMoqEn: '1 Carton',
-    imageSrc: korieOilImg,
-    isLowStockInDuka: false,
-  },
-  {
-    id: 'P03',
-    sku: 'GC-KLM-SUGAR',
-    nameSw: 'Kilombero Sugar (1kg)',
-    nameEn: 'Kilombero Sugar (1kg)',
-    priceTzs: 39_600,
-    minMoq: 'Dozen 1',
-    minMoqEn: '1 Dozen',
-    imageSrc: kilomberoSugarImg,
-    isLowStockInDuka: true,
-  },
-  {
-    id: 'P04',
-    sku: 'GC-MBY-RICE',
-    nameSw: 'Mbeya Grade A Rice (50kg)',
-    nameEn: 'Mbeya Grade A Rice (50kg)',
-    priceTzs: 115_000,
-    minMoq: 'Gunia 1',
-    minMoqEn: '1 Sack',
-    imageSrc: mbeyaRiceImg,
-    isLowStockInDuka: false,
-  },
-];
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(val?: string | null): val is string {
+  return Boolean(val && UUID_REGEX.test(val));
+}
+
+function resolveSkuImage(sku: string): string {
+  const s = sku.toUpperCase();
+  if (s.includes('AZN') || s.includes('FLR') || s.includes('WHEAT')) return azaniaFlourImg;
+  if (s.includes('KOR') || s.includes('OIL')) return korieOilImg;
+  if (s.includes('KLM') || s.includes('SUG')) return kilomberoSugarImg;
+  return mbeyaRiceImg;
+}
 
 export function SmartGridStoreCatalog({
   storeName,
-  sellerBusinessId = '11111111-aaaa-4111-8111-000000000001',
+  sellerBusinessId,
   locale = 'sw',
   onClose,
   onOrderDispatched,
@@ -96,14 +69,92 @@ export function SmartGridStoreCatalog({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [cart, setCart] = useState<Record<string, number>>({});
   const [dispatchedRef, setDispatchedRef] = useState<string | null>(null);
-  const [storeProducts] = useState<GridProduct[]>(DEFAULT_SMART_GRID_PRODUCTS);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [storeProducts, setStoreProducts] = useState<GridProduct[]>([]);
+
+  const loadLiveGrid = useCallback(async () => {
+    if (!isUuid(sellerBusinessId)) {
+      setStoreProducts([]);
+      return;
+    }
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      return;
+    }
+    setLoading(true);
+    setBackendOffline(false);
+    setErrorBanner(null);
+    try {
+      const [intelligentRows, activeRows] = await Promise.all([
+        SokoApiClient.get<
+          Array<{
+            productId: string;
+            sku: string;
+            nameSw: string;
+            nameEn: string;
+            wholesalePriceTzs: number;
+            moqLabel: string;
+            requiresUrgentReorder: boolean;
+          }>
+        >(`/marketplace/catalog/intelligent-view?wholesalerId=${encodeURIComponent(sellerBusinessId)}`),
+        SokoApiClient.get<
+          Array<{
+            productId: string;
+            priceTiers: Array<{ unitType: string; isWholesaleTier: boolean }>;
+          }>
+        >(`/products/active?businessId=${encodeURIComponent(sellerBusinessId)}`),
+      ]);
+
+      const unitByProd = new Map<string, string>();
+      for (const row of activeRows ?? []) {
+        const wTier = row.priceTiers.find((t) => t.isWholesaleTier) ?? row.priceTiers[0];
+        if (wTier) unitByProd.set(row.productId, wTier.unitType);
+      }
+
+      setStoreProducts(
+        (Array.isArray(intelligentRows) ? intelligentRows : []).map((r) => ({
+          id: r.productId,
+          sku: r.sku,
+          nameSw: r.nameSw,
+          nameEn: r.nameEn,
+          priceTzs: r.wholesalePriceTzs,
+          unitType: unitByProd.get(r.productId) ?? 'SACK_50KG',
+          minMoq: r.moqLabel,
+          minMoqEn: r.moqLabel,
+          imageSrc: resolveSkuImage(r.sku),
+          isLowStockInDuka: r.requiresUrgentReorder,
+        })),
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorBanner(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia gridi ya bidhaa.'
+              : 'Failed to load catalog.',
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [isSw, sellerBusinessId]);
+
+  useEffect(() => {
+    void loadLiveGrid();
+  }, [loadLiveGrid]);
 
   const updateCart = (id: string, amount: number) => {
     setDispatchedRef(null);
+    setErrorBanner(null);
     setCart((prev) => ({ ...prev, [id]: Math.max(0, (prev[id] || 0) + amount) }));
   };
 
-  // Context-aware search & shelf-velocity sorting (is_low_stock DESC, name ASC)
   const { filteredGridProducts, lowStockSuggestions } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const sorted = [...storeProducts].sort((a, b) => {
@@ -118,7 +169,7 @@ export function SmartGridStoreCatalog({
           (p) =>
             p.nameSw.toLowerCase().includes(q) ||
             p.nameEn.toLowerCase().includes(q) ||
-            p.sku.toLowerCase().includes(q)
+            p.sku.toLowerCase().includes(q),
         )
       : sorted;
 
@@ -130,35 +181,88 @@ export function SmartGridStoreCatalog({
     let totalUnits = 0;
     let totalTzs = 0;
     const parts: string[] = [];
+    const lines: Array<{ productId: string; unitType: string; quantity: number }> = [];
     for (const product of storeProducts) {
       const qty = cart[product.id] || 0;
       if (qty > 0) {
         totalUnits += qty;
         totalTzs += qty * product.priceTzs;
-        parts.push(`${product.nameSw} (x${qty})`);
+        parts.push(`${product.sku}:${qty}`);
+        lines.push({
+          productId: product.id,
+          unitType: product.unitType ?? 'SACK_50KG',
+          quantity: qty,
+        });
       }
     }
-    return { totalUnits, totalTzs, summaryText: parts.join(' + ') };
+    return { totalUnits, totalTzs, summaryText: parts.join(','), lines };
   }, [storeProducts, cart]);
 
-  const handleDispatchGridOrder = () => {
-    if (cartSummary.totalUnits === 0) return;
-    const orderRef8 = 'SK' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    recordOrderDispatchAuditTrace({
-      orderRef8,
+  const queueGridOrderOffline = async () => {
+    if (!isUuid(sellerBusinessId) || cartSummary.lines.length === 0) return;
+    await putQueuedOrder({
+      idempotencyKey: crypto.randomUUID(),
       sellerBusinessId,
-      sellerBusinessName: storeName,
-      totalCashDueTzs: cartSummary.totalTzs,
-      itemsSummary: cartSummary.summaryText,
+      sellerHub: storeName,
+      compactSmsBody: cartSummary.summaryText,
+      totalTzs: cartSummary.totalTzs,
+      items: cartSummary.lines,
+      clientCreatedAt: new Date().toISOString(),
+      syncStatus: 'QUEUED_OFFLINE',
+      retryCount: 0,
     });
     setCart({});
-    setDispatchedRef(orderRef8);
-    onOrderDispatched?.(orderRef8);
+    setDispatchedRef('QUEUED_OFFLINE');
+  };
+
+  const handleDispatchGridOrder = async () => {
+    if (cartSummary.totalUnits === 0 || !isUuid(sellerBusinessId)) return;
+    setErrorBanner(null);
+
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      await queueGridOrderOffline();
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await SokoApiClient.post<{
+        orderId: string;
+        orderRef: string;
+        expectedTotalTzs: number;
+      }>('/marketplace/orders/submit-request', {
+        sellerBusinessId,
+        originChannel: 'PWA_ONLINE',
+        paymentMethod: 'CASH',
+        deliveryFeeTzs: 0,
+        items: cartSummary.lines,
+      });
+      setCart({});
+      setDispatchedRef(res.orderRef);
+      onOrderDispatched?.(res.orderRef);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        await queueGridOrderOffline();
+      } else {
+        setErrorBanner(err instanceof Error ? err.message : 'Grid order submission failed.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <div className="max-w-md mx-auto p-4 space-y-4 bg-slate-50 min-h-screen font-sans antialiased pb-28">
-      {/* 1. STORE HEADER BAR */}
+      {backendOffline && (
+        <BackendOfflineBanner
+          locale={locale}
+          retrying={loading}
+          onRetry={() => void loadLiveGrid()}
+        />
+      )}
+
       <div className="bg-white border border-slate-100 p-4 rounded-2xl shadow-sm flex justify-between items-center gap-3">
         <div className="flex items-center space-x-2 min-w-0">
           <button
@@ -179,7 +283,16 @@ export function SmartGridStoreCatalog({
         </span>
       </div>
 
-      {/* 2. DYNAMIC INPUT SEARCH COMPONENT (Swahili Title & SKU Filter) */}
+      {errorBanner && (
+        <div
+          role="alert"
+          className="bg-rose-50 border border-rose-200 rounded-2xl p-3 flex items-center gap-2 text-xs font-semibold text-rose-900"
+        >
+          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-hidden="true" />
+          <span>{errorBanner}</span>
+        </div>
+      )}
+
       <div className="bg-white border border-slate-100 rounded-2xl p-3 shadow-sm">
         <label htmlFor="smart-grid-search-input" className="sr-only">
           {isSw ? 'Tafuta bidhaa kwa jina au SKU' : 'Search products by name or SKU'}
@@ -214,7 +327,6 @@ export function SmartGridStoreCatalog({
         </div>
       </div>
 
-      {/* 3. DYNAMIC LOW-STOCK RECOMMENDATION HORIZONTAL CAROUSEL */}
       {lowStockSuggestions.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
@@ -246,7 +358,7 @@ export function SmartGridStoreCatalog({
                   key={suggest.id}
                   onClick={() =>
                     setSearchQuery((prev) =>
-                      prev.toLowerCase() === suggest.nameSw.toLowerCase() ? '' : suggest.nameSw
+                      prev.toLowerCase() === suggest.nameSw.toLowerCase() ? '' : suggest.nameSw,
                     )
                   }
                   className={`flex-shrink-0 border p-3 rounded-xl flex items-center space-x-3 cursor-pointer active:scale-95 transition-all text-left shadow-xs ${
@@ -280,20 +392,29 @@ export function SmartGridStoreCatalog({
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
           <span>
-            {isSw
-              ? `Oda #${dispatchedRef} imetumwa kwenda ${storeName}.`
-              : `Order #${dispatchedRef} dispatched to ${storeName}.`}
+            {dispatchedRef === 'QUEUED_OFFLINE'
+              ? isSw
+                ? `Oda imewekwa foleni (QUEUED_OFFLINE) kwa ${storeName} kusubiri mtandao.`
+                : `Order queued (QUEUED_OFFLINE) for ${storeName} pending connectivity.`
+              : isSw
+                ? `Oda #${dispatchedRef} imetumwa kwenda ${storeName} katika PostgreSQL.`
+                : `Order #${dispatchedRef} submitted to ${storeName} in PostgreSQL.`}
           </span>
         </div>
       )}
 
-      {/* 4. THE 2-COLUMN BALANCED PRODUCT GRID VIEW */}
-      {filteredGridProducts.length === 0 ? (
+      {loading ? (
         <div className="bg-white border border-slate-200 rounded-2xl p-6 text-center text-xs text-slate-500">
-          {isSw
-            ? `Hakuna bidhaa inayolingana na "${searchQuery}".`
-            : `No catalog items matched "${searchQuery}".`}
+          {isSw ? 'Inapakia bidhaa za gridi...' : 'Loading store grid...'}
         </div>
+      ) : filteredGridProducts.length === 0 ? (
+        <EmptyStateCard
+          locale={locale}
+          titleSw="Hakuna rekodi bado"
+          titleEn="No records yet"
+          descriptionSw="Hakuna bidhaa za duka hili katika PostgreSQL bado."
+          descriptionEn="No catalog items found in PostgreSQL for this store."
+        />
       ) : (
         <div className="grid grid-cols-2 gap-3">
           {filteredGridProducts.map((product) => {
@@ -363,7 +484,6 @@ export function SmartGridStoreCatalog({
         </div>
       )}
 
-      {/* Sticky Dispatch Bar */}
       {cartSummary.totalUnits > 0 && (
         <div className="sticky bottom-4 z-20 bg-white border border-emerald-200 rounded-2xl p-3.5 shadow-lg flex items-center justify-between gap-3">
           <div>
@@ -376,11 +496,20 @@ export function SmartGridStoreCatalog({
           </div>
           <button
             type="button"
-            onClick={handleDispatchGridOrder}
-            className="min-h-[40px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            disabled={submitting}
+            onClick={() => void handleDispatchGridOrder()}
+            className="min-h-[40px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
           >
             <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{isSw ? 'Tuma Oda ya Gridi' : 'Dispatch Grid Order'}</span>
+            <span>
+              {submitting
+                ? isSw
+                  ? 'Inatuma...'
+                  : 'Submitting...'
+                : isSw
+                  ? 'Tuma Oda ya Gridi'
+                  : 'Dispatch Grid Order'}
+            </span>
           </button>
         </div>
       )}
