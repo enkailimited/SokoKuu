@@ -1,6 +1,6 @@
 {
-  "name": "SokoKuu TZ — B2B2C Enterprise Architecture",
-  "description": "Multi-tier Tanzanian B2B2C digital commerce architecture console: Serverless SQL Cluster DDL, Spring Boot 3.x Security & STOMP, Next.js PWA Offline Sync, and Google Maps TZS Logistics.",
+  "name": "SokoKuu TZ — B2B2C Enterprise",
+  "description": "Multi-tier Tanzanian B2B2C digital commerce.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
