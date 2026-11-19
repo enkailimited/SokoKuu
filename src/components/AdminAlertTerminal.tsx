@@ -4,10 +4,13 @@ import {
   BellRing,
   CheckCircle2,
   ClipboardCheck,
+  KeyRound,
   Lock,
+  Phone,
   PhoneCall,
   Radio,
   RefreshCw,
+  Truck,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -23,6 +26,7 @@ import {
   SokoHttpError,
   isSokoNetworkError,
 } from '../services/sokoApiClient';
+import { useFocusOrderScroll, type FocusOrderTarget } from '../lib/sokoFocusOrder';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
 type OrderFilterTab = 'ALL' | AdminManagedOrderStatus;
@@ -34,26 +38,57 @@ interface BackendManagedTrace {
   sellerBusinessId: string;
   merchantName: string;
   merchantShortCode?: string;
+  sellerOwnerName?: string;
+  sellerPhoneE164?: string;
+  buyerName?: string;
+  buyerPhoneE164?: string;
+  driverName?: string | null;
+  driverPhoneE164?: string | null;
   isPlatformManagedSnapshot: boolean;
   routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
   targetPipeline: string;
   txIsolationLevel?: string;
-  helpdeskStatus: 'OPEN' | 'IN_REVIEW' | 'RESOLVED' | 'ESCALATED' | 'DIRECT_MERCHANT';
+  helpdeskStatus:
+    | 'OPEN'
+    | 'IN_REVIEW'
+    | 'IN_TRANSIT'
+    | 'RESOLVED'
+    | 'ESCALATED'
+    | 'DIRECT_MERCHANT';
   handledNotes?: string | null;
   handledAt?: string | null;
   recordedAt: string;
   orderStatus?: string;
   expectedTotalTzs: number;
+  dispatchedAt?: string | null;
+  deliveredAt?: string | null;
+}
+
+interface AdminDriverOption {
+  driverId: string;
+  driverName: string;
+  phoneE164: string;
+}
+
+interface AdminDispatchNotice {
+  orderRef8: string;
+  buyerPin: string | null;
+  driverPin: string | null;
+  driverName: string | null;
 }
 
 function mapHelpdeskStatusToUi(status: BackendManagedTrace['helpdeskStatus']): AdminManagedOrderStatus {
+  if (status === 'IN_TRANSIT') return 'IN_TRANSIT';
   if (status === 'IN_REVIEW') return 'RECEIVED';
   if (status === 'RESOLVED' || status === 'ESCALATED') return 'DISPATCHED';
   return 'PENDING';
 }
 
-function mapUiStatusToBackend(status: AdminManagedOrderStatus): 'OPEN' | 'IN_REVIEW' | 'RESOLVED' {
+function mapUiStatusToBackend(
+  status: AdminManagedOrderStatus,
+): 'OPEN' | 'IN_REVIEW' | 'IN_TRANSIT' | 'RESOLVED' {
   if (status === 'RECEIVED') return 'IN_REVIEW';
+  if (status === 'IN_TRANSIT') return 'IN_TRANSIT';
   if (status === 'DISPATCHED') return 'RESOLVED';
   return 'OPEN';
 }
@@ -70,9 +105,11 @@ function getEffectiveStatus(order: OrderDispatchAuditTrace): AdminManagedOrderSt
 export function AdminAlertTerminal({
   locale = 'sw',
   stompEndpointUrl = '/ws-sokokuu',
+  focusOrder,
 }: {
   locale?: Locale;
   stompEndpointUrl?: string;
+  focusOrder?: FocusOrderTarget | null;
 }) {
   const isSw = locale === 'sw';
   const [audioMuted, setAudioMuted] = useState<boolean>(false);
@@ -85,24 +122,41 @@ export function AdminAlertTerminal({
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [busyTraceId, setBusyTraceId] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [drivers, setDrivers] = useState<AdminDriverOption[]>([]);
+  const [selectedDriverByTrace, setSelectedDriverByTrace] = useState<Record<string, string>>({});
+  const [dispatchNotice, setDispatchNotice] = useState<AdminDispatchNotice | null>(null);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ringIntervalRef = useRef<number | null>(null);
+  useFocusOrderScroll(focusOrder, !isLoading);
 
   const refreshLiveOrders = useCallback(async () => {
     setIsLoading(true);
     setErrorBanner(null);
     try {
-      const res = await SokoApiClient.get<{
-        count: number;
-        traces: BackendManagedTrace[];
-      }>('/admin/managed-orders?routingOutputCode=ROUTED_PLATFORM_MANAGED_HELPDESK');
+      const [res, driversRes] = await Promise.all([
+        SokoApiClient.get<{
+          count: number;
+          traces: BackendManagedTrace[];
+        }>('/admin/managed-orders?routingOutputCode=ROUTED_PLATFORM_MANAGED_HELPDESK'),
+        SokoApiClient.get<{ count: number; drivers: AdminDriverOption[] }>('/admin/drivers').catch(
+          () => ({ count: 0, drivers: [] as AdminDriverOption[] }),
+        ),
+      ]);
+
+      setDrivers(driversRes.drivers ?? []);
 
       const mapped: OrderDispatchAuditTrace[] = (res.traces || []).map((t) => ({
         traceId: t.traceId,
         orderRef8: t.orderRef8,
         sellerBusinessId: t.sellerBusinessId,
         sellerBusinessName: t.merchantName,
+        sellerOwnerName: t.sellerOwnerName,
+        sellerPhoneE164: t.sellerPhoneE164,
+        buyerName: t.buyerName,
+        buyerPhoneE164: t.buyerPhoneE164,
+        driverName: t.driverName,
+        driverPhoneE164: t.driverPhoneE164,
         isPlatformManagedAtSubmit: t.isPlatformManagedSnapshot,
         routingCode: t.routingOutputCode,
         targetPipeline: 'SUPER_ADMIN_HELPDESK_PIPELINE',
@@ -116,6 +170,7 @@ export function AdminAlertTerminal({
         recordedAtEat: new Date(t.recordedAt).toLocaleTimeString(),
         adminStatus: mapHelpdeskStatusToUi(t.helpdeskStatus),
         adminHandledAtEat: t.handledAt ? new Date(t.handledAt).toLocaleTimeString() : undefined,
+        orderStatus: t.orderStatus,
       }));
       setLiveOrders(mapped);
       setBackendOffline(false);
@@ -191,6 +246,7 @@ export function AdminAlertTerminal({
 
   const pendingCount = liveOrders.filter((o) => getEffectiveStatus(o) === 'PENDING').length;
   const receivedCount = liveOrders.filter((o) => getEffectiveStatus(o) === 'RECEIVED').length;
+  const inTransitCount = liveOrders.filter((o) => getEffectiveStatus(o) === 'IN_TRANSIT').length;
   const dispatchedCount = liveOrders.filter((o) => getEffectiveStatus(o) === 'DISPATCHED').length;
 
   useEffect(() => {
@@ -305,22 +361,50 @@ export function AdminAlertTerminal({
     };
   }, [stompEndpointUrl, incomingAlertHandler, refreshLiveOrders]);
 
-  const handleUpdateOrderStatus = async (traceId: string, nextStatus: AdminManagedOrderStatus) => {
+  const handleUpdateOrderStatus = async (
+    traceId: string,
+    nextStatus: AdminManagedOrderStatus,
+    driverUserId?: string,
+    orderRef8?: string,
+  ) => {
     setErrorBanner(null);
     setBusyTraceId(traceId);
     try {
       const backendStatus = mapUiStatusToBackend(nextStatus);
-      await SokoApiClient.patch(`/admin/managed-orders/${traceId}/status`, {
+      const res = await SokoApiClient.patch<{
+        buyerConfirmationPin?: string | null;
+        driverConfirmationPin?: string | null;
+        driverUserId?: string | null;
+      }>(`/admin/managed-orders/${traceId}/status`, {
         helpdeskStatus: backendStatus,
         notes:
           nextStatus === 'RECEIVED'
             ? isSw
               ? 'Imepokelewa na Admin Helpdesk'
               : 'Received by Super Admin Helpdesk'
-            : isSw
-              ? 'Imekamilishwa na kutumwa kwa uthibitisho'
-              : 'Helpdesk dispatch completed',
+            : nextStatus === 'IN_TRANSIT'
+              ? isSw
+                ? 'Mzigo upo njiani kwa dereva'
+                : 'Order is in transit with driver'
+              : isSw
+                ? 'Imekamilishwa na kutumwa kwa uthibitisho'
+                : 'Helpdesk dispatch completed',
+        ...(nextStatus === 'IN_TRANSIT' && driverUserId ? { driverUserId } : {}),
       });
+
+      if (nextStatus === 'IN_TRANSIT') {
+        const driver =
+          drivers.find((d) => d.driverId === res?.driverUserId) ??
+          drivers.find((d) => d.driverId === driverUserId) ??
+          null;
+        setDispatchNotice({
+          orderRef8: orderRef8 ?? '',
+          buyerPin: res?.buyerConfirmationPin ?? null,
+          driverPin: res?.driverConfirmationPin ?? null,
+          driverName: driver?.driverName ?? null,
+        });
+      }
+
       await refreshLiveOrders();
       window.dispatchEvent(new CustomEvent('sokokuu:orders-updated'));
     } catch (err) {
@@ -449,6 +533,11 @@ export function AdminAlertTerminal({
               { key: 'ALL', labelSw: `Zote (${liveOrders.length})`, labelEn: `All (${liveOrders.length})` },
               { key: 'PENDING', labelSw: `Zinazosubiri (${pendingCount})`, labelEn: `Open (${pendingCount})` },
               { key: 'RECEIVED', labelSw: `Zimepokelewa (${receivedCount})`, labelEn: `In Review (${receivedCount})` },
+              {
+                key: 'IN_TRANSIT',
+                labelSw: `Njiani (${inTransitCount})`,
+                labelEn: `In Transit (${inTransitCount})`,
+              },
               { key: 'DISPATCHED', labelSw: `Zimekamilika (${dispatchedCount})`, labelEn: `Resolved (${dispatchedCount})` },
             ] as const
           ).map((tab) => {
@@ -470,6 +559,46 @@ export function AdminAlertTerminal({
           })}
         </div>
       </div>
+
+      {dispatchNotice && (
+        <div className="border border-emerald-200 bg-emerald-50 rounded-lg px-4 py-3 text-xs text-emerald-950 space-y-1.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 font-semibold">
+              <KeyRound className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
+              <span>
+                {isSw
+                  ? `Mzigo #${dispatchNotice.orderRef8} upo njiani. PIN za makabidhiano zimetolewa mara moja:`
+                  : `Order #${dispatchNotice.orderRef8} is in transit. Handover PINs issued once:`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDispatchNotice(null)}
+              className="text-emerald-800 hover:text-emerald-950 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 font-mono text-[13px] font-bold">
+            <span>
+              {isSw ? 'PIN ya Mteja' : 'Buyer PIN'}: {dispatchNotice.buyerPin ?? '—'}
+            </span>
+            <span>
+              {isSw ? 'PIN ya Dereva' : 'Driver PIN'}: {dispatchNotice.driverPin ?? '—'}
+            </span>
+            {dispatchNotice.driverName && (
+              <span className="font-sans font-semibold">
+                {isSw ? 'Dereva' : 'Driver'}: {dispatchNotice.driverName}
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-emerald-800">
+            {isSw
+              ? 'Hakikisha mnunuzi na dereva wanapokea PIN zao kwa simu kabla ya kufika mlangoni.'
+              : 'Share these PINs with the buyer and driver by phone before delivery.'}
+          </p>
+        </div>
+      )}
 
       {/* Active Unreceived Order Alarm Banner */}
       {pendingCount > 0 && (
@@ -505,18 +634,24 @@ export function AdminAlertTerminal({
         ) : (
           visibleOrders.map((order) => {
             const status = getEffectiveStatus(order);
+            const chosenDriver =
+              selectedDriverByTrace[order.traceId] ?? drivers[0]?.driverId ?? '';
             return (
               <div
                 key={order.traceId}
-                className={`border rounded-lg p-4 flex flex-wrap items-center justify-between gap-3 text-xs transition-colors ${
+                data-order-ref={order.orderRef8}
+                data-order-id={order.orderRef8}
+                className={`border rounded-lg p-4 flex flex-wrap items-stretch justify-between gap-3 text-xs transition-colors ${
                   status === 'PENDING'
                     ? 'bg-amber-50/80 border-amber-300 shadow-xs'
                     : status === 'RECEIVED'
                       ? 'bg-emerald-50/50 border-emerald-200'
-                      : 'bg-slate-50/70 border-slate-200'
+                      : status === 'IN_TRANSIT'
+                        ? 'bg-sky-50/70 border-sky-300'
+                        : 'bg-slate-50/70 border-slate-200'
                 }`}
               >
-                <div className="space-y-1 min-w-0">
+                <div className="space-y-1.5 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 font-mono font-bold text-slate-900">
                     <span>#{order.orderRef8}</span>
                     <span className="text-slate-400">·</span>
@@ -535,39 +670,135 @@ export function AdminAlertTerminal({
                     TZS {order.totalCashDueTzs.toLocaleString('en-US')} · {order.recordedAtEat}
                     {order.adminHandledAtEat ? ` · ${order.adminHandledAtEat}` : ''}
                   </div>
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] pt-0.5">
+                    {order.sellerPhoneE164 && (
+                      <a
+                        href={`tel:${order.sellerPhoneE164}`}
+                        className="inline-flex items-center gap-1.5 font-mono font-semibold text-emerald-800 hover:text-emerald-950 hover:underline"
+                      >
+                        <Phone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>
+                          {isSw ? 'Muuzaji' : 'Seller'}: {order.sellerOwnerName ?? order.sellerBusinessName} ·{' '}
+                          {order.sellerPhoneE164}
+                        </span>
+                      </a>
+                    )}
+                    {order.buyerPhoneE164 && (
+                      <a
+                        href={`tel:${order.buyerPhoneE164}`}
+                        className="inline-flex items-center gap-1.5 font-mono font-semibold text-sky-800 hover:text-sky-950 hover:underline"
+                      >
+                        <Phone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>
+                          {isSw ? 'Mpokeaji' : 'Recipient'}: {order.buyerName ?? '—'} ·{' '}
+                          {order.buyerPhoneE164}
+                        </span>
+                      </a>
+                    )}
+                    {order.driverPhoneE164 && (
+                      <a
+                        href={`tel:${order.driverPhoneE164}`}
+                        className="inline-flex items-center gap-1.5 font-mono font-semibold text-slate-700 hover:text-slate-950 hover:underline"
+                      >
+                        <Truck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>
+                          {isSw ? 'Dereva' : 'Driver'}: {order.driverName ?? '—'} ·{' '}
+                          {order.driverPhoneE164}
+                        </span>
+                      </a>
+                    )}
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  {status === 'PENDING' && (
-                    <button
-                      type="button"
-                      disabled={busyTraceId === order.traceId}
-                      onClick={() => void handleUpdateOrderStatus(order.traceId, 'RECEIVED')}
-                      className="min-h-[38px] px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <ClipboardCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
-                      <span>{isSw ? 'Pokea Oda' : 'Receive Order'}</span>
-                    </button>
+                <div className="flex flex-col items-stretch justify-center gap-2 shrink-0">
+                  {status === 'RECEIVED' && drivers.length > 0 && (
+                    <label className="block space-y-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                        {isSw ? 'Chagua Dereva' : 'Assign Driver'}
+                      </span>
+                      <select
+                        value={chosenDriver}
+                        onChange={(e) =>
+                          setSelectedDriverByTrace((prev) => ({
+                            ...prev,
+                            [order.traceId]: e.target.value,
+                          }))
+                        }
+                        className="min-h-[36px] w-full px-2 py-1.5 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-900 focus:border-slate-900 focus:outline-none"
+                      >
+                        {drivers.map((driver) => (
+                          <option key={driver.driverId} value={driver.driverId}>
+                            {driver.driverName} · {driver.phoneE164}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   )}
 
-                  {status === 'RECEIVED' && (
-                    <button
-                      type="button"
-                      disabled={busyTraceId === order.traceId}
-                      onClick={() => void handleUpdateOrderStatus(order.traceId, 'DISPATCHED')}
-                      className="min-h-[38px] px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <PhoneCall className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>{isSw ? 'Kamilisha Simu' : 'Complete Dispatch'}</span>
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {status === 'PENDING' && (
+                      <button
+                        type="button"
+                        disabled={busyTraceId === order.traceId}
+                        onClick={() =>
+                          void handleUpdateOrderStatus(
+                            order.traceId,
+                            'RECEIVED',
+                            undefined,
+                            order.orderRef8,
+                          )
+                        }
+                        className="min-h-[38px] px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <ClipboardCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+                        <span>{isSw ? 'Pokea Oda' : 'Receive Order'}</span>
+                      </button>
+                    )}
 
-                  {status === 'DISPATCHED' && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                      <span>{isSw ? 'Imepokelewa & Kutumwa' : 'Resolved'}</span>
-                    </span>
-                  )}
+                    {status === 'RECEIVED' && (
+                      <button
+                        type="button"
+                        disabled={
+                          busyTraceId === order.traceId ||
+                          (drivers.length > 0 && !chosenDriver)
+                        }
+                        onClick={() =>
+                          void handleUpdateOrderStatus(
+                            order.traceId,
+                            'IN_TRANSIT',
+                            chosenDriver || undefined,
+                            order.orderRef8,
+                          )
+                        }
+                        className="min-h-[38px] px-3.5 py-2 rounded-lg bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <Truck className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{isSw ? 'Anza Usafirishaji' : 'Start Transit'}</span>
+                      </button>
+                    )}
+
+                    {status === 'IN_TRANSIT' && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-100 border border-sky-300 text-xs font-semibold text-sky-900">
+                        <Truck className="w-3.5 h-3.5 text-sky-700" aria-hidden="true" />
+                        <span>{isSw ? 'Mzigo Upo Njiani' : 'Order In Transit'}</span>
+                      </span>
+                    )}
+
+                    {order.orderStatus === 'DELIVERED' && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                        <span>{isSw ? 'Imefika kwa Mteja' : 'Delivered'}</span>
+                      </span>
+                    )}
+
+                    {status === 'DISPATCHED' && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                        <span>{isSw ? 'Imekamilika' : 'Resolved'}</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             );

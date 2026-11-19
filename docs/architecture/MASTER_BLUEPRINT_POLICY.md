@@ -30,7 +30,7 @@ The file `src/data/blueprints.ts` serves as the **immutable canonical architectu
      - Integer-only TZS (`BIGINT`) and integer Quarter-Quanta (`1 Robo = 1 quantum = 250g/250mL`, `50KG Sack = 200 quanta`).
      - Zero-Escrow Cash-on-Delivery (`cash_delivery_ledgers`) + Dual-PIN + Single-Use `SKQR-*` verification.
      - 160-character GSM-7 NextSMS protocol (`SK#REF8#SELLER#ITEMS#SIG6` and `SK#CANCEL#REF8#SIG6`) with constant-time HMAC-SHA256 validation.
-     - Channel harmony (`WHOLESALE_HUB`, `RETAIL_DUKA`, `HYBRID_STORE`) and dynamic volume-based price routing.
+     - Channel harmony (`WHOLESALE`, `RETAIL_DUKA`, `HYBRID_STORE`) and dynamic volume-based price routing.
      - Platform-Managed Order Interceptor (`is_platform_managed` -> `SUPER_ADMIN_HELPDESK_PIPELINE` vs `WHOLESALER_VENDOR_TERMINAL`).
      - Base-Zero catalog cloning (`0` stock, `0` TZS + atomic adoption counter + ImageKit CDN pointers).
      - PostGIS proximity (`GEOGRAPHY(Point, 4326)`, `ST_DWithin`, `ST_Distance`) and per-tenant `geospatial_map_enabled` (default `FALSE`).

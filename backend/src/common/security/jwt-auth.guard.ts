@@ -2,17 +2,20 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
+import { IdentityService } from '@modules/01-identity/identity.service';
 import { AuthenticatedRequest, AuthenticatedUser, MerchantTier } from './auth.types';
 import { IS_PUBLIC_KEY } from './decorators';
 import { Role } from './roles.enum';
 
 interface RawJwtPayload {
   sub?: string;
+  jti?: string;
   role?: Role;
   businessId?: string | null;
   merchantId?: string | null;
@@ -26,6 +29,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    @Optional() private readonly identityService?: IdentityService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -54,9 +58,17 @@ export class JwtAuthGuard implements CanActivate {
         throw new UnauthorizedException('Invalid JWT subject or role claim.');
       }
 
+      if (
+        this.identityService &&
+        (await this.identityService.isAccessTokenRevoked(payload.jti, payload.sub))
+      ) {
+        throw new UnauthorizedException('This session has been revoked. Please sign in again.');
+      }
+
       const resolvedBusinessId = payload.businessId ?? payload.merchantId ?? null;
       const user: AuthenticatedUser = {
         sub: payload.sub,
+        jti: payload.jti,
         role: payload.role,
         businessId: resolvedBusinessId,
         merchantId: resolvedBusinessId,

@@ -1,25 +1,44 @@
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
   Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'crypto';
 import { MerchantTier, TenantContext } from '@common/security/auth.types';
 import { Role } from '@common/security/roles.enum';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
+import { OutboundSmsService } from '@modules/13-notifications/outbound-sms.service';
 import { RedisService } from '@redis/redis.service';
-import { LoginDto, LogoutDto, RefreshTokenDto, RegisterDto } from './dto/auth.dto';
+import {
+  LoginDto,
+  LogoutDto,
+  RefreshTokenDto,
+  RegisterDto,
+  RegistrationChallengeDto,
+} from './dto/auth.dto';
 
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
-const LOGIN_LOCKOUT_WINDOW_SECONDS = 900; // 15 minutes
+const LOGIN_THROTTLE_WINDOW_SECONDS = 900; // 15 minutes
 const REFRESH_TTL_DAYS = 7;
+const REGISTRATION_OTP_TTL_SECONDS = 300; // 5 minutes
+const REGISTRATION_OTP_MAX_ATTEMPTS = 5;
+const REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS = 60;
+const REGISTRATION_OTP_MAX_PER_HOUR = 3;
+const USER_REVOCATION_TTL_SECONDS = 15 * 60; // matches maximum access-token lifetime
+
+// Privileged roles are never self-assignable. The DTO already restricts the
+// public surface; this set is a defence-in-depth check inside the service.
+const NON_SELF_REGISTRABLE_ROLES = new Set<Role>([Role.SUPER_ADMIN]);
 
 export interface AuthTokenResponse {
   accessToken: string;
@@ -47,9 +66,121 @@ export class IdentityService {
     private readonly outboxService: OutboxService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly outboundSmsService: OutboundSmsService,
   ) {}
 
+  /**
+   * Step 1 of registration: prove ownership of the Tanzanian MSISDN.
+   * A short-lived, hashed one-time code is sent over NextSMS. The raw code is
+   * never persisted; in non-production environments it is returned to the
+   * caller so local development and automated tests remain possible.
+   */
+  async requestRegistrationChallenge(
+    dto: RegistrationChallengeDto,
+    ipAddress?: string,
+  ): Promise<{
+    phoneE164: string;
+    expiresInSeconds: number;
+    devCode?: string;
+  }> {
+    const redis = this.redisService.getClient();
+    const cooldownKey = `auth:register:otp:cooldown:${dto.phoneE164}`;
+    const countKey = `auth:register:otp:count:${dto.phoneE164}`;
+    const hashKey = `auth:register:otp:hash:${dto.phoneE164}`;
+    const attemptsKey = `auth:register:otp:attempts:${dto.phoneE164}`;
+
+    let redisAvailable = true;
+    try {
+      const cooldown = await redis.get(cooldownKey);
+      if (cooldown) {
+        throw new HttpException(
+          'Verification code was sent recently. Please wait before requesting another.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      const rawCount = await redis.get(countKey);
+      const requested = rawCount ? Number.parseInt(rawCount, 10) : 0;
+      if (requested >= REGISTRATION_OTP_MAX_PER_HOUR) {
+        throw new HttpException(
+          'Too many verification requests for this number. Try again later.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      redisAvailable = false;
+      this.logger.warn(
+        `Registration OTP pre-check failed: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+    }
+
+    // Fail closed: without Redis there is no way to enforce OTP rate limits.
+    if (!redisAvailable) {
+      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+    }
+
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    const codeHash = this.hashToken(code);
+    const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+    const message = `SokoKuu verification code: ${code}. Valid for 5 minutes. Never share it.`;
+
+    try {
+      const delivered = await this.outboundSmsService.queueAndDispatchSms({
+        recipientPhoneE164: dto.phoneE164,
+        messageBody: message,
+      });
+
+      if (delivered.status !== 'SENT' && isProduction) {
+        throw new ServiceUnavailableException(
+          'Verification SMS could not be delivered. Please try again shortly.',
+        );
+      }
+
+      await redis.set(hashKey, codeHash, 'EX', REGISTRATION_OTP_TTL_SECONDS);
+      await redis.del(attemptsKey);
+      await redis.set(
+        cooldownKey,
+        '1',
+        'EX',
+        REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS,
+      );
+      const count = await redis.incr(countKey);
+      if (count === 1) {
+        await redis.expire(countKey, 60 * 60);
+      }
+
+      await this.prismaService.securityAuditLog.create({
+        data: {
+          eventType: 'REGISTRATION_OTP_REQUESTED',
+          ipAddress: ipAddress ?? null,
+          details: { phoneE164: dto.phoneE164, delivered: delivered.status },
+        },
+      });
+
+      this.logger.log(
+        `[REGISTRATION-OTP] phone=${dto.phoneE164.slice(0, 6)}**** delivered=${delivered.status}`,
+      );
+
+      return {
+        phoneE164: dto.phoneE164,
+        expiresInSeconds: REGISTRATION_OTP_TTL_SECONDS,
+        ...(!isProduction && delivered.status !== 'SENT' ? { devCode: code } : {}),
+      };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.logger.warn(
+        `Registration OTP dispatch failed: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+    }
+  }
+
   async register(dto: RegisterDto, ipAddress?: string): Promise<AuthTokenResponse> {
+    if (NON_SELF_REGISTRABLE_ROLES.has(dto.role as unknown as Role)) {
+      throw new ForbiddenException('This role cannot be self-registered.');
+    }
+    await this.consumeRegistrationChallenge(dto.phoneE164, dto.verificationCode);
+
     const existing = await this.prismaService.user.findUnique({
       where: { phoneE164: dto.phoneE164 },
       select: { id: true },
@@ -69,6 +200,11 @@ export class IdentityService {
     const refreshTokenHash = this.hashToken(opaqueRefreshToken);
     const familyId = randomUUID();
     const expiresAt = this.computeRefreshExpiry();
+
+    const isMerchantRole = dto.role === 'WHOLESALER' || dto.role === 'RETAILER' || dto.role === 'SUPPLIER';
+
+    let createdBusinessId: string | null = null;
+    let createdTier: string | null = null;
 
     const user = await this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
       const created = await tx.user.create({
@@ -100,6 +236,36 @@ export class IdentityService {
         },
       });
 
+      if (isMerchantRole && tx?.businessProfile?.create) {
+        const smsShortCode = await this.generateUniqueSmsShortCode(tx);
+        const tier =
+          dto.role === 'WHOLESALER'
+            ? 'WHOLESALE'
+            : dto.role === 'RETAILER'
+              ? 'RETAIL_DUKA'
+              : 'MANUFACTURER_SUPPLIER';
+
+        const businessProfile = await tx.businessProfile.create({
+          data: {
+            ownerUserId: created.id,
+            smsShortCode,
+            businessName: dto.fullName.trim(),
+            tier: tier as any,
+            streetAddress: 'Not provided',
+            ward: 'Dar es Salaam',
+            district: 'Dar es Salaam',
+            latitude: -6.816,
+            longitude: 39.28,
+            isOpen: false,
+            isPlatformManaged: true,
+            logoCdnUrl: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/default-merchant.webp',
+          },
+        });
+
+        createdBusinessId = businessProfile.id;
+        createdTier = businessProfile.tier;
+      }
+
       await this.outboxService.enqueue(
         {
           aggregateType: 'User',
@@ -121,8 +287,8 @@ export class IdentityService {
     const accessToken = await this.signAccessToken({
       sub: user.id,
       role: user.role as unknown as Role,
-      businessId: null,
-      tier: null,
+      businessId: createdBusinessId,
+      tier: createdTier as MerchantTier | null,
       phoneE164: user.phoneE164,
     });
 
@@ -136,15 +302,15 @@ export class IdentityService {
         phoneE164: user.phoneE164,
         fullName: user.fullName,
         role: user.role as unknown as Role,
-        businessId: null,
-        tier: null,
+        businessId: createdBusinessId,
+        tier: createdTier as MerchantTier | null,
         preferredLocale: user.preferredLocale,
       },
     };
   }
 
   async login(dto: LoginDto, ipAddress?: string): Promise<AuthTokenResponse> {
-    await this.assertNotBruteForceLocked(dto.phoneE164, ipAddress);
+    await this.assertLoginAttemptAllowed(dto.phoneE164, ipAddress);
 
     const user = await this.prismaService.user.findUnique({
       where: { phoneE164: dto.phoneE164 },
@@ -225,6 +391,9 @@ export class IdentityService {
   }
 
   async refresh(dto: RefreshTokenDto, ipAddress?: string): Promise<AuthTokenResponse> {
+    if (!dto.refreshToken) {
+      throw new UnauthorizedException('Invalid refresh token.');
+    }
     const tokenHash = this.hashToken(dto.refreshToken);
 
     const session = await this.prismaService.refreshSession.findUnique({
@@ -402,6 +571,7 @@ export class IdentityService {
             streetAddress: true,
             geospatialMapEnabled: true,
             isPlatformManaged: true,
+            logoCdnUrl: true,
           },
           take: 1,
           orderBy: { createdAt: 'asc' },
@@ -423,6 +593,46 @@ export class IdentityService {
     };
   }
 
+  async updateMerchantShopImage(userId: string, logoCdnUrl: string) {
+    const merchant = await this.prismaService.businessProfile.findFirst({
+      where: { ownerUserId: userId },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+
+    if (!merchant) {
+      throw new ForbiddenException(
+        'Only an authenticated merchant account can update its shop image.',
+      );
+    }
+
+    const updated = await this.prismaService.businessProfile.update({
+      where: { id: merchant.id },
+      data: { logoCdnUrl },
+      select: { id: true, logoCdnUrl: true },
+    });
+
+    return {
+      merchantId: updated.id,
+      logoCdnUrl: updated.logoCdnUrl,
+    };
+  }
+
+  private async generateUniqueSmsShortCode(tx: any): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const code = `SK${Math.floor(1000 + Math.random() * 9000)}`;
+      if (tx?.businessProfile?.findUnique) {
+        const existing = await tx.businessProfile.findUnique({
+          where: { smsShortCode: code },
+          select: { id: true },
+        });
+        if (existing) continue;
+      }
+      return code;
+    }
+    return `SK${Date.now().toString().slice(-4)}`;
+  }
+
   private async signAccessToken(payload: {
     sub: string;
     role: Role;
@@ -432,10 +642,133 @@ export class IdentityService {
   }): Promise<string> {
     const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
     const expiresIn = this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') ?? '15m';
-    return this.jwtService.signAsync(payload, {
-      secret,
-      expiresIn: expiresIn as `${number}${'s' | 'm' | 'h' | 'd'}`,
-    });
+    // A unique jti lets logout revoke an individual access token immediately
+    // instead of waiting for the 15-minute natural expiry.
+    return this.jwtService.signAsync(
+      { ...payload, jti: randomUUID() },
+      {
+        secret,
+        expiresIn: expiresIn as `${number}${'s' | 'm' | 'h' | 'd'}`,
+      },
+    );
+  }
+
+  revokeAccessToken(jti: string | undefined, userId: string | undefined): void {
+    if (!jti && !userId) return;
+    const revokedUntil = Date.now() + USER_REVOCATION_TTL_SECONDS * 1000;
+    if (jti) {
+      this.revokedJtiCache.set(jti, revokedUntil);
+      void this.redisSafeSet(
+        `auth:access:revoked:${jti}`,
+        '1',
+        USER_REVOCATION_TTL_SECONDS,
+      );
+    }
+    if (userId) {
+      this.revokedUserCache.set(userId, revokedUntil);
+      void this.redisSafeSet(
+        `auth:user:revoked:${userId}`,
+        '1',
+        USER_REVOCATION_TTL_SECONDS,
+      );
+    }
+  }
+
+  async isAccessTokenRevoked(jti?: string, userId?: string): Promise<boolean> {
+    const now = Date.now();
+    if (jti && (this.revokedJtiCache.get(jti) ?? 0) > now) return true;
+    if (userId && (this.revokedUserCache.get(userId) ?? 0) > now) return true;
+
+    if (!jti && !userId) return false;
+    const redis = this.redisService.getClient();
+    try {
+      const keys = [
+        ...(jti ? [`auth:access:revoked:${jti}`] : []),
+        ...(userId ? [`auth:user:revoked:${userId}`] : []),
+      ];
+      const values = await Promise.all(keys.map((key) => redis.get(key)));
+      return values.some((value) => value !== null);
+    } catch (error) {
+      // Redis outage must not silently widen access. The in-memory cache still
+      // covers tokens revoked by this process; other processes will rely on
+      // their own cache until Redis returns.
+      this.logger.warn(
+        `Access-token revocation check degraded: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      return false;
+    }
+  }
+
+  private readonly revokedJtiCache = new Map<string, number>();
+  private readonly revokedUserCache = new Map<string, number>();
+
+  private async redisSafeSet(key: string, value: string, ttlSeconds: number): Promise<void> {
+    try {
+      const redis = this.redisService.getClient();
+      await redis.set(key, value, 'EX', ttlSeconds);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to persist token revocation: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+    }
+  }
+
+  private async consumeRegistrationChallenge(phoneE164: string, code: string): Promise<void> {
+    const redis = this.redisService.getClient();
+    const hashKey = `auth:register:otp:hash:${phoneE164}`;
+    const attemptsKey = `auth:register:otp:attempts:${phoneE164}`;
+
+    let storedHash: string | null;
+    let attempts = 0;
+    try {
+      storedHash = await redis.get(hashKey);
+      const rawAttempts = await redis.get(attemptsKey);
+      attempts = rawAttempts ? Number.parseInt(rawAttempts, 10) : 0;
+    } catch (error) {
+      this.logger.warn(
+        `Registration OTP verification unavailable: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+    }
+
+    if (!storedHash) {
+      throw new BadRequestException(
+        'Verification code expired or was never requested. Please request a new code.',
+      );
+    }
+    if (attempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
+      try {
+        await redis.del(hashKey, attemptsKey);
+      } catch {
+        // best-effort cleanup
+      }
+      throw new BadRequestException(
+        'Too many incorrect verification codes. Please request a new code.',
+      );
+    }
+
+    const presentedHash = this.hashToken(code);
+    const matches =
+      presentedHash.length === storedHash.length &&
+      timingSafeEqual(Buffer.from(presentedHash, 'utf8'), Buffer.from(storedHash, 'utf8'));
+
+    if (!matches) {
+      try {
+        const next = await redis.incr(attemptsKey);
+        if (next === 1) {
+          await redis.expire(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
+        }
+      } catch {
+        throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      }
+      throw new BadRequestException('Incorrect verification code.');
+    }
+
+    try {
+      await redis.del(hashKey, attemptsKey);
+    } catch {
+      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+    }
   }
 
   private hashToken(token: string): string {
@@ -446,32 +779,35 @@ export class IdentityService {
     return new Date(Date.now() + REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000);
   }
 
-  private async assertNotBruteForceLocked(phoneE164: string, ipAddress?: string): Promise<void> {
+  /**
+   * Throttle failures per (network, phone-number) pair rather than per account
+   * alone. An attacker cannot lock a victim out by guessing from another IP,
+   * and a shared NAT cannot lock every user behind it. Broad IP volume is
+   * handled by the route-specific ThrottlerGuard instead.
+   */
+  private loginFailureKey(phoneE164: string, ipAddress?: string): string {
+    const composite = `${ipAddress ?? 'unknown'}|${phoneE164}`;
+    return `auth:login:fail:${createHash('sha256').update(composite, 'utf8').digest('hex')}`;
+  }
+
+  private async assertLoginAttemptAllowed(phoneE164: string, ipAddress?: string): Promise<void> {
+    const redis = this.redisService.getClient();
+    let attempts = 0;
     try {
-      const redis = this.redisService.getClient();
-      const phoneKey = `auth:login:fail:phone:${phoneE164}`;
-      const ipKey = ipAddress ? `auth:login:fail:ip:${ipAddress}` : null;
-
-      const [phoneCountRaw, ipCountRaw] = await Promise.all([
-        redis.get(phoneKey),
-        ipKey ? redis.get(ipKey) : Promise.resolve(null),
-      ]);
-
-      const phoneCount = phoneCountRaw ? Number.parseInt(phoneCountRaw, 10) : 0;
-      const ipCount = ipCountRaw ? Number.parseInt(ipCountRaw, 10) : 0;
-
-      if (phoneCount >= MAX_FAILED_LOGIN_ATTEMPTS || ipCount >= MAX_FAILED_LOGIN_ATTEMPTS * 2) {
-        throw new HttpException(
-          'Too many failed login attempts. Account/IP temporarily locked for 15 minutes.',
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
-      }
+      const raw = await redis.get(this.loginFailureKey(phoneE164, ipAddress));
+      attempts = raw ? Number.parseInt(raw, 10) : 0;
     } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
+      // Fail closed: without the counter we cannot throttle guessing.
       this.logger.warn(
-        `Redis brute-force check skipped (unavailable): ${error instanceof Error ? error.message : 'unknown'}`,
+        `Login throttle store unavailable: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      throw new ServiceUnavailableException('Sign-in is temporarily unavailable. Please retry.');
+    }
+
+    if (attempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+      throw new HttpException(
+        'Too many failed sign-in attempts from this device/network. Please try again later.',
+        HttpStatus.TOO_MANY_REQUESTS,
       );
     }
   }
@@ -481,48 +817,41 @@ export class IdentityService {
     ipAddress?: string,
     userId?: string | null,
   ): Promise<void> {
+    const redis = this.redisService.getClient();
+    let count = 0;
     try {
-      const redis = this.redisService.getClient();
-      const phoneKey = `auth:login:fail:phone:${phoneE164}`;
-      const count = await redis.incr(phoneKey);
+      count = await redis.incr(this.loginFailureKey(phoneE164, ipAddress));
       if (count === 1) {
-        await redis.expire(phoneKey, LOGIN_LOCKOUT_WINDOW_SECONDS);
-      }
-      if (ipAddress) {
-        const ipKey = `auth:login:fail:ip:${ipAddress}`;
-        const ipCount = await redis.incr(ipKey);
-        if (ipCount === 1) {
-          await redis.expire(ipKey, LOGIN_LOCKOUT_WINDOW_SECONDS);
-        }
-      }
-      if (count >= MAX_FAILED_LOGIN_ATTEMPTS) {
-        await this.prismaService.securityAuditLog.create({
-          data: {
-            userId: userId ?? null,
-            eventType: 'LOGIN_BRUTE_FORCE_LOCKOUT',
-            ipAddress: ipAddress ?? null,
-            details: { phoneE164, attemptCount: count },
-          },
-        });
+        await redis.expire(this.loginFailureKey(phoneE164, ipAddress), LOGIN_THROTTLE_WINDOW_SECONDS);
       }
     } catch (error) {
       this.logger.warn(
         `Failed to record login throttle counter: ${error instanceof Error ? error.message : 'unknown'}`,
       );
+      throw new ServiceUnavailableException('Sign-in is temporarily unavailable. Please retry.');
+    }
+
+    if (count >= MAX_FAILED_LOGIN_ATTEMPTS) {
+      await this.prismaService.securityAuditLog.create({
+        data: {
+          userId: userId ?? null,
+          eventType: 'LOGIN_BRUTE_FORCE_THROTTLED',
+          ipAddress: ipAddress ?? null,
+          details: { phoneE164, attemptCount: count },
+        },
+      });
     }
   }
 
   private async clearFailedLoginAttempts(phoneE164: string, ipAddress?: string): Promise<void> {
+    const redis = this.redisService.getClient();
     try {
-      const redis = this.redisService.getClient();
-      const keys = [`auth:login:fail:phone:${phoneE164}`];
-      if (ipAddress) {
-        keys.push(`auth:login:fail:ip:${ipAddress}`);
-      }
-      await redis.del(...keys);
+      await redis.del(this.loginFailureKey(phoneE164, ipAddress));
     } catch (error) {
+      // A successful login must never fail because the counter could not be
+      // cleared; the counter simply expires on its own.
       this.logger.warn(
-        `Failed to clear login throttle counters: ${error instanceof Error ? error.message : 'unknown'}`,
+        `Failed to clear login throttle counter: ${error instanceof Error ? error.message : 'unknown'}`,
       );
     }
   }

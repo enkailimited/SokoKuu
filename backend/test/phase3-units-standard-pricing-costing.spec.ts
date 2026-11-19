@@ -143,7 +143,7 @@ describe('Phase 3: Centralized Product Units, Versioned Standard Pricing & Purch
         findUnique: jest.fn().mockResolvedValue({
           id: oilCatalogId,
           canonicalSku: 'GC-OIL-KORIE',
-          imagekitCdnUrl: 'https://ik.imagekit.io/sokokuutz/oil.webp',
+          imagekitCdnUrl: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/oil.webp',
           clonedByStoresCount: 2n,
           isActive: true,
         }),
@@ -458,7 +458,7 @@ describe('Phase 3: Centralized Product Units, Versioned Standard Pricing & Purch
         findUnique: jest.fn().mockResolvedValue({
           id: 'cat-rice-1',
           canonicalSku: 'GC-RICE-25',
-          imagekitCdnUrl: 'https://ik.imagekit.io/sokokuutz/rice.webp',
+          imagekitCdnUrl: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/rice.webp',
           clonedByStoresCount: 1n,
           isActive: true,
         }),

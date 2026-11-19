@@ -27,6 +27,10 @@ export interface DriverDeliveryTask {
   dukaAddress: string;
   dukaWard: string;
   ownerPhone: string;
+  recipientName?: string;
+  recipientPhone?: string;
+  sellerName?: string;
+  sellerPhone?: string;
   itemsSummarySw: string;
   itemsSummaryEn: string;
   expectedCashTzs: number;
@@ -40,6 +44,11 @@ interface BackendDriverQueueResponse {
     orderRef: string;
     sellerBusinessId: string;
     buyerUserId: string;
+    buyerName?: string;
+    buyerPhoneE164?: string;
+    sellerName?: string;
+    sellerWard?: string;
+    sellerPhoneE164?: string;
     status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'DISPUTED';
     expectedTotalTzs: number;
     paymentMethod: string;
@@ -65,13 +74,13 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
   const [tasks, setTasks] = useState<DriverDeliveryTask[]>([]);
   const [selectedRef, setSelectedRef] = useState<string>('');
   const [driverPin, setDriverPin] = useState<string>('');
-  const [ownerPin, setOwnerPin] = useState<string>('');
   const [collectedCash, setCollectedCash] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'M-PESA' | 'TIGO-PESA'>('CASH');
   const [mobileMoneyRef, setMobileMoneyRef] = useState<string>('');
   const [loadingQueue, setLoadingQueue] = useState<boolean>(false);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [startingTransit, setStartingTransit] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(
     null,
   );
@@ -92,14 +101,22 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
       const liveTasks: DriverDeliveryTask[] = (res?.deliveries ?? []).map((d) => ({
         orderId: d.orderId,
         orderRef: d.orderRef,
-        dukaName: isSw ? `Oda ya Mteja #${d.orderRef}` : `Delivery Order #${d.orderRef}`,
+        dukaName: d.sellerName
+          ? `${d.sellerName} · #${d.orderRef}`
+          : isSw
+            ? `Oda ya Mteja #${d.orderRef}`
+            : `Delivery Order #${d.orderRef}`,
         dukaAddress: d.dispatchedAt
           ? `${isSw ? 'Ilitumwa' : 'Dispatched'}: ${d.dispatchedAt.slice(0, 16).replace('T', ' ')}`
           : isSw
             ? 'Inasubiri Dispatch'
             : 'Awaiting Dispatch',
-        dukaWard: d.paymentMethod,
-        ownerPhone: d.ledger?.verificationStatus ?? 'PENDING',
+        dukaWard: d.sellerWard ?? d.paymentMethod,
+        ownerPhone: d.buyerPhoneE164 ?? d.ledger?.verificationStatus ?? 'PENDING',
+        recipientName: d.buyerName,
+        recipientPhone: d.buyerPhoneE164,
+        sellerName: d.sellerName,
+        sellerPhone: d.sellerPhoneE164,
         itemsSummarySw: `Hali ya Uhakiki: ${d.ledger?.verificationStatus ?? d.status}`,
         itemsSummaryEn: `Verification: ${d.ledger?.verificationStatus ?? d.status}`,
         expectedCashTzs: Number(d.ledger?.expectedCashAmount ?? d.expectedTotalTzs),
@@ -141,7 +158,6 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
   const handleSelectTask = (task: DriverDeliveryTask) => {
     setSelectedRef(task.orderRef);
     setDriverPin('');
-    setOwnerPin('');
     setMobileMoneyRef('');
     setCollectedCash(String(task.expectedCashTzs));
     setFeedback(null);
@@ -178,50 +194,27 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
         return;
       }
 
-      if (ownerPin.trim()) {
-        const qr = await SokoApiClient.post<{
-          oneTimeQrToken: string;
-          qrSignature: string;
-        }>(`/orders/${activeTask.orderId}/driver-arrival-qr`, {});
+      const res = await SokoApiClient.post<{
+        reconciled: boolean;
+        verificationStatus: string;
+      }>('/orders/reconcile/driver-pin', {
+        orderId: activeTask.orderId,
+        driverPin: driverPin.trim(),
+        collectedCashTzs: declaredTzs,
+        paymentMethod,
+        ...(mobileMoneyRef.trim() ? { mobileMoneyRef: mobileMoneyRef.trim() } : {}),
+      });
 
-        await SokoApiClient.post('/orders/verify-doorstep-qr', {
-          orderId: activeTask.orderId,
-          qrToken: qr.oneTimeQrToken,
-          qrSignature: qr.qrSignature,
-          buyerPin: ownerPin.trim(),
-          driverPin: driverPin.trim(),
-          collectedCashTzs: declaredTzs,
-        });
-
-        setFeedback({
-          type: 'success',
-          text: isSw
-            ? `Makabidhiano ya ${activeTask.orderRef} yamekamilika (DELIVERED). Leja ya TZS imefungwa.`
-            : `Handover ${activeTask.orderRef} verified via Dual-PIN & QR. Order marked DELIVERED.`,
-        });
-      } else {
-        const res = await SokoApiClient.post<{
-          reconciled: boolean;
-          verificationStatus: string;
-        }>('/orders/reconcile/driver-pin', {
-          orderId: activeTask.orderId,
-          driverPin: driverPin.trim(),
-          collectedCashTzs: declaredTzs,
-          paymentMethod,
-          ...(mobileMoneyRef.trim() ? { mobileMoneyRef: mobileMoneyRef.trim() } : {}),
-        });
-
-        setFeedback({
-          type: 'success',
-          text: res.reconciled
-            ? isSw
-              ? `Makabidhiano ya ${activeTask.orderRef} yamekamilika (DELIVERED).`
-              : `Handover ${activeTask.orderRef} reconciled and DELIVERED.`
-            : isSw
-              ? `PIN ya Dereva imethibitishwa (${res.verificationStatus}). Inasubiri PIN ya Mnunuzi.`
-              : `Driver PIN confirmed (${res.verificationStatus}). Awaiting Buyer PIN.`,
-        });
-      }
+      setFeedback({
+        type: 'success',
+        text: res.reconciled
+          ? isSw
+            ? `Makabidhiano ya ${activeTask.orderRef} yamekamilika (DELIVERED).`
+            : `Handover ${activeTask.orderRef} reconciled and DELIVERED.`
+          : isSw
+            ? `PIN ya Dereva imethibitishwa (${res.verificationStatus}). Inasubiri uthibitisho wa mteja kwenye simu yake.`
+            : `Driver PIN confirmed (${res.verificationStatus}). Awaiting the buyer's own confirmation on their device.`,
+      });
 
       await loadDriverQueue();
     } catch (err) {
@@ -240,6 +233,45 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
       }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleStartTransit = async (task: DriverDeliveryTask) => {
+    if (!isUuid(task.orderId)) return;
+    setFeedback(null);
+
+    if (!navigator.onLine) {
+      setBackendOffline(true);
+      return;
+    }
+
+    setStartingTransit(true);
+    setBackendOffline(false);
+    try {
+      await SokoApiClient.post(`/orders/${task.orderId}/dispatch`, {});
+      setFeedback({
+        type: 'success',
+        text: isSw
+          ? `Mzigo ${task.orderRef} umo njiani. Nenda kwa mteja na ukamilishe makabidhiano.`
+          : `Order ${task.orderRef} is now in transit. Proceed to the recipient for handover.`,
+      });
+      await loadDriverQueue();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setFeedback({
+          type: 'error',
+          text:
+            err instanceof SokoHttpError
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kuanza usafirishaji wa mzigo.'
+                : 'Failed to start order transit.',
+        });
+      }
+    } finally {
+      setStartingTransit(false);
     }
   };
 
@@ -291,6 +323,56 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
           <span>{isSw ? 'Onyesha Upya' : 'Refresh Queue'}</span>
         </button>
       </div>
+
+      {tasks.length > 0 && (
+        <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+            <h2 className="text-xs font-bold uppercase tracking-wide text-slate-700">
+              {isSw ? 'Oda Zinazosubiri Kuwasilishwa' : 'Pending Deliveries'}
+            </h2>
+            <span className="text-[11px] font-mono font-bold text-slate-500">
+              {tasks.length}
+            </span>
+          </div>
+          <div className="divide-y divide-slate-100 max-h-56 overflow-y-auto">
+            {tasks.map((task) => {
+              const isSelected = task.orderRef === activeTask?.orderRef;
+              return (
+                <button
+                  key={task.orderRef}
+                  type="button"
+                  onClick={() => handleSelectTask(task)}
+                  className={`w-full px-4 py-2.5 text-left flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                    isSelected ? 'bg-emerald-50' : 'bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-900 truncate">
+                      #{task.orderRef} · {task.sellerName ?? task.dukaName}
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono truncate">
+                      {task.recipientName ?? (isSw ? 'Mteja' : 'Recipient')}
+                      {task.recipientPhone ? ` · ${task.recipientPhone}` : ''}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-xs font-bold font-mono text-slate-900">
+                      TZS {task.expectedCashTzs.toLocaleString('en-US')}
+                    </div>
+                    <div
+                      className={`text-[10px] font-bold uppercase ${
+                        task.status === 'IN_TRANSIT' ? 'text-sky-700' : 'text-amber-700'
+                      }`}
+                    >
+                      {formatOrderStatusLabel(task.status, locale)}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {loadingQueue && tasks.length === 0 ? (
         <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-xs text-slate-500">
@@ -395,7 +477,15 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
             </div>
 
             <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 space-y-2">
-              <div className="text-sm font-semibold text-slate-900">{activeTask.dukaName}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-slate-900">{activeTask.dukaName}</span>
+                {activeTask.status === 'IN_TRANSIT' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-100 border border-sky-300 text-[10px] font-bold uppercase tracking-wide text-sky-900">
+                    <Truck className="w-3 h-3" aria-hidden="true" />
+                    <span>{isSw ? 'Mzigo Upo Njiani' : 'In Transit'}</span>
+                  </span>
+                )}
+              </div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-700">
                 <span className="inline-flex items-center gap-1.5">
                   <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
@@ -403,19 +493,66 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
                     {activeTask.dukaAddress}, {activeTask.dukaWard}
                   </span>
                 </span>
-                <span className="inline-flex items-center gap-1.5 font-mono tabular-nums">
-                  <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
-                  <span>{activeTask.ownerPhone}</span>
-                </span>
+                <a
+                  href={`tel:${activeTask.recipientPhone ?? activeTask.ownerPhone}`}
+                  className="inline-flex items-center gap-1.5 font-mono font-semibold text-emerald-800 hover:underline"
+                >
+                  <Phone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    {isSw ? 'Mpokeaji' : 'Recipient'}
+                    {activeTask.recipientName ? ` · ${activeTask.recipientName}` : ''}:{' '}
+                    {activeTask.recipientPhone ?? activeTask.ownerPhone}
+                  </span>
+                </a>
+                {activeTask.sellerPhone && (
+                  <a
+                    href={`tel:${activeTask.sellerPhone}`}
+                    className="inline-flex items-center gap-1.5 font-mono font-semibold text-slate-700 hover:underline"
+                  >
+                    <Phone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>
+                      {isSw ? 'Muuzaji' : 'Seller'}
+                      {activeTask.sellerName ? ` · ${activeTask.sellerName}` : ''}:{' '}
+                      {activeTask.sellerPhone}
+                    </span>
+                  </a>
+                )}
               </div>
             </div>
 
+            {activeTask.status === 'PLACED' && (
+              <div className="px-5 py-4 border-b border-slate-200 bg-amber-50 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs font-semibold text-amber-950">
+                  {isSw
+                    ? 'Mzigo bado haujaanza safari. Bonyeza kitufe kuanza usafirishaji.'
+                    : 'This delivery has not started yet. Start transit when you are ready to move.'}
+                </p>
+                <button
+                  type="button"
+                  disabled={startingTransit}
+                  onClick={() => void handleStartTransit(activeTask)}
+                  className="min-h-[42px] px-4 py-2 rounded-md bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <Truck className="w-4 h-4" aria-hidden="true" />
+                  <span>
+                    {startingTransit
+                      ? isSw
+                        ? 'Inaanza...'
+                        : 'Starting...'
+                      : isSw
+                        ? 'Anza Usafirishaji (Mzigo Upo Njiani)'
+                        : 'Start Transit'}
+                  </span>
+                </button>
+              </div>
+            )}
+
             <form onSubmit={(e) => void handleConfirmHandover(e)} className="p-5 space-y-5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-4">
                 <label className="block space-y-1.5">
                   <span className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
                     <Lock className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
-                    <span>{isSw ? 'PIN ya Dereva (4-digit)' : 'Driver Verification PIN (4-digit)'}</span>
+                    <span>{isSw ? 'PIN yako ya Dereva (4-digit)' : 'Your Driver PIN (4-digit)'}</span>
                   </span>
                   <input
                     type="password"
@@ -429,27 +566,14 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
                     className="w-full min-h-[48px] px-3.5 text-lg font-mono tracking-widest tabular-nums bg-white border-2 border-slate-300 rounded-md text-slate-900 focus:border-slate-900 focus:outline-none disabled:bg-slate-100"
                   />
                 </label>
-
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
-                    <span>
-                      {isSw
-                        ? 'PIN ya Mteja (Hiari ikiwa QR inatumiwa)'
-                        : 'Buyer PIN (Optional if QR scan separate)'}
-                    </span>
+                <p className="text-[11px] text-slate-600 flex items-start gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>
+                    {isSw
+                      ? 'Mteja anathibitisha PIN yake mwenyewe kwenye simu yake. Wewe unathibitisha PIN yako ya dereva pekee hapa.'
+                      : 'The buyer confirms their own PIN on their phone. You only confirm your driver PIN here.'}
                   </span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={6}
-                    disabled={activeTask.status === 'DELIVERED'}
-                    value={ownerPin}
-                    onChange={(e) => setOwnerPin(e.target.value)}
-                    placeholder="••••"
-                    className="w-full min-h-[48px] px-3.5 text-lg font-mono tracking-widest tabular-nums bg-white border-2 border-slate-300 rounded-md text-slate-900 focus:border-emerald-700 focus:outline-none disabled:bg-slate-100"
-                  />
-                </label>
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -532,8 +656,8 @@ export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) 
                       ? 'Malipo Yamethibitishwa (DELIVERED)'
                       : 'Delivery Settled (DELIVERED)'
                     : isSw
-                      ? 'Thibitisha PIN & Funga Malipo'
-                      : 'Verify PIN & Complete Handover'}
+                      ? 'Thibitisha Uwasilishaji (PIN ya Dereva)'
+                      : 'Confirm Delivery (Driver PIN)'}
               </button>
             </form>
           </section>

@@ -10,7 +10,11 @@ import { TenantContext } from '@common/security/auth.types';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
 import { PosSalesRequestDto } from './dto/pos-sales.dto';
-import { buildSwahiliBulkBreakSms, safeMultiplyIntegerTzs } from './quarter-quanta.util';
+import {
+  buildSwahiliBulkBreakSms,
+  QUANTA_PER_UNIT,
+  safeMultiplyIntegerTzs,
+} from './quarter-quanta.util';
 
 export interface PosSalesReceiptResponse {
   receiptId: string;
@@ -157,10 +161,14 @@ export class InventoryService {
          WHERE id = ${productId}::uuid
       `;
 
-      // Price per 1 Quarter-Quantum (unit_price_tzs stores base 1-unit/4-quanta or per-quantum price;
-      // ensure minimum 1 TZS per quantum via integer floor >= 1 when unitPriceTzs represents 1KG)
+      // unit_price_tzs is the price of one base unit = QUANTA_PER_UNIT (4) quarter-quanta,
+      // mirrored from the selected global price tier (e.g. SINGLE_KILO_LITRE = TZS 4,200).
+      // A POS sale is declared in quarter-quanta, so prorate by 4 to avoid overcharging 4x.
       const unitPriceBigInt = BigInt(product.unit_price_tzs);
-      const totalTzs = safeMultiplyIntegerTzs(dto.quantityRequested, unitPriceBigInt);
+      const totalTzs = Math.max(
+        1,
+        Math.round(safeMultiplyIntegerTzs(dto.quantityRequested, unitPriceBigInt) / QUANTA_PER_UNIT)
+      );
 
       if (bulkPackagesBroken > 0) {
         const smsMessage = buildSwahiliBulkBreakSms(

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="sw">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,17 +8,124 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="SokoKuu" />
+    <meta name="application-name" content="SokoKuu TZ" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/sokokuu-brand-logo.svg" />
     <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-    <title>SokoKuu TZ — B2B2C Enterprise Architecture</title>
-    <meta name="description" content="Multi-tier Tanzanian B2B2C digital commerce architecture console: Serverless SQL Cluster DDL, Spring Boot 3.x Security & STOMP, Next.js PWA Offline Sync, and Google Maps TZS Logistics." />
-    <meta property="og:title" content="SokoKuu TZ — B2B2C Enterprise Architecture" />
-    <meta property="og:description" content="Multi-tier Tanzanian B2B2C digital commerce architecture console: Serverless SQL Cluster DDL, Spring Boot 3.x Security & STOMP, Next.js PWA Offline Sync, and Google Maps TZS Logistics." />
-    <meta property="og:image" content="/sokokuu-brand-logo.svg" />
+
+    <!-- Primary search metadata -->
+    <title>SokoKuu TZ — Soko Kuu Tanzani, Bidha Kwa Jumla & POS</title>
+    <meta
+      name="description"
+      content="SokoKuu TZ — soko kuu Tanzani la bidha kwa jumla na nunua mtandaoni. Pata wauzaji, weka oda, simamia hisa kwa POS. SokoKuu Tanzania: B2B wholesale, retail POS and delivery platform."
+    />
+    <meta
+      name="keywords"
+      content="SokoKuu, Sokokuu TZ, SokoKuu TZ, Soko kuu Tz, Soko kuu Tanzani, Sokokuu Tanzania, SokoKuu Tanzania, Soko Kuu, Nunu Mtandaoni, Nunua Mtandaoni, Bidha Kwa Jumla, bidha kwa jumla Tanzania, duka la jumla Tanzania, wholesale Tanzania, POS Tanzania, usambazaji, supply chain, soko, biashara"
+    />
+    <meta name="author" content="SokoKuu TZ" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="googlebot" content="index, follow" />
+    <meta name="geo.region" content="TZ" />
+    <meta name="geo.country" content="Tanzania" />
+    <link rel="canonical" href="https://sokokuu.enkaibusiness.com/" />
+
+    <!-- Open Graph (Facebook, WhatsApp, LinkedIn) -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="SokoKuu TZ" />
+    <meta property="og:locale" content="sw_TZ" />
+    <meta property="og:locale:alternate" content="en_US" />
+    <meta property="og:url" content="https://sokokuu.enkaibusiness.com/" />
+    <meta property="og:title" content="SokoKuu TZ — Soko Kuu Tanzani, Bidha Kwa Jumla & POS" />
+    <meta
+      property="og:description"
+      content="Soko kuu Tanzani ya bidha kwa jumla na nunua mtandaoni. Pata wauzaji, weka oda, simamia hisa kwa POS."
+    />
+    <meta property="og:image" content="https://sokokuu.enkaibusiness.com/pwa-512x512.png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="SokoKuu TZ" />
+
+    <!-- X / Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://sokokuu.enkaibusiness.com/" />
+    <meta name="twitter:title" content="SokoKuu TZ — Soko Kuu Tanzani, Bidha Kwa Jumla & POS" />
+    <meta
+      name="twitter:description"
+      content="Jukwaa la duka la jumla, POS na usambazaji Tanzania."
+    />
+    <meta name="twitter:image" content="https://sokokuu.enkaibusiness.com/pwa-512x512.png" />
+
+    <!-- Structured data: helps Google recognise the brand name and aliases -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://sokokuu.enkaibusiness.com/#organization",
+            "name": "SokoKuu TZ",
+            "alternateName": [
+              "SokoKuu",
+              "Sokokuu TZ",
+              "Soko kuu Tz",
+              "Soko kuu Tanzani",
+              "Soko Kuu",
+              "Sokokuu Tanzania",
+              "SokoKuu Tanzania"
+            ],
+            "url": "https://sokokuu.enkaibusiness.com/",
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://sokokuu.enkaibusiness.com/pwa-512x512.png",
+              "width": 512,
+              "height": 512
+            },
+            "description": "Tanzanian B2B2C wholesale, retail POS and supply chain platform.",
+            "areaServed": { "@type": "Country", "name": "Tanzania" }
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://sokokuu.enkaibusiness.com/#website",
+            "url": "https://sokokuu.enkaibusiness.com/",
+            "name": "SokoKuu TZ",
+            "alternateName": [
+              "SokoKuu",
+              "Sokokuu TZ",
+              "Soko kuu Tz",
+              "Soko kuu Tanzani",
+              "SokoKuu Tanzania",
+              "Sokokuu Tanzania"
+            ],
+            "keywords": "Nunu Mtandaoni, Nunua Mtandaoni, Bidha Kwa Jumla, bidha kwa jumla Tanzania, duka la jumla Tanzania, wholesale Tanzania, POS Tanzania",
+            "inLanguage": ["sw", "en"],
+            "publisher": { "@id": "https://sokokuu.enkaibusiness.com/#organization" }
+          },
+          {
+            "@type": "WebApplication",
+            "@id": "https://sokokuu.enkaibusiness.com/#app",
+            "name": "SokoKuu TZ",
+            "alternateName": [
+              "SokoKuu",
+              "Sokokuu TZ",
+              "Soko kuu Tz",
+              "Soko kuu Tanzani",
+              "SokoKuu Tanzania",
+              "Sokokuu Tanzania"
+            ],
+            "keywords": "Nunu Mtandaoni, Nunua Mtandaoni, Bidha Kwa Jumla, duka la jumla Tanzania, POS Tanzania",
+            "url": "https://sokokuu.enkaibusiness.com/",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web, Android, iOS",
+            "description": "Offline-first B2B2C retail POS, inventory and wholesale supply chain platform for Tanzania.",
+            "inLanguage": ["sw", "en"],
+            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "TZS" }
+          }
+        ]
+      }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:ital,wght@0,500;0,600;0,700;0,800;1,700;1,800&display=swap" rel="stylesheet" />

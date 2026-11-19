@@ -3,6 +3,7 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  Logger,
   Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
@@ -11,8 +12,17 @@ import { AuthenticatedRequest, MerchantTier } from './auth.types';
 import { IS_PUBLIC_KEY, TENANT_SCOPED_KEY } from './decorators';
 import { Role } from './roles.enum';
 
+interface TenantProfile {
+  id: string;
+  tier: string;
+  isPlatformManaged: boolean;
+  geospatialMapEnabled: boolean;
+}
+
 @Injectable()
 export class TenantContextGuard implements CanActivate {
+  private readonly logger = new Logger(TenantContextGuard.name);
+
   constructor(
     private readonly reflector: Reflector,
     @Optional() private readonly prismaService?: PrismaService,
@@ -47,15 +57,7 @@ export class TenantContextGuard implements CanActivate {
 
     // Server-derived Merchant TenantContext lookup from business_profiles (never trust client headers/body)
     if (this.prismaService && typeof this.prismaService.businessProfile?.findFirst === 'function') {
-      const profile = await this.prismaService.businessProfile.findFirst({
-        where: { ownerUserId: user.sub },
-        select: {
-          id: true,
-          tier: true,
-          isPlatformManaged: true,
-          geospatialMapEnabled: true,
-        },
-      });
+      const profile = await this.findTenantProfile(user.sub);
 
       if (profile) {
         businessId = profile.id;
@@ -103,5 +105,60 @@ export class TenantContextGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  /**
+   * Neon's pooler can briefly drop a connection (cold start / scale-to-zero).
+   * Retry only transient connection failures so a momentary network blip does
+   * not surface as HTTP 500, while every other database error still propagates.
+   */
+  private async findTenantProfile(userId: string): Promise<TenantProfile | null> {
+    const find = () =>
+      this.prismaService!.businessProfile.findFirst({
+        where: { ownerUserId: userId },
+        select: {
+          id: true,
+          tier: true,
+          isPlatformManaged: true,
+          geospatialMapEnabled: true,
+        },
+      });
+
+    const maxAttempts = 3;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await find();
+      } catch (error) {
+        if (attempt >= maxAttempts || !this.isTransientDatabaseError(error)) {
+          throw error;
+        }
+        this.logger.warn(
+          `Transient PostgreSQL error resolving Merchant tenant context (attempt ${attempt}/${maxAttempts}); retrying. ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        await this.waitBeforeRetry(attempt);
+      }
+    }
+  }
+
+  private isTransientDatabaseError(error: unknown): boolean {
+    const code = (error as { code?: string } | null)?.code;
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return (
+      code === 'P1001' ||
+      code === 'P1002' ||
+      code === 'P1008' ||
+      code === 'P2024' ||
+      /can'?t reach database server|database server.*(?:unreachable|not reachable)|connection (?:timed out|refused)/i.test(
+        message,
+      )
+    );
+  }
+
+  private waitBeforeRetry(attempt: number): Promise<void> {
+    if (process.env.NODE_ENV === 'test') {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => setTimeout(resolve, 150 * attempt));
   }
 }

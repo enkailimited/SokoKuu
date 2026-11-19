@@ -23,7 +23,7 @@ export class DispatchController {
 
   @Post('orders/:orderId/dispatch')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.WHOLESALER, Role.RETAILER, Role.DRIVER, Role.SUPER_ADMIN)
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.SUPPLIER, Role.DRIVER, Role.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Transition PLACED order to DISPATCHED and allocate salted Argon2id Buyer & Driver PINs',
   })
@@ -58,5 +58,12 @@ export class DispatchController {
   @ApiOperation({ summary: 'Fetch active delivery queue for authenticated Driver' })
   getDriverQueue(@CurrentUser() user: AuthenticatedUser) {
     return this.dispatchService.getDriverQueue(user);
+  }
+
+  @Get('dispatch/available-drivers')
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.SUPPLIER, Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'List registered drivers eligible for order dispatch assignment' })
+  listAvailableDrivers() {
+    return this.dispatchService.listAvailableDrivers();
   }
 }

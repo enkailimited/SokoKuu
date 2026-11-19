@@ -23,16 +23,35 @@ enum UserRole {
   RETAILER
   CONSUMER
   DRIVER
+  SUPPLIER
 
   @@map("user_role")
 }
 
 enum BusinessTier {
-  WHOLESALE_HUB
+  WHOLESALE
   RETAIL_DUKA
   HYBRID_STORE
+  MANUFACTURER_SUPPLIER
 
   @@map("business_tier")
+}
+
+enum OrderChannel {
+  RETAIL_MARKETPLACE
+  SUPPLIER_TO_WHOLESALER
+
+  @@map("order_channel")
+}
+
+enum SupplierStockMovementType {
+  FACTORY_PRODUCTION
+  WAREHOUSE_STOCK_IN
+  ORDER_RESERVED
+  ORDER_FINALIZED
+  STOCK_ADJUSTMENT
+
+  @@map("supplier_stock_movement_type")
 }
 
 enum PackagingUnit {
@@ -139,6 +158,8 @@ model User {
   eodDriverBatches     EodSettlementBatch[]  @relation("EodDriver")
   eodSettledBatches    EodSettlementBatch[]  @relation("EodSettler")
   webPushSubscriptions WebPushSubscription[]
+  notifications        UserNotification[]
+  supplierPurchaseReceipts SupplierPurchaseReceipt[]
   refreshSessions      RefreshSession[]
   securityAuditLogs    SecurityAuditLog[]
 
@@ -181,6 +202,13 @@ model BusinessProfile {
   logoCdnUrl           String?                               @map("logo_cdn_url")
   isOpen               Boolean                               @default(true) @map("is_open")
   isPlatformManaged    Boolean                               @default(true) @map("is_platform_managed")
+  /// Explicit Merchant consent for Super Admin helpdesk to receive/route its orders.
+  allowAdminReceive    Boolean                               @default(false) @map("allow_admin_receive")
+  offersFreeDelivery   Boolean                               @default(false) @map("offers_free_delivery")
+  isFreeDeliveryEnabled Boolean                              @default(false) @map("is_free_delivery_enabled")
+  freeDeliveryMinOrderTzs BigInt                             @default(0) @map("free_delivery_min_order_tzs")
+  standardDeliveryFeeTzs BigInt                              @default(0) @map("standard_delivery_fee_tzs")
+  deliveryCoverageRegions String[]                           @default([]) @map("delivery_coverage_regions")
   geospatialMapEnabled Boolean                               @default(false) @map("geospatial_map_enabled")
   version              BigInt                                @default(0)
   createdAt            DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -199,6 +227,10 @@ model BusinessProfile {
   unitPricingOverrides   MerchantUnitPricingOverride[]
   priceAuditLogs         MerchantPriceAuditLog[]
   externalPurchaseReceipts ExternalPurchaseReceipt[]
+  supplierCatalogListings  SupplierCatalogListing[]
+  supplierStockMovements   SupplierStockMovement[]
+  supplierPurchaseReceipts SupplierPurchaseReceipt[]
+  notifications            UserNotification[]
 
   @@index([id, isPlatformManaged], map: "idx_business_platform_managed")
   @@map("business_profiles")
@@ -261,6 +293,9 @@ model SokoGlobalCatalog {
   sellerProducts Product[]
   productUnits   GlobalProductUnit[]
   standardPrices GlobalCatalogStandardPrice[]
+  supplierListings SupplierCatalogListing[]
+  supplierStockMovements SupplierStockMovement[]
+  supplierPurchaseReceipts SupplierPurchaseReceipt[]
 
   @@index([categoryCode, isActive], map: "idx_global_catalog_active")
   @@map("soko_global_catalog")
@@ -329,6 +364,8 @@ model Product {
   orderItems         OrderItem[]
   deconstructionLogs InventoryDeconstructionLog[]
   posSaleReceipts    PosSaleReceipt[]
+  supplierStockMovements SupplierStockMovement[]
+  supplierPurchaseReceipts SupplierPurchaseReceipt[]
 
   @@unique([sellerBusinessId, smsItemCode], map: "uq_seller_sms_item")
   @@map("products")
@@ -399,6 +436,7 @@ model Order {
   driverUserId          String?     @map("driver_user_id") @db.Uuid
   status                OrderStatus @default(PLACED)
   originChannel         OrderOrigin @default(PWA_ONLINE) @map("origin_channel")
+  orderChannel          OrderChannel @default(RETAIL_MARKETPLACE) @map("order_channel")
   routingTargetPipeline String      @default("SUPER_ADMIN_HELPDESK_PIPELINE") @map("routing_target_pipeline") @db.VarChar(64)
   rawSmsPayload         String?     @map("raw_sms_payload") @db.VarChar(160)
   expectedTotalTzs      BigInt      @map("expected_total_tzs")
@@ -434,6 +472,7 @@ model OrderItem {
   unitType               PackagingUnit @map("unit_type")
   quantity               Int
   baseUnitsTotal         Int           @map("base_units_total")
+  orderChannel           OrderChannel  @default(RETAIL_MARKETPLACE) @map("order_channel")
   unitPriceTzs           BigInt        @map("unit_price_tzs")
   lineTotalTzs           BigInt        @map("line_total_tzs")
   isWholesaleTierApplied Boolean       @default(false) @map("is_wholesale_tier_applied")
@@ -448,6 +487,7 @@ model CashDeliveryLedger {
   id                    String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orderId               String                   @unique @map("order_id") @db.Uuid
   driverUserId          String?                  @map("driver_user_id") @db.Uuid
+  orderChannel          OrderChannel             @default(RETAIL_MARKETPLACE) @map("order_channel")
   oneTimeQrToken        String?                  @unique @map("one_time_qr_token") @db.VarChar(255)
   qrTokenExpiresAt      DateTime?                @map("qr_token_expires_at") @db.Timestamptz(6)
   qrTokenSignature      String?                  @map("qr_token_signature") @db.VarChar(128)
@@ -764,6 +804,7 @@ model SystemUnit {
   updatedAt         DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   productUnits GlobalProductUnit[]
+  supplierListings SupplierCatalogListing[]
 
   @@map("system_units")
 }
@@ -785,6 +826,7 @@ model GlobalProductUnit {
   standardPrices           GlobalCatalogStandardPrice[]
   merchantOverrides        MerchantUnitPricingOverride[]
   externalPurchaseReceipts ExternalPurchaseReceipt[]
+  supplierPurchaseReceipts SupplierPurchaseReceipt[]
 
   @@unique([globalCatalogId, systemUnitId], map: "uq_global_product_system_unit")
   @@index([globalCatalogId, isActive], map: "idx_global_product_units_catalog")
@@ -908,4 +950,112 @@ model ExternalPurchaseReceipt {
 
   @@index([businessId, createdAt(sort: Desc)], map: "idx_external_purchase_receipts_biz_time")
   @@map("external_purchase_receipts")
+}
+
+// ------------------------------------------------------------------------------
+// 14. Supplier (Manufacturer / Distributor) Warehouse & B2B Marketplace
+// ------------------------------------------------------------------------------
+
+model SupplierCatalogListing {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  supplierBusinessId    String   @map("supplier_business_id") @db.Uuid
+  globalCatalogId       String   @map("global_catalog_id") @db.Uuid
+  systemUnitId          String   @map("system_unit_id") @db.Uuid
+  supplierBulkPriceTzs  BigInt   @map("supplier_bulk_price_tzs")
+  minOrderQuantity      Int      @default(1) @map("min_order_quantity")
+  isPublishedToMarket   Boolean  @default(true) @map("is_published_to_market")
+  imagekitCdnUrl        String   @default("") @map("imagekit_cdn_url")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  supplier      BusinessProfile   @relation(fields: [supplierBusinessId], references: [id], onDelete: Cascade)
+  globalCatalog SokoGlobalCatalog @relation(fields: [globalCatalogId], references: [id], onDelete: Restrict)
+  systemUnit    SystemUnit        @relation(fields: [systemUnitId], references: [id], onDelete: Restrict)
+
+  @@unique([supplierBusinessId, globalCatalogId, systemUnitId], map: "uq_supplier_listing_unit")
+  @@index([isPublishedToMarket, globalCatalogId], map: "idx_supplier_listing_market")
+  @@map("supplier_catalog_listings")
+}
+
+model SupplierStockMovement {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  supplierBusinessId String                    @map("supplier_business_id") @db.Uuid
+  productId          String                    @map("product_id") @db.Uuid
+  globalCatalogId    String                    @map("global_catalog_id") @db.Uuid
+  movementType       SupplierStockMovementType @map("movement_type")
+  quantityQuanta     Int                       @map("quantity_quanta")
+  referenceType      String                    @map("reference_type") @db.VarChar(32)
+  referenceId        String?                   @map("reference_id") @db.VarChar(80)
+  recordedByUserId   String?                   @map("recorded_by_user_id") @db.Uuid
+  note               String?
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  supplier      BusinessProfile   @relation(fields: [supplierBusinessId], references: [id], onDelete: Cascade)
+  product       Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  globalCatalog SokoGlobalCatalog @relation(fields: [globalCatalogId], references: [id], onDelete: Restrict)
+
+  @@index([supplierBusinessId, createdAt(sort: Desc)], map: "idx_supplier_stock_movement_biz_time")
+  @@index([productId, createdAt(sort: Desc)], map: "idx_supplier_stock_movement_product_time")
+  @@map("supplier_stock_movements")
+}
+
+/// Supplier-owned manual purchase receipt. Suppliers do not use Merchant clone
+/// receipts because their warehouse SKUs live directly in `products`.
+model SupplierPurchaseReceipt {
+  id                               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  supplierBusinessId               String    @map("supplier_business_id") @db.Uuid
+  productId                        String    @map("product_id") @db.Uuid
+  globalCatalogId                  String    @map("global_catalog_id") @db.Uuid
+  globalProductUnitId              String?   @map("global_product_unit_id") @db.Uuid
+  supplierName                     String    @map("supplier_name") @db.VarChar(180)
+  supplierReference                String?   @map("supplier_reference") @db.VarChar(80)
+  receiptStatus                    String    @default("GOODS_RECEIVED") @map("receipt_status") @db.VarChar(32)
+  quantityUnits                    Int       @map("quantity_units")
+  quarterQuantaPerUnit             Int       @map("quarter_quanta_per_unit")
+  receivedQuanta                   Int       @map("received_quanta")
+  agreedTotalCostTzs               BigInt    @map("agreed_total_cost_tzs")
+  costPerQuantumTzs                BigInt    @map("cost_per_quantum_tzs")
+  previousWeightedAvgCostPerQuantumTzs BigInt @default(0) @map("previous_weighted_avg_cost_per_quantum_tzs")
+  newWeightedAvgCostPerQuantumTzs   BigInt    @default(0) @map("new_weighted_avg_cost_per_quantum_tzs")
+  recordedByUserId                 String    @map("recorded_by_user_id") @db.Uuid
+  receivedAt                       DateTime? @map("received_at") @db.Timestamptz(6)
+  createdAt                        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  supplier        BusinessProfile   @relation(fields: [supplierBusinessId], references: [id], onDelete: Cascade)
+  product         Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  globalCatalog   SokoGlobalCatalog @relation(fields: [globalCatalogId], references: [id], onDelete: Restrict)
+  globalProductUnit GlobalProductUnit? @relation(fields: [globalProductUnitId], references: [id], onDelete: SetNull)
+  recordedBy      User              @relation(fields: [recordedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([supplierBusinessId, createdAt(sort: Desc)], map: "idx_supplier_purchase_receipts_biz_time")
+  @@index([productId, createdAt(sort: Desc)], map: "idx_supplier_purchase_receipts_product_time")
+  @@map("supplier_purchase_receipts")
+}
+
+/// Durable per-user notification inbox. Socket.IO and Web Push are delivery
+/// channels only; this table is the source of truth for each role dashboard.
+model UserNotification {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  businessId String?   @map("business_id") @db.Uuid
+  role       UserRole  @map("role")
+  eventType  String    @map("event_type") @db.VarChar(100)
+  category   String    @default("STANDARD_UPDATE") @map("category") @db.VarChar(64)
+  title      String    @db.VarChar(180)
+  body       String    @db.VarChar(600)
+  deepLink   String?   @map("deep_link") @db.VarChar(255)
+  metadata   Json?
+  dedupeKey  String?   @map("dedupe_key") @db.VarChar(180)
+  isRead     Boolean   @default(false) @map("is_read")
+  readAt     DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business BusinessProfile? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey], map: "uq_user_notification_dedupe")
+  @@index([userId, isRead, createdAt(sort: Desc)], map: "idx_user_notification_inbox")
+  @@index([role, createdAt(sort: Desc)], map: "idx_user_notification_role_time")
+  @@index([businessId, createdAt(sort: Desc)], map: "idx_user_notification_business_time")
+  @@map("user_notifications")
 }

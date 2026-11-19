@@ -8,7 +8,14 @@ class SokoRealtimeClient {
     if (this.socket?.connected) return;
 
     const authToken = token || localStorage.getItem('sokokuu_access_token');
-    const wsUrl = (import.meta.env.VITE_REALTIME_URL as string) || window.location.origin;
+    const configuredWsUrl =
+      (import.meta.env.VITE_REALTIME_URL as string | undefined)?.trim() || '';
+    // VITE_REALTIME_URL may be configured as either the server origin or the
+    // full /realtime endpoint. Socket.IO expects the origin here because the
+    // gateway path is passed separately below.
+    const wsUrl = configuredWsUrl
+      ? configuredWsUrl.replace(/\/realtime\/?$/i, '')
+      : window.location.origin;
 
     this.socket = io(wsUrl, {
       path: '/realtime',
@@ -28,6 +35,10 @@ class SokoRealtimeClient {
 
     this.socket.on('driver:reconciliation-signal', (payload) => {
       this.notifyListeners('driver:reconciliation-signal', payload);
+    });
+
+    this.socket.on('notification:new', (payload) => {
+      this.notifyListeners('notification:new', payload);
     });
 
     this.socket.on('disconnect', (reason) => {

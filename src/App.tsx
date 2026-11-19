@@ -9,10 +9,17 @@ import {
   type UserProfile,
 } from './types/auth';
 import { AuthPortalView } from './components/AuthPortalView';
+import { PublicLandingView } from './components/PublicLandingView';
 import { BrandedAppBarWithAlerts } from './components/BrandedAppBarWithAlerts';
 import { ConsumerDashboardView } from './components/ConsumerDashboardView';
 import { RetailerShoppingView, type RetailerTab } from './components/RetailerShoppingView';
+import { SokoniCoreEngine } from './components/SokoniCoreEngine';
 import { WholesalerOperationsView } from './components/WholesalerOperationsView';
+import {
+  SupplierDashboardView,
+  type SupplierTab,
+} from './components/SupplierDashboardView';
+import { DashboardOnlineBadge } from './components/DashboardOnlineBadge';
 import { MobileDriverReceiptCard } from './components/MobileDriverReceiptCard';
 import { SuperAdminDiagnosticsView } from './components/SuperAdminDiagnosticsView';
 import { ProfileEditView, SettingsView } from './components/AccountPages';
@@ -25,6 +32,10 @@ type ActiveAccountPage = 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
 const ACTIVE_USER_STORAGE_KEY = 'sokokuu_active_user_v1';
 const LOCALE_STORAGE_KEY = 'sokokuu_locale_v1';
 const RETAILER_TAB_STORAGE_KEY = 'sokokuu_retailer_tab_v1';
+const WHOLESALER_TAB_STORAGE_KEY = 'sokokuu_wholesaler_tab_v1';
+const SUPPLIER_TAB_STORAGE_KEY = 'sokokuu_supplier_tab_v1';
+
+export type WholesalerTab = 'operations' | 'sokoni';
 
 export default function App() {
   return (
@@ -79,6 +90,7 @@ function SinglePlatformShell() {
   });
 
   const [activePage, setActivePage] = useState<ActiveAccountPage>('DASHBOARD');
+  const [showAuthPortal, setShowAuthPortal] = useState(false);
   const [retailerTab, setRetailerTabState] = useState<RetailerTab>(() => {
     try {
       const savedTab = window.localStorage.getItem(RETAILER_TAB_STORAGE_KEY);
@@ -105,12 +117,63 @@ function SinglePlatformShell() {
     }
   };
 
+  const [wholesalerTab, setWholesalerTabState] = useState<WholesalerTab>(() => {
+    try {
+      const savedTab = window.localStorage.getItem(WHOLESALER_TAB_STORAGE_KEY);
+      if (savedTab === 'operations' || savedTab === 'sokoni') {
+        return savedTab;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return 'operations';
+  });
+
+  const setWholesalerTab = (tab: WholesalerTab) => {
+    setWholesalerTabState(tab);
+    try {
+      window.localStorage.setItem(WHOLESALER_TAB_STORAGE_KEY, tab);
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const [supplierTab, setSupplierTabState] = useState<SupplierTab>(() => {
+    try {
+      const savedTab = window.localStorage.getItem(SUPPLIER_TAB_STORAGE_KEY);
+      if (
+        savedTab === 'warehouse' ||
+        savedTab === 'publish' ||
+        savedTab === 'orders' ||
+        savedTab === 'reports'
+      ) {
+        return savedTab;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return 'warehouse';
+  });
+
+  const setSupplierTab = (tab: SupplierTab) => {
+    setSupplierTabState(tab);
+    try {
+      window.localStorage.setItem(SUPPLIER_TAB_STORAGE_KEY, tab);
+    } catch {
+      // ignore storage errors
+    }
+  };
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [adminMobileSidebarOpen, setAdminMobileSidebarOpen] = useState<boolean>(false);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState<boolean>(false);
   const [retailerMapEnabled, setRetailerMapEnabled] = useState<boolean>(false);
   const [sessionBackendOffline, setSessionBackendOffline] = useState<boolean>(false);
   const [hydratingSession, setHydratingSession] = useState<boolean>(false);
+  const [focusedOrder, setFocusedOrder] = useState<{
+    orderRef: string | null;
+    orderId: string | null;
+  } | null>(null);
 
   const persistActiveProfile = (profile: UserProfile | null) => {
     setActiveProfile(profile);
@@ -150,6 +213,7 @@ function SinglePlatformShell() {
           streetAddress: string;
           geospatialMapEnabled: boolean;
           isPlatformManaged: boolean;
+          logoCdnUrl?: string | null;
         } | null;
         tenantContext?: {
           businessId?: string | null;
@@ -191,6 +255,7 @@ function SinglePlatformShell() {
             (locale === 'sw' ? ROLE_LABELS[role].sw : ROLE_LABELS[role].en),
           ward: bp?.ward ?? prev?.ward ?? '',
           streetAddress: bp?.streetAddress ?? prev?.streetAddress ?? '',
+          shopImageUrl: bp?.logoCdnUrl ?? prev?.shopImageUrl ?? null,
           role,
           mode: mapTierToAccountMode(role, tier),
           smsAlertsEnabled: prev?.smsAlertsEnabled ?? true,
@@ -269,6 +334,7 @@ function SinglePlatformShell() {
     setSessionBackendOffline(false);
     setActivePage('DASHBOARD');
     setRetailerTab('pos_register');
+    setSupplierTab('warehouse');
     setMobileMenuOpen(false);
     setAdminMobileSidebarOpen(false);
   };
@@ -290,7 +356,61 @@ function SinglePlatformShell() {
     persistActiveProfile(updated);
   };
 
+  const handleOpenDeepLink = useCallback((deepLink: string) => {
+    const queryIndex = deepLink.indexOf('?');
+    const path = queryIndex >= 0 ? deepLink.slice(0, queryIndex) : deepLink;
+    const params =
+      queryIndex >= 0 ? new URLSearchParams(deepLink.slice(queryIndex + 1)) : new URLSearchParams();
+
+    setActivePage('DASHBOARD');
+
+    if (path.includes('/dashboard/supplier')) {
+      const supplierTabParam = params.get('tab');
+      setSupplierTabState(
+        supplierTabParam === 'warehouse' ||
+          supplierTabParam === 'publish' ||
+          supplierTabParam === 'orders' ||
+          supplierTabParam === 'reports'
+          ? supplierTabParam
+          : 'orders'
+      );
+    } else if (path.includes('/dashboard/wholesaler')) {
+      setWholesalerTabState('operations');
+    } else if (path.includes('/dashboard/retailer')) {
+      setRetailerTabState('core_engine');
+    }
+
+    // A notification that points at a specific order must land the operator on
+    // that order row so they can receive, dispatch or resolve it immediately.
+    const orderRef = params.get('orderRef');
+    const orderId = params.get('orderId');
+    setFocusedOrder({ orderRef, orderId });
+  }, []);
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; deepLink?: string } | undefined;
+      if (data?.type === 'SOKOKUU_NOTIFICATION_OPEN' && typeof data.deepLink === 'string') {
+        handleOpenDeepLink(data.deepLink);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onServiceWorkerMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', onServiceWorkerMessage);
+    };
+  }, [handleOpenDeepLink]);
+
   if (!activeProfile) {
+    if (!showAuthPortal) {
+      return (
+        <PublicLandingView
+          locale={locale}
+          onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+          onEnter={() => setShowAuthPortal(true)}
+        />
+      );
+    }
     return (
       <AuthPortalView
         locale={locale}
@@ -327,12 +447,17 @@ function SinglePlatformShell() {
         onSelectPage={setActivePage}
         retailerTab={retailerTab}
         onSelectRetailerTab={setRetailerTab}
+        wholesalerTab={wholesalerTab}
+        onSelectWholesalerTab={setWholesalerTab}
+        supplierTab={supplierTab}
+        onSelectSupplierTab={setSupplierTab}
         retailerMapEnabled={retailerMapEnabled}
         onLogout={handleLogout}
         mobileMenuOpen={mobileMenuOpen}
         onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)}
         adminMobileSidebarOpen={adminMobileSidebarOpen}
         onToggleAdminMobileSidebar={() => setAdminMobileSidebarOpen((prev) => !prev)}
+        onOpenDeepLink={handleOpenDeepLink}
       />
 
       {sessionBackendOffline && (
@@ -362,12 +487,35 @@ function SinglePlatformShell() {
                 locale={locale}
                 activeTab={retailerTab}
                 userRole="RETAILER"
+                userTier={activeProfile.tier}
                 businessId={activeProfile.businessId}
                 onRedirectToWorkspace={() => setRetailerTab('core_engine')}
               />
             )}
-            {activeProfile.role === 'WHOLESALER' && (
-              <WholesalerOperationsView locale={locale} businessId={activeProfile.businessId} />
+            {activeProfile.role === 'WHOLESALER' &&
+              (wholesalerTab === 'sokoni' ? (
+                <SokoniCoreEngine
+                  locale={locale}
+                  userRole="WHOLESALER"
+                  userTier={activeProfile.tier}
+                  businessId={activeProfile.businessId}
+                />
+              ) : (
+                <WholesalerOperationsView
+                  locale={locale}
+                  businessId={activeProfile.businessId}
+                  focusOrder={focusedOrder}
+                />
+              ))}
+            {activeProfile.role === 'SUPPLIER' && (
+              <SupplierDashboardView
+                locale={locale}
+                activeTab={supplierTab}
+                onTabChange={setSupplierTab}
+                businessId={activeProfile.businessId}
+                sellerPhone={activeProfile.phone}
+                focusOrder={focusedOrder}
+              />
             )}
             {activeProfile.role === 'DRIVER' && (
               <MobileDriverReceiptCard locale={locale} />
@@ -378,6 +526,7 @@ function SinglePlatformShell() {
                 authority={activeProfile.role}
                 mobileSidebarOpen={adminMobileSidebarOpen}
                 onMobileSidebarOpenChange={setAdminMobileSidebarOpen}
+                focusOrder={focusedOrder}
               />
             )}
           </>
@@ -403,6 +552,7 @@ function SinglePlatformShell() {
           />
         )}
       </main>
+      {activePage === 'DASHBOARD' && <DashboardOnlineBadge />}
       <OfflineIndicator locale={locale} />
     </div>
   );

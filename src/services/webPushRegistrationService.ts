@@ -3,7 +3,7 @@ import { SokoApiClient, isSokoNetworkError } from './sokoApiClient';
 const VAPID_PUBLIC_KEY =
   (import.meta as unknown as { env?: Record<string, string | undefined> }).env
     ?.VITE_VAPID_PUBLIC_KEY ||
-  'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8';
+  'BPp1xkpV9GlaG_UHrZvghsIjGD0xbl6ocPC1lZMFhIyLNGb7X3SBUPpsJcz9YkIkrYB_-rTB3U0hpmpzR1dm51I';
 
 export interface WebPushRegistrationResult {
   status: 'SUBSCRIBED' | 'PERMISSION_DENIED' | 'UNSUPPORTED' | 'ERROR';
@@ -20,6 +20,40 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
     outputArray[i] = rawData.charCodeAt(i);
   }
   return outputArray;
+}
+
+export interface WebPushStatus {
+  supported: boolean;
+  permission: NotificationPermission | 'unsupported';
+  subscribed: boolean;
+}
+
+export async function getWebPushStatus(userId: string): Promise<WebPushStatus> {
+  if (
+    typeof window === 'undefined' ||
+    !('serviceWorker' in navigator) ||
+    !('PushManager' in window) ||
+    !('Notification' in window)
+  ) {
+    return { supported: false, permission: 'unsupported', subscribed: false };
+  }
+
+  let subscribed = false;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    subscribed = Boolean(await registration.pushManager.getSubscription());
+  } catch {
+    // Fall back to the persisted marker when pushManager cannot be inspected.
+  }
+  if (!subscribed) {
+    try {
+      subscribed = Boolean(localStorage.getItem(`sokokuu:webpush:${userId}`));
+    } catch {
+      // Ignore storage failures (private mode / restricted sandboxes).
+    }
+  }
+
+  return { supported: true, permission: Notification.permission, subscribed };
 }
 
 export async function initializeWebPushRegistration(

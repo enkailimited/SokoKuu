@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  ShieldOff,
   Store,
   ToggleLeft,
   ToggleRight,
@@ -39,6 +40,7 @@ interface BackendMerchantDirectoryRecord {
   isOpen: boolean;
   isPlatformManaged: boolean;
   geospatialMapEnabled: boolean;
+  logoCdnUrl?: string | null;
   owner?: {
     userId: string;
     fullName: string;
@@ -49,15 +51,17 @@ interface BackendMerchantDirectoryRecord {
 
 interface DirectoryMerchantItem extends ManagedWholesaleProfile {
   geospatialMapEnabled?: boolean;
+  isOpen?: boolean;
+  logoCdnUrl?: string | null;
   smsShortCode?: string;
   tierCode?: string;
 }
 
 // ============================================================================
-// AdminShopsDirectoryPanel.tsx
+// AdminMerchantsDirectoryPanel.tsx
 // Orodha ya Wafanyabiashara Waliothibitishwa + Mipangilio ya Kila Mfanyabiashara
 // ============================================================================
-export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale }) {
+export function AdminMerchantsDirectoryPanel({ locale = 'sw' }: { locale?: Locale }) {
   const isSw = locale === 'sw';
   const [merchants, setMerchants] = useState<DirectoryMerchantItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -87,13 +91,15 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
           businessName: m.merchantName,
           smsShortCode: m.smsShortCode,
           tierCode: m.tier,
-          roleTier: m.tier === 'WHOLESALE_HUB' ? 'Wholesaler' : 'Retailer',
+          roleTier: m.tier === 'WHOLESALE' ? 'Wholesaler' : 'Retailer',
           region: extractRegionFromWard(`${m.ward} ${m.district}`),
           ward: wardJoined,
           latitude: m.latitude,
           longitude: m.longitude,
           isPlatformManaged: m.isPlatformManaged,
           geospatialMapEnabled: m.geospatialMapEnabled,
+          isOpen: m.isOpen,
+          logoCdnUrl: m.logoCdnUrl ?? null,
           isConverted: true,
           isVerified: true,
           ownerName: m.owner?.fullName,
@@ -129,10 +135,10 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
     const handleRefreshEvent = () => {
       void loadDirectoryFromApi();
     };
-    window.addEventListener('sokokuu:shops-updated', handleRefreshEvent);
+    window.addEventListener('sokokuu:merchants-updated', handleRefreshEvent);
     window.addEventListener('sokokuu:geospatial-toggle-updated', handleRefreshEvent);
     return () => {
-      window.removeEventListener('sokokuu:shops-updated', handleRefreshEvent);
+      window.removeEventListener('sokokuu:merchants-updated', handleRefreshEvent);
       window.removeEventListener('sokokuu:geospatial-toggle-updated', handleRefreshEvent);
     };
   }, [loadDirectoryFromApi]);
@@ -183,6 +189,54 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
           err instanceof SokoHttpError
             ? `HTTP ${err.status}: ${err.message}`
             : 'Failed to update order routing.'
+        );
+      }
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleToggleVerification = async (merchant: DirectoryMerchantItem) => {
+    setErrorBanner(null);
+    const nextOpen = !merchant.isOpen;
+    setBusyId(merchant.businessId);
+
+    try {
+      const res = await SokoApiClient.patch<{
+        merchantId: string;
+        merchantName: string;
+        isOpen: boolean;
+      }>(`/admin/merchants/${merchant.businessId}/verification`, {
+        isOpen: nextOpen,
+      });
+
+      setMerchants((prev) =>
+        prev.map((m) =>
+          m.businessId === merchant.businessId
+            ? { ...m, isOpen: res.isOpen }
+            : m
+        )
+      );
+      setBackendOffline(false);
+      window.dispatchEvent(new CustomEvent('sokokuu:merchants-updated'));
+
+      setStatusNotice(
+        isSw
+          ? `${merchant.businessName}: Uthibitisho sasa ni ${
+              res.isOpen ? 'UMETHIBITISHWA (uneonekana sokoni)' : 'UMESITISHWA'
+            }.`
+          : `${merchant.businessName}: Verification is now ${
+              res.isOpen ? 'VERIFIED (visible in marketplace)' : 'SUSPENDED'
+            }.`
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorBanner(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to update merchant verification.'
         );
       }
     } finally {
@@ -421,6 +475,13 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
                 >
                   <div className="space-y-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
+                      {merchant.logoCdnUrl && (
+                        <img
+                          src={merchant.logoCdnUrl}
+                          alt={merchant.businessName}
+                          className="w-8 h-8 rounded-full object-cover border border-slate-200 shrink-0"
+                        />
+                      )}
                       <span className="text-xs sm:text-sm font-bold text-slate-900">
                         {merchant.businessName}
                       </span>
@@ -434,7 +495,15 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
                       </span>
                       <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800">
                         <ShieldCheck className="w-3 h-3 text-emerald-600" aria-hidden="true" />
-                        <span>{isSw ? 'Converted · Imethibitishwa' : 'Converted · Verified'}</span>
+                        <span>
+                          {merchant.isOpen
+                            ? isSw
+                              ? 'Imethibitishwa'
+                              : 'Verified'
+                            : isSw
+                              ? 'Inasubiri Uthibitisho'
+                              : 'Pending Verification'}
+                        </span>
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2">
@@ -467,6 +536,38 @@ export function AdminShopsDirectoryPanel({ locale = 'sw' }: { locale?: Locale })
 
                   {/* Per-Merchant Settings Controls */}
                   <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                    <button
+                      type="button"
+                      disabled={busyId === merchant.businessId}
+                      onClick={() => void handleToggleVerification(merchant)}
+                      className={`min-h-[36px] px-3 py-1.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50 ${
+                        merchant.isOpen
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-900 hover:bg-emerald-100'
+                          : 'border-amber-500 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                      }`}
+                    >
+                      {merchant.isOpen ? (
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                      ) : (
+                        <ShieldOff className="w-3.5 h-3.5 text-amber-600" aria-hidden="true" />
+                      )}
+                      <span>
+                        {isSw ? 'Uthibitisho:' : 'Verify:'}{' '}
+                        {merchant.isOpen
+                          ? isSw
+                            ? 'Imethibitishwa'
+                            : 'Verified'
+                          : isSw
+                            ? 'Thibitisha'
+                            : 'Verify'}
+                      </span>
+                      {merchant.isOpen ? (
+                        <ToggleRight className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+                      ) : (
+                        <ToggleLeft className="w-4 h-4 text-amber-600" aria-hidden="true" />
+                      )}
+                    </button>
+
                     <button
                       type="button"
                       disabled={busyId === merchant.businessId}

@@ -17,9 +17,10 @@ import {
 import { TZ_E164_REGEX } from '@modules/01-identity/dto/auth.dto';
 
 export enum MerchantTierDto {
-  WHOLESALE_HUB = 'WHOLESALE_HUB',
+  WHOLESALE = 'WHOLESALE',
   RETAIL_DUKA = 'RETAIL_DUKA',
   HYBRID_STORE = 'HYBRID_STORE',
+  MANUFACTURER_SUPPLIER = 'MANUFACTURER_SUPPLIER',
 }
 
 export class ListMerchantsQueryDto {
@@ -63,6 +64,16 @@ export class ToggleMerchantMapDto {
   })
   @IsBoolean()
   enabled!: boolean;
+}
+
+export class SetMerchantVerifiedDto {
+  @ApiProperty({
+    description:
+      'Set true to verify the Merchant (opens storefront, marketplace visibility and order routing). Set false to suspend verification.',
+    example: true,
+  })
+  @IsBoolean()
+  isOpen!: boolean;
 }
 
 export class ToggleTenantMapRequestDto {

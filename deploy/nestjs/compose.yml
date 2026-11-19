@@ -75,7 +75,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      PORT: 3001
+      PORT: 8080
       TZ: Africa/Dar_es_Salaam
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgresql://${POSTGRES_USER:-sokokuu}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sokokuu_tz}?schema=public
@@ -87,11 +87,12 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:ops@sokokuu.tz}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?VAPID_PUBLIC_KEY is required}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?VAPID_PRIVATE_KEY is required}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,https://sokokuu.tz}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://sokokuu.tz}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://sokokuu.tz}
     ports:
-      - '3001:3001'
+      - '8080:8080'
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/api/v1/health']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/api/v1/health']
       interval: 15s
       timeout: 5s
       retries: 5

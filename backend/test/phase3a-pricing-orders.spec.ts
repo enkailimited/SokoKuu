@@ -88,13 +88,13 @@ describe('Phase 3A: PricingRoutingEngine, Orders Idempotency, Bulk Reservation, 
       expect(wholesaleQuote.expectedTotalTzs).toBe(14000);
     });
 
-    it('rejects WHOLESALE_HUB retail fractions (422) and multi-seller basket mixing (422)', async () => {
+    it('rejects WHOLESALE retail fractions (422) and multi-seller basket mixing (422)', async () => {
       const tx = {
         businessProfile: {
           findUnique: jest.fn().mockResolvedValue({
             id: sellerId,
             businessName: 'Pure Wholesale Hub',
-            tier: 'WHOLESALE_HUB',
+            tier: 'WHOLESALE',
             isOpen: true,
             isPlatformManaged: false,
           }),

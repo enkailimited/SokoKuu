@@ -6,8 +6,6 @@ import {
   Phone,
   ShieldCheck,
   UserPlus,
-  Wifi,
-  WifiOff,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
@@ -28,7 +26,7 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 
-type SelfRegistrableRole = 'CONSUMER' | 'RETAILER' | 'WHOLESALER' | 'DRIVER';
+type SelfRegistrableRole = 'CONSUMER' | 'RETAILER' | 'WHOLESALER' | 'DRIVER' | 'SUPPLIER';
 
 interface AuthTokenResponsePayload {
   accessToken: string;
@@ -240,8 +238,8 @@ export function AuthPortalView({
         setBackendOnline(false);
         setAuthError(
           isSw
-            ? 'Imeshindikana kuunganisha na seva ya NestJS (/api/v1/auth). Hakikisha seva inafanya kazi.'
-            : 'Cannot reach NestJS backend (/api/v1/auth). Connect to the live server and retry.'
+            ? 'Imeshindikana kuunganisha na SokoKuu. Jaribu tena.'
+            : 'Cannot reach SokoKuu. Retry.'
         );
       } else {
         setAuthError(err instanceof Error ? err.message : 'Authentication failed.');
@@ -256,28 +254,6 @@ export function AuthPortalView({
       <header className="h-16 px-6 bg-white border-b border-slate-100 flex items-center justify-between gap-6">
         <BrandLogo size="md" />
         <div className="flex items-center gap-2 shrink-0">
-          <span
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono font-semibold ${
-              backendOnline === true
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                : backendOnline === false
-                  ? 'bg-red-50 border-red-200 text-red-800'
-                  : 'bg-slate-50 border-slate-200 text-slate-600'
-            }`}
-          >
-            {backendOnline === false ? (
-              <WifiOff className="w-3 h-3" aria-hidden="true" />
-            ) : (
-              <Wifi className="w-3 h-3" aria-hidden="true" />
-            )}
-            <span>
-              {backendOnline === true
-                ? 'API: ONLINE'
-                : backendOnline === false
-                  ? 'BACKEND OFFLINE'
-                  : 'CHECKING API...'}
-            </span>
-          </span>
           <PWAInstallButton locale={locale} />
           <button
             type="button"
@@ -305,22 +281,17 @@ export function AuthPortalView({
             <div className="space-y-2 border-b border-slate-100 pb-4">
               <div className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold text-emerald-600">
                 <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-                <span>SokoKuu TZ · PostgreSQL Identity</span>
+                <span>SokoKuu TZ</span>
               </div>
               <h1 className="text-xl font-bold text-slate-900">
                 {authTab === 'LOGIN'
                   ? isSw
                     ? 'Ingia Kwenye Akaunti Yako'
-                    : 'Sign In to SokoKuu TZ'
+                    : 'Sign In to SokoKuu'
                   : isSw
                     ? 'Fungua Akaunti Mpya'
-                    : 'Create Your SokoKuu TZ Account'}
+                    : 'Create Your SokoKuu Account'}
               </h1>
-              <p className="text-xs text-slate-500">
-                {isSw
-                  ? 'Uthibitisho wa Argon2id & JWT moja kwa moja kupitia hifadhidata ya PostgreSQL.'
-                  : 'Direct Argon2id & JWT authentication against live PostgreSQL persistence.'}
-              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-lg">
@@ -336,7 +307,7 @@ export function AuthPortalView({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {isSw ? 'Ingia (Login)' : 'Sign In'}
+                {isSw ? 'Ingia' : 'Sign In'}
               </button>
               <button
                 type="button"
@@ -350,7 +321,7 @@ export function AuthPortalView({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {isSw ? 'Jisajili (Register)' : 'Register'}
+                {isSw ? 'Jisajili' : 'Register'}
               </button>
             </div>
 
@@ -394,6 +365,9 @@ export function AuthPortalView({
                       </option>
                       <option value="DRIVER">
                         {isSw ? ROLE_LABELS.DRIVER.sw : ROLE_LABELS.DRIVER.en}
+                      </option>
+                      <option value="SUPPLIER">
+                        {isSw ? ROLE_LABELS.SUPPLIER.sw : ROLE_LABELS.SUPPLIER.en}
                       </option>
                     </select>
                   </label>
@@ -459,8 +433,8 @@ export function AuthPortalView({
                       : 'Processing...'
                     : authTab === 'LOGIN'
                       ? isSw
-                        ? 'Ingia Kwenye Dashibodi'
-                        : 'Sign In to Dashboard'
+                        ? 'Ingia'
+                        : 'Sign In'
                       : isSw
                         ? 'Sajili Akaunti Mpya'
                         : 'Create Account & Sign In'}

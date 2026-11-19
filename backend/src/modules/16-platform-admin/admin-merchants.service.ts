@@ -16,7 +16,9 @@ export interface MerchantDirectoryRecord {
   longitude: number;
   isOpen: boolean;
   isPlatformManaged: boolean;
+  allowAdminReceive: boolean;
   geospatialMapEnabled: boolean;
+  logoCdnUrl: string | null;
   owner: {
     userId: string;
     fullName: string;
@@ -79,7 +81,9 @@ export class AdminMerchantsService {
       longitude: Number(row.longitude),
       isOpen: row.isOpen,
       isPlatformManaged: row.isPlatformManaged,
+      allowAdminReceive: row.allowAdminReceive,
       geospatialMapEnabled: row.geospatialMapEnabled,
+      logoCdnUrl: row.logoCdnUrl ?? null,
       owner: {
         userId: row.owner.id,
         fullName: row.owner.fullName,
@@ -147,6 +151,64 @@ export class AdminMerchantsService {
         merchantId: updated.id,
         merchantName: updated.businessName,
         isPlatformManaged: updated.isPlatformManaged,
+        updatedAtEat: updated.updatedAt.toISOString(),
+      };
+    });
+  }
+
+  async setMerchantVerified(
+    businessId: string,
+    isOpen: boolean,
+    adminUserId: string,
+  ) {
+    return this.prismaService.runInTransaction('RepeatableRead', async (tx) => {
+      const existing = await tx.businessProfile.findUnique({
+        where: { id: businessId },
+        select: { id: true, businessName: true, isOpen: true },
+      });
+
+      if (!existing) {
+        throw new NotFoundException(`Merchant profile ${businessId} was not found.`);
+      }
+
+      const updated = await tx.businessProfile.update({
+        where: { id: businessId },
+        data: {
+          isOpen,
+          version: { increment: 1 },
+        },
+        select: {
+          id: true,
+          businessName: true,
+          isOpen: true,
+          updatedAt: true,
+        },
+      });
+
+      await this.outboxService.enqueue(
+        {
+          aggregateType: 'BusinessProfile',
+          aggregateId: updated.id,
+          eventType: 'MerchantVerificationToggledEvent',
+          routingKey: 'admin.merchant.verification_toggled',
+          payload: {
+            merchantId: updated.id,
+            merchantName: updated.businessName,
+            isOpen: updated.isOpen,
+            updatedByAdminId: adminUserId,
+          },
+        },
+        tx,
+      );
+
+      this.logger.log(
+        `[ADMIN-MERCHANT] merchantId=${updated.id} isOpen=${updated.isOpen}`,
+      );
+
+      return {
+        merchantId: updated.id,
+        merchantName: updated.businessName,
+        isOpen: updated.isOpen,
         updatedAtEat: updated.updatedAt.toISOString(),
       };
     });

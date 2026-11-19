@@ -52,7 +52,7 @@ export function HybridStorefrontPanel({ locale }: { locale: Locale }) {
   const [loading, setLoading] = useState<boolean>(false);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [sellerTierTest, setSellerTierTest] = useState<'WHOLESALE_HUB' | 'HYBRID_STORE'>('WHOLESALE_HUB');
+  const [sellerTierTest, setSellerTierTest] = useState<'WHOLESALE' | 'HYBRID_STORE'>('WHOLESALE');
   const [guardMessage, setGuardMessage] = useState<string | null>(null);
 
   const loadLiveCatalogByChannel = useCallback(async () => {
@@ -67,7 +67,7 @@ export function HybridStorefrontPanel({ locale }: { locale: Locale }) {
       const merchants = await SokoApiClient.get<BackendMerchantDto[]>('/marketplace/merchants');
       const targetMerchants = (Array.isArray(merchants) ? merchants : []).filter((m) =>
         activeViewChannel === 'WHOLESALE'
-          ? m.tier === 'WHOLESALE_HUB' || m.tier === 'HYBRID_STORE'
+          ? m.tier === 'WHOLESALE' || m.tier === 'HYBRID_STORE'
           : m.tier === 'RETAIL_DUKA' || m.tier === 'HYBRID_STORE',
       );
 
@@ -124,7 +124,7 @@ export function HybridStorefrontPanel({ locale }: { locale: Locale }) {
   }, [loadLiveCatalogByChannel]);
 
   const handleTestTierConstraint = () => {
-    if (sellerTierTest === 'WHOLESALE_HUB') {
+    if (sellerTierTest === 'WHOLESALE') {
       setGuardMessage(
         isSw
           ? 'Kizuizi cha Mfumo (P0001): Duka la Jumla haliruhusiwi kuweka bei ya Robo/Nusu/Tatu-Robo ili kulinda maduka ya rejareja.'
@@ -284,11 +284,11 @@ export function HybridStorefrontPanel({ locale }: { locale: Locale }) {
           <select
             aria-label="Seller Business Tier"
             value={sellerTierTest}
-            onChange={(e) => setSellerTierTest(e.target.value as 'WHOLESALE_HUB' | 'HYBRID_STORE')}
+            onChange={(e) => setSellerTierTest(e.target.value as 'WHOLESALE' | 'HYBRID_STORE')}
             className="h-9 px-3 text-xs bg-white border border-slate-300 rounded-md text-slate-900"
           >
-            <option value="WHOLESALE_HUB">
-              {formatBusinessTierLabel('WHOLESALE_HUB', locale)} (Pure Bulk)
+            <option value="WHOLESALE">
+              {formatBusinessTierLabel('WHOLESALE', locale)} (Pure Bulk)
             </option>
             <option value="HYBRID_STORE">
               {formatBusinessTierLabel('HYBRID_STORE', locale)} (Dual-Mode)

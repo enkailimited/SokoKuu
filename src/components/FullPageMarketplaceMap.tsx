@@ -151,14 +151,14 @@ export function FullPageMarketplaceMap({
   tenantBusinessId,
   onRedirectToWorkspace,
   onSelectMerchantStorefront,
-  onOpenShopsSettings,
+  onOpenMerchantsSettings,
 }: {
   locale?: Locale;
   authority: 'SUPER_ADMIN' | 'WHOLESALER' | 'RETAILER' | 'DRIVER' | 'CONSUMER';
   tenantBusinessId?: string | null;
   onRedirectToWorkspace?: () => void;
   onSelectMerchantStorefront?: (store: SokoStoreGeoNode) => void;
-  onOpenShopsSettings?: () => void;
+  onOpenMerchantsSettings?: () => void;
 }) {
   const isSw = locale === 'sw';
   const isAdmin = authority === 'SUPER_ADMIN';
@@ -168,7 +168,7 @@ export function FullPageMarketplaceMap({
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
   const [selectedRegion, setSelectedRegion] = useState<'ALL' | TanzaniaRegion>('Dar es Salaam');
-  const [tierFilter, setTierFilter] = useState<'ALL' | 'Wholesale Hub' | 'Retail Duka'>('ALL');
+  const [tierFilter, setTierFilter] = useState<'ALL' | 'Wholesale Hub' | 'Retail Merchant'>('ALL');
   const [selectedStore, setSelectedStore] = useState<SokoStoreGeoNode | null>(null);
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [actionToast, setActionToast] = useState<string | null>(null);
@@ -194,7 +194,7 @@ export function FullPageMarketplaceMap({
         businessName: n.merchantName,
         ward: n.district ? `${n.ward}, ${n.district}` : n.ward,
         region: extractRegionFromWard(`${n.ward} ${n.district}`),
-        tierLabel: n.tier === 'WHOLESALE_HUB' ? 'Wholesale Hub' : 'Retail Duka',
+        tierLabel: n.tier === 'WHOLESALE' ? 'Wholesale Hub' : 'Retail Merchant',
         latitude: n.latitude,
         longitude: n.longitude,
         distanceMeters: Number(n.distanceMeters ?? 0),
@@ -239,14 +239,14 @@ export function FullPageMarketplaceMap({
       void loadMatrixFromApi();
     };
     window.addEventListener('sokokuu:geospatial-toggle-updated', syncAll);
-    window.addEventListener('sokokuu:shops-updated', syncAll);
+    window.addEventListener('sokokuu:merchants-updated', syncAll);
     return () => {
       window.removeEventListener('sokokuu:geospatial-toggle-updated', syncAll);
-      window.removeEventListener('sokokuu:shops-updated', syncAll);
+      window.removeEventListener('sokokuu:merchants-updated', syncAll);
     };
   }, [loadMatrixFromApi, tenantBusinessId]);
 
-  if (!isLoading && !isAdmin && !tenantAllowed && !backendOffline) {
+  if (!isLoading && !tenantAllowed && !backendOffline) {
     return (
       <div className="max-w-4xl mx-auto p-4 sm:p-6">
         <section className="bg-white border border-red-200 rounded-xl shadow-sm p-6 space-y-4">
@@ -257,14 +257,22 @@ export function FullPageMarketplaceMap({
             <div className="space-y-1">
               <div className="text-sm font-bold text-red-950">
                 HTTP 403 FORBIDDEN —{' '}
-                {isSw
-                  ? 'Ramani ya Ukaribu Imezimwa kwa Akaunti Hii'
-                  : 'Geospatial Map Access Disabled for Tenant'}
+                {isAdmin
+                  ? isSw
+                    ? 'Ruhusa ya Msimamizi Ilikataliwa na Seva'
+                    : 'Admin Map Access Denied by Server'
+                  : isSw
+                    ? 'Ramani ya Ukaribu Imezimwa kwa Akaunti Hii'
+                    : 'Geospatial Map Access Disabled for Tenant'}
               </div>
               <p className="text-xs text-slate-600 leading-relaxed">
-                {isSw
-                  ? 'Kwa usalama wa mtandao, kipengele cha Ramani ya Wafanyabiashara kimefungwa kwa chaguo-msingi. Wasiliana na Msimamizi Mkuu kuiwasha kwenye Hifadhidata ya SokoKuu.'
-                  : 'Geospatial map routing is disabled by default for Merchant accounts. Only a Super Admin can enable this Merchant permission.'}
+                {isAdmin
+                  ? isSw
+                    ? 'NestJS ilikatalia ombi la ramani hata kwa akaunti ya Msimamizi Mkuu. Angalia tokeni ya SUPER_ADMIN au ruhusa za seva kisha jaribu tena.'
+                    : 'NestJS rejected the map request even for the Super Admin account. Check the SUPER_ADMIN token or server permissions, then retry.'
+                  : isSw
+                    ? 'Kwa usalama wa mtandao, kipengele cha Ramani ya Wafanyabiashara kimefungwa kwa chaguo-msingi. Wasiliana na Msimamizi Mkuu kuiwasha kwenye Hifadhidata ya SokoKuu.'
+                    : 'Geospatial map routing is disabled by default for Merchant accounts. Only a Super Admin can enable this Merchant permission.'}
               </p>
             </div>
           </div>
@@ -304,7 +312,7 @@ export function FullPageMarketplaceMap({
     setDrawerOpen(matching.length > 0);
   };
 
-  const handleSelectTier = (tier: 'ALL' | 'Wholesale Hub' | 'Retail Duka') => {
+  const handleSelectTier = (tier: 'ALL' | 'Wholesale Hub' | 'Retail Merchant') => {
     setTierFilter(tier);
     const matching = allVerifiedStores.filter(
       (s) =>
@@ -363,17 +371,17 @@ export function FullPageMarketplaceMap({
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
             </button>
-            {isAdmin && onOpenShopsSettings && (
+            {isAdmin && onOpenMerchantsSettings && (
               <button
                 type="button"
-                onClick={onOpenShopsSettings}
+                onClick={onOpenMerchantsSettings}
                 className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <Store className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
                 <span>{isSw ? 'Wafanyabiashara & Mipangilio' : 'Merchants & Settings'}</span>
               </button>
             )}
-            {(['ALL', 'Wholesale Hub', 'Retail Duka'] as const).map((tier) => (
+            {(['ALL', 'Wholesale Hub', 'Retail Merchant'] as const).map((tier) => (
               <button
                 key={tier}
                 type="button"
@@ -394,7 +402,7 @@ export function FullPageMarketplaceMap({
                       : 'Wholesale Hubs'
                     : isSw
                       ? 'Wafanyabiashara wa Rejareja'
-                      : 'Retail Dukas'}
+                      : 'Retail Merchants'}
               </button>
             ))}
           </div>
@@ -523,7 +531,7 @@ export function FullPageMarketplaceMap({
                   </span>
                 </div>
                 <span className="text-[11px] font-mono text-slate-500">
-                  {visibleStores.length} Verified Nodes
+                  {visibleStores.length} Verified Merchants
                 </span>
               </div>
 

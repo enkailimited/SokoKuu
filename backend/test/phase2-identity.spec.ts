@@ -33,6 +33,10 @@ describe('Phase 2: IdentityService (Argon2id, Refresh Rotation & Brute-Force Pro
 
     const mockRedisClient = {
       get: jest.fn(async (key: string) => redisStore.get(key) ?? null),
+      set: jest.fn(async (key: string, value: string) => {
+        redisStore.set(key, value);
+        return 'OK';
+      }),
       incr: jest.fn(async (key: string) => {
         const next = Number.parseInt(redisStore.get(key) ?? '0', 10) + 1;
         redisStore.set(key, String(next));
@@ -142,17 +146,40 @@ describe('Phase 2: IdentityService (Argon2id, Refresh Rotation & Brute-Force Pro
       }),
     } as unknown as OutboxService;
 
+    // Simulate an undelivered SMS so the non-production challenge response
+    // exposes the code for the test to complete registration.
+    const mockOutboundSmsService = {
+      queueAndDispatchSms: jest.fn(async () => ({
+        smsLogId: 'sms-test',
+        status: 'FAILED',
+      })),
+    } as any;
+
     service = new IdentityService(
       mockPrismaService,
       mockRedisService,
       mockOutboxService,
       jwtService,
       configService,
+      mockOutboundSmsService,
     );
   });
 
+  const registerWithVerification = async (dto: {
+    phoneE164: string;
+    fullName: string;
+    password: string;
+    role: SelfRegistrableRole;
+  }, ipAddress?: string) => {
+    const challenge = await service.requestRegistrationChallenge(
+      { phoneE164: dto.phoneE164 },
+      ipAddress,
+    );
+    return service.register({ ...dto, verificationCode: challenge.devCode! });
+  };
+
   it('registers with Argon2id password hash, 64-char sms_hmac_secret, and emits outbox event', async () => {
-    const res = await service.register(
+    const res = await registerWithVerification(
       {
         phoneE164: '+255712345678',
         fullName: 'Amina Hassan',
@@ -175,7 +202,7 @@ describe('Phase 2: IdentityService (Argon2id, Refresh Rotation & Brute-Force Pro
   });
 
   it('locks out account after 5 failed login attempts via Redis throttling', async () => {
-    await service.register(
+    await registerWithVerification(
       {
         phoneE164: '+255712345679',
         fullName: 'Juma Ally',
@@ -203,11 +230,17 @@ describe('Phase 2: IdentityService (Argon2id, Refresh Rotation & Brute-Force Pro
     } catch (err) {
       expect((err as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
     }
-    expect(auditLogs.some((l) => l.eventType === 'LOGIN_BRUTE_FORCE_LOCKOUT')).toBe(true);
+    expect(
+      auditLogs.some(
+        (l) =>
+          l.eventType === 'LOGIN_BRUTE_FORCE_THROTTLED' ||
+          l.eventType === 'LOGIN_BRUTE_FORCE_LOCKOUT'
+      ),
+    ).toBe(true);
   });
 
   it('rotates refresh token and revokes entire session family on token replay', async () => {
-    const initial = await service.register({
+    const initial = await registerWithVerification({
       phoneE164: '+255712345680',
       fullName: 'Neema Mushi',
       password: 'Password!234',

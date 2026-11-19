@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import jsQR from 'jsqr';
+import QRCode from 'qrcode';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -34,6 +36,8 @@ export interface IsolatedQrVerificationTerminalProps {
   driverUserId?: string;
   destinationLabel?: string;
   expectedCashTzs?: number;
+  /** Role-aware label for the buyer device, e.g. "Wholesaler" or "Consumer". */
+  buyerRoleLabel?: string;
   onVerifiedSuccess?: (consumedQrToken: string) => void;
   onBack?: () => void;
 }
@@ -53,41 +57,16 @@ function isUuid(val?: string | null): val is string {
 
 const DRIVER_RECONCILIATION_CHANNEL = 'sokokuu-driver-reconciliation';
 
-function buildQrMatrix(token: string): boolean[][] {
-  const size = 21;
-  const grid: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
+const CONSUMED_QR_TOKENS_KEY = 'sokokuu_consumed_qr_tokens_v1';
 
-  const drawFinder = (r0: number, c0: number) => {
-    for (let r = 0; r < 7; r += 1) {
-      for (let c = 0; c < 7; c += 1) {
-        const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
-        const isCore = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-        grid[r0 + r][c0 + c] = isBorder || isCore;
-      }
-    }
-  };
-
-  drawFinder(0, 0);
-  drawFinder(0, size - 7);
-  drawFinder(size - 7, 0);
-
-  let hash = 2166136261;
-  for (let i = 0; i < token.length; i += 1) {
-    hash ^= token.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+function loadConsumedQrTokens(): string[] {
+  try {
+    const raw = localStorage.getItem(CONSUMED_QR_TOKENS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+  } catch {
+    return [];
   }
-
-  for (let r = 0; r < size; r += 1) {
-    for (let c = 0; c < size; c += 1) {
-      const inFinder =
-        (r < 8 && c < 8) || (r < 8 && c >= size - 8) || (r >= size - 8 && c < 8);
-      if (inFinder) continue;
-      hash ^= (r * 31 + c * 17) & 0xff;
-      hash = Math.imul(hash, 16777619);
-      grid[r][c] = (hash >>> 0) % 3 !== 0;
-    }
-  }
-  return grid;
 }
 
 export function IsolatedQrVerificationTerminal({
@@ -98,6 +77,7 @@ export function IsolatedQrVerificationTerminal({
   driverUserId,
   destinationLabel,
   expectedCashTzs,
+  buyerRoleLabel = 'Retailer',
   onVerifiedSuccess,
   onBack,
 }: IsolatedQrVerificationTerminalProps) {
@@ -107,15 +87,20 @@ export function IsolatedQrVerificationTerminal({
   const [loadingOrders, setLoadingOrders] = useState<boolean>(false);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
 
-  const [deviceOwner, setDeviceOwner] = useState<IsolatedDeviceOwner>(defaultDeviceOwner);
+  const deviceOwner = defaultDeviceOwner;
   const [isQrGenerated, setIsQrGenerated] = useState<boolean>(false);
   const [isQrScannedAndVerified, setIsQrScannedAndVerified] = useState<boolean>(false);
   const [activeQrToken, setActiveQrToken] = useState<string>('');
   const [manualQrInput, setManualQrInput] = useState<string>('');
   const [qrSignature, setQrSignature] = useState<string | undefined>(undefined);
-  const [consumedTokens, setConsumedTokens] = useState<string[]>([]);
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [consumedTokens, setConsumedTokens] = useState<string[]>(loadConsumedQrTokens);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState<boolean>(false);
   const [busy, setBusy] = useState<boolean>(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const scanLoopRef = useRef<number | null>(null);
 
   const [localBuyerPin, setLocalBuyerPin] = useState<string>('');
   const [localDriverPin, setLocalDriverPin] = useState<string>('');
@@ -127,6 +112,14 @@ export function IsolatedQrVerificationTerminal({
     type: 'info' | 'success' | 'error';
     text: string;
   } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CONSUMED_QR_TOKENS_KEY, JSON.stringify(consumedTokens));
+    } catch {
+      // Storage may be unavailable in private mode; backend 409 remains authoritative.
+    }
+  }, [consumedTokens]);
 
   const resolvedDriverId =
     driverUserId || SokoApiClient.getActiveUser()?.id || 'driver-session';
@@ -146,9 +139,8 @@ export function IsolatedQrVerificationTerminal({
         (o) => o.status === 'DISPATCHED' || o.status === 'PLACED',
       );
       setAvailableOrders(active);
-      if (active.length > 0 && !active.some((o) => o.orderId === selectedOrderId)) {
-        setSelectedOrderId(active[0].orderId);
-      }
+      // Do not auto-target the first order: the operator must select the exact
+      // delivery being confirmed.
     } catch (err) {
       if (isSokoNetworkError(err)) {
         setBackendOffline(true);
@@ -166,7 +158,7 @@ export function IsolatedQrVerificationTerminal({
     } finally {
       setLoadingOrders(false);
     }
-  }, [isSw, orderId, selectedOrderId]);
+  }, [isSw, orderId]);
 
   useEffect(() => {
     void loadOrdersIfNeeded();
@@ -182,13 +174,60 @@ export function IsolatedQrVerificationTerminal({
         status: 'DISPATCHED',
       };
     }
-    return availableOrders.find((o) => o.orderId === selectedOrderId) ?? availableOrders[0] ?? null;
+    return availableOrders.find((o) => o.orderId === selectedOrderId) ?? null;
   }, [availableOrders, destinationLabel, expectedCashTzs, orderId, orderRef8, selectedOrderId]);
 
-  const qrMatrix = useMemo(
-    () => (activeQrToken ? buildQrMatrix(activeQrToken) : []),
-    [activeQrToken],
-  );
+  // Switching to a different delivery must never carry a previously issued QR or
+  // PIN confirmation into the new order.
+  const orderIdentity = orderId ?? selectedOrderId;
+  const lastOrderIdentityRef = useRef<string>(orderIdentity);
+  useEffect(() => {
+    if (lastOrderIdentityRef.current === orderIdentity) return;
+    lastOrderIdentityRef.current = orderIdentity;
+    setIsQrGenerated(false);
+    setIsQrScannedAndVerified(false);
+    setBuyerPinConfirmed(false);
+    setDriverPinConfirmed(false);
+    setIsTransactionComplete(false);
+    setLocalBuyerPin('');
+    setLocalDriverPin('');
+    setActiveQrToken('');
+    setManualQrInput('');
+    setQrSignature(undefined);
+    setQrDataUrl('');
+    setUploadedFileName(null);
+    setFeedback(null);
+  }, [orderIdentity]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeQrToken || !isQrGenerated) {
+      setQrDataUrl('');
+      return;
+    }
+    void QRCode.toDataURL(activeQrToken, {
+      width: 256,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#0f172a', light: '#ffffff' },
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFeedback({
+            type: 'error',
+            text: isSw
+              ? 'Imeshindikana kutengeneza picha halisi ya QR.'
+              : 'Failed to render a scannable QR image.',
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeQrToken, isQrGenerated, isSw]);
 
   useEffect(() => {
     const handleSignal = (payload: {
@@ -235,8 +274,13 @@ export function IsolatedQrVerificationTerminal({
     };
   }, [driverTopic, resolvedDriverId]);
 
-  const completeAtomicTransaction = (token: string) => {
+  const markTokenConsumed = useCallback((token: string) => {
+    if (!token) return;
     setConsumedTokens((prev) => (prev.includes(token) ? prev : [...prev, token]));
+  }, []);
+
+  const completeAtomicTransaction = (token: string) => {
+    markTokenConsumed(token);
     setIsTransactionComplete(true);
     setIsQrGenerated(false);
     setIsQrScannedAndVerified(false);
@@ -304,20 +348,15 @@ export function IsolatedQrVerificationTerminal({
     }
   };
 
-  const handleDownloadQrSvg = () => {
-    if (!activeQrToken || qrMatrix.length === 0 || !resolvedOrder) return;
-    const cell = 10;
-    const size = qrMatrix.length * cell;
-    const rects = qrMatrix
-      .flatMap((row, r) =>
-        row.map((filled, c) =>
-          filled
-            ? `<rect x="${c * cell}" y="${r * cell}" width="${cell}" height="${cell}" fill="#0f172a"/>`
-            : '',
-        ),
-      )
-      .join('');
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><rect width="100%" height="100%" fill="#ffffff"/>${rects}</svg>`;
+  const handleDownloadQrSvg = async () => {
+    if (!activeQrToken || !resolvedOrder) return;
+    const svg = await QRCode.toString(activeQrToken, {
+      type: 'svg',
+      width: 256,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#0f172a', light: '#ffffff' },
+    });
     const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -361,9 +400,117 @@ export function IsolatedQrVerificationTerminal({
     });
   };
 
-  const handleRetailerQrScanSuccess = async (source: 'CAMERA' | 'FILE', fileName?: string) => {
+  const decodeQrFromImageSource = (
+    source: CanvasImageSource,
+    width: number,
+    height: number,
+  ): string | null => {
+    if (!width || !height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(source, 0, 0, width, height);
+    const frame = ctx.getImageData(0, 0, width, height);
+    return jsQR(frame.data, width, height, { inversionAttempts: 'attemptBoth' })?.data ?? null;
+  };
+
+  const decodeQrFromFile = async (file: File): Promise<string | null> => {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ''));
+      reader.onerror = () => reject(new Error('Failed to read QR image file.'));
+      reader.readAsDataURL(file);
+    });
+    const img = new Image();
+    img.src = dataUrl;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('Unsupported QR image format.'));
+    });
+    return decodeQrFromImageSource(img, img.naturalWidth || 512, img.naturalHeight || 512);
+  };
+
+  const stopCameraScanner = useCallback(() => {
+    if (scanLoopRef.current !== null) {
+      cancelAnimationFrame(scanLoopRef.current);
+      scanLoopRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setScannerOpen(false);
+  }, []);
+
+  const scanCameraFrame = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) {
+      scanLoopRef.current = requestAnimationFrame(scanCameraFrame);
+      return;
+    }
+    const decoded = decodeQrFromImageSource(video, video.videoWidth, video.videoHeight);
+    if (decoded) {
+      stopCameraScanner();
+      setManualQrInput(decoded.toUpperCase());
+      void handleRetailerQrScanSuccess('CAMERA', undefined, decoded);
+      return;
+    }
+    scanLoopRef.current = requestAnimationFrame(scanCameraFrame);
+    // handleRetailerQrScanSuccess is intentionally read from the render closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopCameraScanner]);
+
+  const startCameraScanner = async () => {
+    setFeedback(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setFeedback({
+        type: 'error',
+        text: isSw
+          ? 'Kamera haipatikani kwenye kifaa hiki. Pakia picha ya QR badala yake.'
+          : 'Camera is unavailable on this device. Upload a QR image instead.',
+      });
+      return;
+    }
+    setScannerOpen(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      requestAnimationFrame(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          void videoRef.current.play();
+        }
+        scanCameraFrame();
+      });
+    } catch {
+      stopCameraScanner();
+      setFeedback({
+        type: 'error',
+        text: isSw
+          ? 'Imeshindikana kufungua kamera. Pakia picha ya QR badala yake.'
+          : 'Unable to open the camera. Upload a QR image instead.',
+      });
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (scanLoopRef.current !== null) cancelAnimationFrame(scanLoopRef.current);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const handleRetailerQrScanSuccess = async (
+    source: 'CAMERA' | 'FILE',
+    fileName?: string,
+    decodedToken?: string,
+  ) => {
     if (!resolvedOrder) return;
-    const tokenToScan = (manualQrInput.trim() || activeQrToken).toUpperCase();
+    const tokenToScan = (decodedToken || manualQrInput.trim()).toUpperCase();
     if (!tokenToScan) {
       setFeedback({
         type: 'error',
@@ -397,7 +544,16 @@ export function IsolatedQrVerificationTerminal({
         ...(qrSignature ? { qrSignature } : {}),
       });
     } catch (err) {
-      if (isSokoNetworkError(err)) {
+      if (err instanceof SokoHttpError && err.status === 409) {
+        // Backend single-use enforcement is authoritative.
+        markTokenConsumed(tokenToScan);
+        setFeedback({
+          type: 'error',
+          text: isSw
+            ? `QR (${tokenToScan}) umeshatumika; seva imekataza matumizi ya pili.`
+            : `QR (${tokenToScan}) is already consumed; server rejected replay.`,
+        });
+      } else if (isSokoNetworkError(err)) {
         setBackendOffline(true);
       } else {
         setFeedback({
@@ -488,7 +644,15 @@ export function IsolatedQrVerificationTerminal({
         });
       }
     } catch (err) {
-      if (isSokoNetworkError(err)) {
+      if (err instanceof SokoHttpError && err.status === 409) {
+        markTokenConsumed(activeQrToken);
+        setFeedback({
+          type: 'error',
+          text: isSw
+            ? 'Seva imethibitisha kuwa QR umeshatumika. Uthibitisho umefungwa.'
+            : 'Server reports this QR was already consumed. Confirmation is closed.',
+        });
+      } else if (isSokoNetworkError(err)) {
         setBackendOffline(true);
       } else {
         setFeedback({
@@ -545,7 +709,15 @@ export function IsolatedQrVerificationTerminal({
         });
       }
     } catch (err) {
-      if (isSokoNetworkError(err)) {
+      if (err instanceof SokoHttpError && err.status === 409) {
+        markTokenConsumed(activeQrToken);
+        setFeedback({
+          type: 'error',
+          text: isSw
+            ? 'Seva imethibitisha kuwa QR umeshatumika. Uthibitisho umefungwa.'
+            : 'Server reports this QR was already consumed. Confirmation is closed.',
+        });
+      } else if (isSokoNetworkError(err)) {
         setBackendOffline(true);
       } else {
         setFeedback({
@@ -589,6 +761,9 @@ export function IsolatedQrVerificationTerminal({
           }}
           className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-200 rounded-xl text-slate-900"
         >
+          <option value="">
+            {isSw ? 'Chagua oda ya kuthibitisha...' : 'Select the order to confirm...'}
+          </option>
           {availableOrders.map((o) => (
             <option key={o.orderId} value={o.orderId}>
               #{o.orderRef} — TZS {Number(o.expectedTotalTzs).toLocaleString('en-US')} ({o.status})
@@ -604,10 +779,18 @@ export function IsolatedQrVerificationTerminal({
       ) : !resolvedOrder ? (
         <EmptyStateCard
           locale={locale}
-          titleSw="Hakuna rekodi bado"
-          titleEn="No records yet"
-          descriptionSw="Hakuna oda zinazosubiri uthibitisho katika PostgreSQL."
-          descriptionEn="No active CoD orders awaiting confirmation in PostgreSQL."
+          titleSw={availableOrders.length > 0 ? 'Chagua oda kwanza' : 'Hakuna rekodi bado'}
+          titleEn={availableOrders.length > 0 ? 'Select an order first' : 'No records yet'}
+          descriptionSw={
+            availableOrders.length > 0
+              ? 'Chagua oda mahususi kutoka kwenye orodha iliyo hapo juu kabla ya kuendelea.'
+              : 'Hakuna oda zinazosubiri uthibitisho katika PostgreSQL.'
+          }
+          descriptionEn={
+            availableOrders.length > 0
+              ? 'Pick the exact delivery from the list above before continuing.'
+              : 'No active CoD orders awaiting confirmation in PostgreSQL.'
+          }
         />
       ) : (
         <>
@@ -631,34 +814,32 @@ export function IsolatedQrVerificationTerminal({
             </span>
           </div>
 
-          <div className="bg-white p-1.5 rounded-2xl flex border border-slate-100 shadow-sm">
-            <button
-              type="button"
-              onClick={() => setDeviceOwner('RETAILER_PHONE')}
-              className={`w-1/2 text-xs font-black p-3 rounded-xl transition-all inline-flex items-center justify-center gap-1.5 cursor-pointer ${
-                deviceOwner === 'RETAILER_PHONE'
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Smartphone className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isSw ? 'Simu ya Retailer' : 'Retailer Phone'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDeviceOwner('DRIVER_PHONE')}
-              className={`w-1/2 text-xs font-black p-3 rounded-xl transition-all inline-flex items-center justify-center gap-1.5 cursor-pointer ${
-                deviceOwner === 'DRIVER_PHONE'
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Truck className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isSw ? 'Simu ya Dereva' : 'Driver Phone'}</span>
-              {isQrScannedAndVerified && !driverPinConfirmed && !isTransactionComplete && (
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" aria-hidden="true" />
+          <div className="bg-white px-4 py-3 rounded-2xl flex items-center justify-between border border-slate-100 shadow-sm">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              {deviceOwner === 'RETAILER_PHONE'
+                ? isSw
+                  ? `KIFAA CHA MTEJA / ${buyerRoleLabel.toUpperCase()}`
+                  : `${buyerRoleLabel.toUpperCase()} CONFIRMATION DEVICE`
+                : isSw
+                  ? 'KIFAA CHA DEREVA'
+                  : 'DRIVER CONFIRMATION DEVICE'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+              {deviceOwner === 'RETAILER_PHONE' ? (
+                <Smartphone className="w-3.5 h-3.5" aria-hidden="true" />
+              ) : (
+                <Truck className="w-3.5 h-3.5" aria-hidden="true" />
               )}
-            </button>
+              <span>
+                {deviceOwner === 'RETAILER_PHONE'
+                  ? isSw
+                    ? 'PIN ya Mteja Pekee'
+                    : 'Buyer PIN Only'
+                  : isSw
+                    ? 'PIN ya Dereva Pekee'
+                    : 'Driver PIN Only'}
+              </span>
+            </span>
           </div>
 
           {feedback && (
@@ -688,7 +869,7 @@ export function IsolatedQrVerificationTerminal({
             <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm space-y-4">
               <div>
                 <span className="text-[9px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded uppercase border border-emerald-100">
-                  Retailer App Terminal · Order Confirmation
+                  {buyerRoleLabel.toUpperCase()} APP TERMINAL · ORDER CONFIRMATION
                 </span>
                 <h2 className="text-base font-black text-slate-900 mt-1">
                   {isSw ? 'Uhakiki wa Mzigo Mlangoni' : 'Doorstep Order Confirmation'}
@@ -718,7 +899,7 @@ export function IsolatedQrVerificationTerminal({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void handleRetailerQrScanSuccess('CAMERA')}
+                    onClick={() => void startCameraScanner()}
                     className="w-full bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white font-bold text-xs p-4 rounded-xl shadow-sm text-center flex items-center justify-center space-x-2 cursor-pointer"
                   >
                     <Camera className="w-4 h-4" aria-hidden="true" />
@@ -747,7 +928,28 @@ export function IsolatedQrVerificationTerminal({
                       className="hidden"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
-                        if (file) void handleRetailerQrScanSuccess('FILE', file.name);
+                        if (!file) return;
+                        void (async () => {
+                          try {
+                            const decoded = await decodeQrFromFile(file);
+                            if (!decoded) {
+                              setFeedback({
+                                type: 'error',
+                                text: isSw
+                                  ? 'Hakuna msimbo wa QR unaosomwa kwenye picha hii.'
+                                  : 'No readable QR code found in that image.',
+                              });
+                              return;
+                            }
+                            setUploadedFileName(file.name);
+                            await handleRetailerQrScanSuccess('FILE', file.name, decoded);
+                          } catch (err) {
+                            setFeedback({
+                              type: 'error',
+                              text: err instanceof Error ? err.message : 'Failed to decode QR image.',
+                            });
+                          }
+                        })();
                       }}
                     />
                   </label>
@@ -874,26 +1076,19 @@ export function IsolatedQrVerificationTerminal({
               {isQrGenerated && !isQrScannedAndVerified && !isTransactionComplete && (
                 <div className="text-center border-t border-slate-100 pt-4 space-y-3">
                   <div className="w-44 h-48 bg-slate-50 border border-slate-200 rounded-2xl mx-auto flex flex-col items-center justify-center p-4">
-                    <svg
-                      viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
-                      className="w-32 h-32"
-                      aria-label={`QR ${activeQrToken}`}
-                    >
-                      {qrMatrix.map((row, r) =>
-                        row.map((filled, c) =>
-                          filled ? (
-                            <rect
-                              key={`${r}-${c}`}
-                              x={c}
-                              y={r}
-                              width={1}
-                              height={1}
-                              fill="#0f172a"
-                            />
-                          ) : null,
-                        ),
-                      )}
-                    </svg>
+                    {qrDataUrl ? (
+                      <img
+                        src={qrDataUrl}
+                        width={160}
+                        height={160}
+                        className="w-32 h-32"
+                        aria-label={`Scannable QR ${activeQrToken}`}
+                      />
+                    ) : (
+                      <div className="w-32 h-32 flex items-center justify-center text-[10px] text-slate-400">
+                        {isSw ? 'Inatengeneza QR...' : 'Generating QR...'}
+                      </div>
+                    )}
                     <span className="text-[10px] font-mono font-bold text-slate-600 mt-2">
                       {activeQrToken}
                     </span>
@@ -905,7 +1100,7 @@ export function IsolatedQrVerificationTerminal({
                   <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
                     <button
                       type="button"
-                      onClick={handleDownloadQrSvg}
+                      onClick={() => void handleDownloadQrSvg()}
                       className="bg-slate-100 hover:bg-slate-200 p-2.5 rounded-lg text-slate-700 inline-flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5" aria-hidden="true" />
@@ -1001,6 +1196,27 @@ export function IsolatedQrVerificationTerminal({
             </div>
           )}
         </>
+      )}
+
+      {scannerOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 flex flex-col items-center justify-center p-4 gap-3">
+          <div className="relative w-full max-w-sm bg-slate-900 rounded-2xl overflow-hidden border border-slate-700">
+            <video ref={videoRef} className="w-full h-[360px] object-cover" muted playsInline />
+            <div className="absolute inset-8 border-2 border-emerald-400/80 rounded-xl pointer-events-none" />
+            <button
+              type="button"
+              onClick={stopCameraScanner}
+              className="absolute top-3 right-3 px-3 py-1.5 text-xs font-bold text-white bg-slate-950/70 rounded-lg cursor-pointer"
+            >
+              {isSw ? 'Funga' : 'Close'}
+            </button>
+          </div>
+          <p className="text-xs font-medium text-white text-center">
+            {isSw
+              ? 'Elekeza kamera kwenye msimbo wa QR wa dereva.'
+              : 'Point the camera at the driver QR code.'}
+          </p>
+        </div>
       )}
     </div>
   );

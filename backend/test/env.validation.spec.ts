@@ -3,7 +3,7 @@ import { validateEnv } from '@config/env.validation';
 describe('Startup Environment Validation (validateEnv)', () => {
   const validEnv: Record<string, string> = {
     NODE_ENV: 'test',
-    PORT: '3001',
+    PORT: '8080',
     TZ: 'Africa/Dar_es_Salaam',
     LOG_LEVEL: 'info',
     DATABASE_URL: 'postgresql://sokokuu:secret@localhost:5432/sokokuu_tz?schema=public',
@@ -23,7 +23,7 @@ describe('Startup Environment Validation (validateEnv)', () => {
   it('accepts a complete valid environment configuration', () => {
     const validated = validateEnv(validEnv);
     expect(validated.TZ).toBe('Africa/Dar_es_Salaam');
-    expect(validated.PORT).toBe(3001);
+    expect(validated.PORT).toBe(8080);
     expect(validated.DATABASE_URL).toContain('postgresql://');
   });
 

@@ -131,9 +131,7 @@ export function WholesalerEodReconciliation({
       const bizQuery = isUuid(businessId) ? `?businessId=${encodeURIComponent(businessId)}` : '';
       const [eodRes, ordersRes] = await Promise.all([
         SokoApiClient.get<BackendEodDriversResponse>(`/wholesale/eod/drivers${bizQuery}`),
-        SokoApiClient.get<BackendOrdersResponse>('/orders/my-orders?scope=selling').catch(
-          () => ({ count: 0, orders: [] }) as BackendOrdersResponse
-        ),
+        SokoApiClient.get<BackendOrdersResponse>('/orders/my-orders?scope=selling'),
       ]);
 
       const driverOrdersMap = new Map<string, DriverExceptionItem[]>();

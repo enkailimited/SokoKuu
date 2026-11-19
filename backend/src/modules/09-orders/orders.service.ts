@@ -4,8 +4,9 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import { OrderOrigin, OrderStatus, Prisma } from '@prisma/client';
+import { OrderChannel, OrderOrigin, OrderStatus, Prisma } from '@prisma/client';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { Role } from '@common/security/roles.enum';
@@ -33,6 +34,7 @@ export interface OrderReceiptResponse {
   sellerBusinessId: string;
   status: OrderStatus;
   originChannel: OrderOrigin;
+  orderChannel: OrderChannel;
   routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
   targetPipeline: string;
   expectedTotalTzs: number;
@@ -46,6 +48,7 @@ export interface OrderReceiptResponse {
 interface LockedProductStockRow {
   id: string;
   seller_business_id: string;
+  global_catalog_id: string | null;
   name_sw: string;
   base_quarter_quanta_stock: number;
   sealed_bulk_packages_stock: number;
@@ -95,15 +98,18 @@ export class OrdersService {
     }
 
     const scopeKey = `ORDER_CREATE:${user.sub}:${idempotencyKey}`;
+    const orderChannel = dto.orderChannel ?? OrderChannel.RETAIL_MARKETPLACE;
     const canonicalPayload = JSON.stringify({
       sellerBusinessId: dto.sellerBusinessId,
       originChannel: dto.originChannel ?? 'PWA_ONLINE',
+      orderChannel,
       paymentMethod: dto.paymentMethod ?? 'CASH',
       deliveryFeeTzs: dto.deliveryFeeTzs ?? 0,
       items: dto.items.map((item) => ({
         productId: item.productId,
         unitType: item.unitType,
         quantity: item.quantity,
+        supplierListingId: item.supplierListingId ?? null,
       })),
     });
     const requestHash = createHash('sha256').update(canonicalPayload).digest('hex');
@@ -143,10 +149,20 @@ export class OrdersService {
           {
             sellerBusinessId: dto.sellerBusinessId,
             deliveryFeeTzs: dto.deliveryFeeTzs,
-            items: dto.items,
+            orderChannel,
+            items: dto.items.map((item) => ({
+              productId: item.productId,
+              unitType: item.unitType,
+              quantity: item.quantity,
+              supplierListingId: item.supplierListingId,
+            })),
           },
           tx,
         );
+
+        const orderId = randomUUID();
+        const orderRef = generateOrderRef8();
+        const originChannel = dto.originChannel ?? 'PWA_ONLINE';
 
         // Aggregate required Quarter-Quanta per product in deterministic sorted UUID order (deadlock-free)
         const requiredByProduct = new Map<string, number>();
@@ -164,6 +180,7 @@ export class OrdersService {
           const lockedRows = await tx.$queryRaw<LockedProductStockRow[]>`
             SELECT id::text AS id,
                    seller_business_id::text AS seller_business_id,
+                   global_catalog_id::text AS global_catalog_id,
                    name_sw,
                    base_quarter_quanta_stock,
                    sealed_bulk_packages_stock,
@@ -219,6 +236,27 @@ export class OrdersService {
                    updated_at = NOW()
              WHERE id = ${productId}::uuid
           `;
+
+          if (orderChannel === OrderChannel.SUPPLIER_TO_WHOLESALER) {
+            if (!locked.global_catalog_id) {
+              throw new UnprocessableEntityException(
+                `Supplier product ${productId} is not linked to soko_global_catalog.`,
+              );
+            }
+            await tx.supplierStockMovement.create({
+              data: {
+                supplierBusinessId: quote.sellerBusinessId,
+                productId,
+                globalCatalogId: locked.global_catalog_id,
+                movementType: 'ORDER_RESERVED',
+                quantityQuanta: -totalNeededQuanta,
+                referenceType: 'ORDER_RESERVATION',
+                referenceId: orderId,
+                recordedByUserId: user.sub,
+                note: `Reserved for supplier B2B order ${orderRef}`,
+              },
+            });
+          }
         }
 
         const isManaged = quote.isPlatformManaged;
@@ -229,9 +267,6 @@ export class OrdersService {
           ? 'SUPER_ADMIN_HELPDESK_PIPELINE'
           : 'WHOLESALER_VENDOR_TERMINAL';
 
-        const orderId = randomUUID();
-        const orderRef = generateOrderRef8();
-        const originChannel = dto.originChannel ?? 'PWA_ONLINE';
         const paymentMethod = dto.paymentMethod ?? 'CASH';
 
         const createdOrder = await tx.order.create({
@@ -242,6 +277,7 @@ export class OrdersService {
             sellerBusinessId: quote.sellerBusinessId,
             status: 'PLACED',
             originChannel,
+            orderChannel,
             routingTargetPipeline: targetPipeline,
             rawSmsPayload: dto.rawSmsPayload ?? null,
             expectedTotalTzs: BigInt(quote.expectedTotalTzs),
@@ -263,6 +299,7 @@ export class OrdersService {
             unitType: line.unitType,
             quantity: line.quantity,
             baseUnitsTotal: line.totalQuarterQuanta,
+            orderChannel,
             unitPriceTzs: BigInt(line.unitPriceTzs),
             lineTotalTzs: BigInt(line.lineTotalTzs),
             isWholesaleTierApplied: line.isWholesaleTierApplied,
@@ -352,6 +389,7 @@ export class OrdersService {
               sellerBusinessId: quote.sellerBusinessId,
               sellerBusinessName: quote.sellerBusinessName,
               buyerUserId: user.sub,
+              orderChannel,
               routingOutputCode,
               targetPipeline,
               expectedTotalTzs: quote.expectedTotalTzs,
@@ -368,6 +406,7 @@ export class OrdersService {
           sellerBusinessId: quote.sellerBusinessId,
           status: 'PLACED',
           originChannel,
+          orderChannel,
           routingOutputCode,
           targetPipeline,
           expectedTotalTzs: quote.expectedTotalTzs,

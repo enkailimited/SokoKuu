@@ -27,7 +27,7 @@ export type LeadBusinessTier = 'Retailer' | 'Wholesaler';
 
 export interface SokoLeadRecord {
   leadId: string;
-  shopName: string;
+  merchantName: string;
   ownerName: string;
   ownerPhoneE164: string;
   ward: string;
@@ -46,7 +46,7 @@ interface BackendLeadDto {
   ownerName: string;
   ownerPhoneE164: string;
   wardName: string;
-  businessTier: 'WHOLESALE_HUB' | 'RETAIL_DUKA' | 'HYBRID_STORE';
+  businessTier: 'WHOLESALE' | 'RETAIL_DUKA' | 'HYBRID_STORE';
   latitude: number;
   longitude: number;
   gpsAccuracyMeters: number;
@@ -65,7 +65,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
 
-  const [shopName, setShopName] = useState<string>('');
+  const [merchantName, setMerchantName] = useState<string>('');
   const [ownerName, setOwnerName] = useState<string>('');
   const [ownerPhone, setOwnerPhone] = useState<string>('');
   const [wardName, setWardName] = useState<string>('');
@@ -86,11 +86,11 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
 
       const mapped: SokoLeadRecord[] = (res.leads || []).map((l) => ({
         leadId: l.leadId,
-        shopName: l.merchantName,
+        merchantName: l.merchantName,
         ownerName: l.ownerName,
         ownerPhoneE164: l.ownerPhoneE164,
         ward: l.wardName,
-        businessTier: l.businessTier === 'WHOLESALE_HUB' ? 'Wholesaler' : 'Retailer',
+        businessTier: l.businessTier === 'WHOLESALE' ? 'Wholesaler' : 'Retailer',
         latitude: l.latitude,
         longitude: l.longitude,
         accuracyMeters: l.gpsAccuracyMeters,
@@ -136,12 +136,12 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
     e.preventDefault();
     setNotice(null);
 
-    const cleanShop = shopName.trim();
+    const cleanMerchant = merchantName.trim();
     const cleanOwner = ownerName.trim();
     const cleanWard = wardName.trim();
     const normalizedPhone = normalizeTzPhoneE164(ownerPhone);
 
-    if (!cleanShop || !cleanOwner || !cleanWard || !/^\+255[67]\d{8}$/.test(normalizedPhone)) {
+    if (!cleanMerchant || !cleanOwner || !cleanWard || !/^\+255[67]\d{8}$/.test(normalizedPhone)) {
       setNotice({
         kind: 'err',
         text: isSw
@@ -171,18 +171,18 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
         status: string;
         version: number;
       }>('/sales/leads', {
-        merchantName: cleanShop,
+        merchantName: cleanMerchant,
         ownerName: cleanOwner,
         ownerPhoneE164: normalizedPhone,
         wardName: cleanWard,
-        businessTier: businessTier === 'Wholesaler' ? 'WHOLESALE_HUB' : 'RETAIL_DUKA',
+        businessTier: businessTier === 'Wholesaler' ? 'WHOLESALE' : 'RETAIL_DUKA',
         latitude: latVal,
         longitude: lngVal,
         gpsAccuracyMeters: Math.max(1, Math.round(gps.coordinates?.accuracyMeters ?? 15)),
       });
 
       setBackendOffline(false);
-      setShopName('');
+      setMerchantName('');
       setOwnerName('');
       setOwnerPhone('');
       setWardName('');
@@ -226,7 +226,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
 
       setBackendOffline(false);
       await loadLeadsFromApi();
-      window.dispatchEvent(new CustomEvent('sokokuu:shops-updated'));
+      window.dispatchEvent(new CustomEvent('sokokuu:merchants-updated'));
 
       setNotice({
         kind: 'ok',
@@ -410,8 +410,8 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
               </label>
               <input
                 type="text"
-                value={shopName}
-                onChange={(e) => setShopName(e.target.value)}
+                value={merchantName}
+                onChange={(e) => setMerchantName(e.target.value)}
                 placeholder={isSw ? 'Ingiza jina la biashara' : 'Enter merchant name'}
                 className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
                 required
@@ -540,7 +540,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
                             {lead.leadId.slice(0, 8)}
                           </span>
                           <span className="text-slate-400">·</span>
-                          <span className="font-bold text-slate-900">{lead.shopName}</span>
+                          <span className="font-bold text-slate-900">{lead.merchantName}</span>
                           <span className="text-slate-400">·</span>
                           <span className="text-slate-600">{lead.businessTier}</span>
                         </div>

@@ -7,14 +7,17 @@ import {
   ClipboardCheck,
   Download,
   KeyRound,
+  PackagePlus,
   RefreshCw,
   Search,
   Send,
+  Store,
   Truck,
   X,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import { formatOrderStatusLabel } from '../lib/sokoManagedState';
+import { useFocusOrderScroll, type FocusOrderTarget } from '../lib/sokoFocusOrder';
 import {
   SokoApiClient,
   SokoHttpError,
@@ -24,7 +27,84 @@ import { WholesalerEodReconciliation } from './WholesalerEodReconciliation';
 import { HybridAnalyticsDashboard } from './HybridAnalyticsDashboard';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
-type WholesalerTab = 'riders' | 'eod' | 'analytics';
+type WholesalerTab = 'riders' | 'eod' | 'analytics' | 'market' | 'restock';
+
+type SupplierPackagingUnit =
+  | 'CARTON'
+  | 'DOZEN'
+  | 'PACK'
+  | 'UNIT'
+  | 'SACK_50KG'
+  | 'SACK_25KG'
+  | 'QUARTER_KILO_LITRE'
+  | 'HALF_KILO_LITRE'
+  | 'THREE_QUARTER_KILO'
+  | 'SINGLE_KILO_LITRE';
+
+interface SupplierListingRow {
+  listingId: string;
+  supplierBusinessId: string;
+  supplierName: string;
+  productId: string | null;
+  canonicalSku: string;
+  nameSw: string;
+  nameEn: string;
+  imagekitCdnUrl: string;
+  systemUnitCode: string;
+  quarterQuantaPerUnit: number;
+  supplierBulkPriceTzs: string;
+  minOrderQuantity: number;
+  maxOrderQuantity: number;
+  isAvailable: boolean;
+  isFreeDeliveryEnabled: boolean;
+  freeDeliveryMinOrderTzs: string;
+  standardDeliveryFeeTzs: string;
+  deliveryCoverageRegions: string[];
+}
+
+interface SupplierOrderQuote {
+  sellerBusinessId: string;
+  sellerBusinessName: string;
+  sellerTier: string;
+  orderChannel: string;
+  currency: 'TZS';
+  itemsSubtotalTzs: number;
+  deliveryFeeTzs: number;
+  expectedTotalTzs: number;
+  totalQuarterQuanta: number;
+  lines: Array<{
+    productId: string;
+    unitType: SupplierPackagingUnit;
+    quantity: number;
+    quarterQuantaPerUnit: number;
+    totalQuarterQuanta: number;
+    unitPriceTzs: number;
+    lineTotalTzs: number;
+    pricingRuleReason: string;
+  }>;
+}
+
+interface SupplierOrderPayload {
+  sellerBusinessId: string;
+  orderChannel: 'SUPPLIER_TO_WHOLESALER';
+  deliveryFeeTzs: number;
+  items: Array<{
+    productId: string;
+    unitType: SupplierPackagingUnit;
+    quantity: number;
+    supplierListingId: string;
+  }>;
+}
+
+interface MarketProductRow {
+  productId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  unitPriceTzs: number;
+  availableQuarterQuanta: number;
+  sealedBulkPackagesStock: number;
+}
 
 interface ActiveRiderTrack {
   riderId: string;
@@ -93,19 +173,41 @@ function isUuid(val?: string | null): val is string {
   return Boolean(val && UUID_REGEX.test(val));
 }
 
+function supplierPackagingUnit(unitCode: string, quarterQuantaPerUnit: number): SupplierPackagingUnit {
+  const code = unitCode.toUpperCase();
+  if (code.includes('GUNIA') || code.includes('SACK')) {
+    return quarterQuantaPerUnit >= 200 ? 'SACK_50KG' : 'SACK_25KG';
+  }
+  if (code.includes('DEBE') || code.includes('CARTON')) return 'CARTON';
+  if (code.includes('DOZEN')) return 'DOZEN';
+  if (code.includes('PACK')) return 'PACK';
+  if (quarterQuantaPerUnit >= 200) return 'SACK_50KG';
+  if (quarterQuantaPerUnit >= 100) return 'SACK_25KG';
+  if (quarterQuantaPerUnit >= 48) return 'CARTON';
+  if (quarterQuantaPerUnit >= 4) return 'UNIT';
+  return 'QUARTER_KILO_LITRE';
+}
+
 export function WholesalerOperationsView({
   locale = 'en',
   businessId,
+  focusOrder,
 }: {
   locale?: Locale;
   businessId?: string | null;
+  focusOrder?: FocusOrderTarget | null;
 }) {
   const isSw = locale === 'sw';
+  useFocusOrderScroll(focusOrder, true);
   const [subTab, setSubTab] = useState<WholesalerTab>('riders');
   const [wardFilter, setWardFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [riders, setRiders] = useState<ActiveRiderTrack[]>([]);
+  const [availableDrivers, setAvailableDrivers] = useState<
+    Array<{ driverId: string; driverName: string }>
+  >([]);
+  const [selectedDriverByOrder, setSelectedDriverByOrder] = useState<Record<string, string>>({});
   const [sellingOrders, setSellingOrders] = useState<SellingOrderSummary[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
@@ -118,9 +220,24 @@ export function WholesalerOperationsView({
     expectedCashTzs: number;
   } | null>(null);
 
+  const [marketProducts, setMarketProducts] = useState<MarketProductRow[]>([]);
+  const [offersFreeDelivery, setOffersFreeDelivery] = useState<boolean>(false);
+  const [savingFreeDelivery, setSavingFreeDelivery] = useState<boolean>(false);
+  const [selectedMarketQty, setSelectedMarketQty] = useState<Record<string, number>>({});
+  const [publishingMarket, setPublishingMarket] = useState<boolean>(false);
+  const [marketNotice, setMarketNotice] = useState<string | null>(null);
+
+  const [supplierListings, setSupplierListings] = useState<SupplierListingRow[]>([]);
+  const [supplierRestockQty, setSupplierRestockQty] = useState<Record<string, number>>({});
+  const [supplierQuotes, setSupplierQuotes] = useState<SupplierOrderQuote[]>([]);
+  const [quotingSupplierOrder, setQuotingSupplierOrder] = useState<boolean>(false);
+  const [placingSupplierOrder, setPlacingSupplierOrder] = useState<boolean>(false);
+  const [restockNotice, setRestockNotice] = useState<string | null>(null);
+
   const loadWholesalerData = useCallback(async () => {
     if (!SokoApiClient.hasAccessToken()) {
       setRiders([]);
+      setAvailableDrivers([]);
       setSellingOrders([]);
       return;
     }
@@ -153,6 +270,12 @@ export function WholesalerOperationsView({
             : 'CLEARED',
       }));
       setRiders(driverTracks);
+      setAvailableDrivers(
+        (eodRes?.drivers ?? []).map((d) => ({
+          driverId: d.driverId,
+          driverName: d.driverName,
+        }))
+      );
 
       setSellingOrders(
         (ordersRes?.orders ?? []).map((o) => ({
@@ -172,6 +295,7 @@ export function WholesalerOperationsView({
       if (isSokoNetworkError(err)) {
         setBackendOffline(true);
         setRiders([]);
+        setAvailableDrivers([]);
         setSellingOrders([]);
       } else {
         setApiError(
@@ -191,8 +315,332 @@ export function WholesalerOperationsView({
     void loadWholesalerData();
   }, [loadWholesalerData]);
 
+  const loadMarketData = useCallback(async () => {
+    if (!isUuid(businessId) || !SokoApiClient.hasAccessToken()) {
+      setMarketProducts([]);
+      return;
+    }
+
+    setApiError(null);
+    setBackendOffline(false);
+    try {
+      const [settings, products] = await Promise.all([
+        SokoApiClient.get<{ businessId: string; offersFreeDelivery: boolean }>(
+          `/merchant/market-settings?businessId=${encodeURIComponent(businessId)}`,
+        ),
+        SokoApiClient.get<MarketProductRow[]>(
+          `/products/active?businessId=${encodeURIComponent(businessId)}`,
+        ),
+      ]);
+
+      setOffersFreeDelivery(Boolean(settings?.offersFreeDelivery));
+      setMarketProducts(
+        (products ?? []).map((p) => ({
+          productId: p.productId,
+          sku: p.sku,
+          nameSw: p.nameSw,
+          nameEn: p.nameEn,
+          unitPriceTzs: Number(p.unitPriceTzs ?? 0),
+          availableQuarterQuanta: Number(p.availableQuarterQuanta ?? 0),
+          sealedBulkPackagesStock: Number(p.sealedBulkPackagesStock ?? 0),
+        })),
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia bidhaa za sokoni.'
+              : 'Failed to load market products and delivery settings.',
+        );
+      }
+    }
+  }, [businessId, isSw]);
+
+  useEffect(() => {
+    if (subTab === 'market') {
+      void loadMarketData();
+    }
+  }, [subTab, loadMarketData]);
+
+  const loadSupplierCatalog = useCallback(async () => {
+    setApiError(null);
+    setBackendOffline(false);
+    try {
+      const res = await SokoApiClient.get<{ items: SupplierListingRow[] }>(
+        '/marketplace/suppliers/catalog',
+      );
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setSupplierListings(items);
+      setSupplierRestockQty((prev) => {
+        const next: Record<string, number> = {};
+        for (const listing of items) {
+          next[listing.listingId] = prev[listing.listingId] ?? listing.minOrderQuantity;
+        }
+        return next;
+      });
+      setSupplierQuotes([]);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setSupplierListings([]);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : isSw
+              ? 'Imeshindikana kupakia orodha ya msambizaji.'
+              : 'Failed to load the supplier restock catalog.',
+        );
+      }
+    }
+  }, [isSw]);
+
+  useEffect(() => {
+    if (subTab === 'restock') {
+      void loadSupplierCatalog();
+    }
+  }, [subTab, loadSupplierCatalog]);
+
+  const buildSupplierOrderPayloads = useCallback(
+    (): SupplierOrderPayload[] => {
+      const grouped = new Map<string, SupplierOrderPayload>();
+      for (const [listingId, rawQuantity] of Object.entries(supplierRestockQty)) {
+        const quantity = Math.trunc(Number(rawQuantity));
+        const listing = supplierListings.find((entry) => entry.listingId === listingId);
+        if (!listing || !listing.productId || !listing.isAvailable || quantity < 1) continue;
+
+        let payload = grouped.get(listing.supplierBusinessId);
+        if (!payload) {
+          payload = {
+            sellerBusinessId: listing.supplierBusinessId,
+            orderChannel: 'SUPPLIER_TO_WHOLESALER',
+            deliveryFeeTzs: 0,
+            items: [],
+          };
+          grouped.set(listing.supplierBusinessId, payload);
+        }
+        payload.items.push({
+          productId: listing.productId,
+          unitType: supplierPackagingUnit(listing.systemUnitCode, listing.quarterQuantaPerUnit),
+          quantity,
+          supplierListingId: listing.listingId,
+        });
+      }
+      return Array.from(grouped.values());
+    },
+    [supplierListings, supplierRestockQty],
+  );
+
+  const handleQuoteSupplierRestock = async () => {
+    setApiError(null);
+    setRestockNotice(null);
+    setSupplierQuotes([]);
+    const payloads = buildSupplierOrderPayloads();
+    if (payloads.length === 0) {
+      setApiError(
+        isSw
+          ? 'Chagua angalau orodha moja ya msambizaji iliyo tayari na idadi halali.'
+          : 'Select at least one available supplier listing with a valid quantity.',
+      );
+      return;
+    }
+
+    setQuotingSupplierOrder(true);
+    try {
+      const quotes = await Promise.all(
+        payloads.map((payload) =>
+          SokoApiClient.post<SupplierOrderQuote>('/pricing/calculate-quote', payload),
+        ),
+      );
+      setSupplierQuotes(quotes);
+      setRestockNotice(
+        isSw
+          ? 'Bei imethibitishwa na server kwa kutumia sera ya msambizaji (B2B).'
+          : 'Server-authoritative B2B quote calculated from the supplier delivery policy.',
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : isSw
+              ? 'Imeshindikana kuhesabu bei ya oda la msambizaji.'
+              : 'Failed to calculate the supplier restock quote.',
+        );
+      }
+    } finally {
+      setQuotingSupplierOrder(false);
+    }
+  };
+
+  const handlePlaceSupplierRestock = async () => {
+    setApiError(null);
+    setRestockNotice(null);
+    const payloads = buildSupplierOrderPayloads();
+    if (payloads.length === 0) {
+      setApiError(
+        isSw
+          ? 'Chagua angalau orodha moja ya msambizaji iliyo tayari na idadi halali.'
+          : 'Select at least one available supplier listing with a valid quantity.',
+      );
+      return;
+    }
+
+    setPlacingSupplierOrder(true);
+    try {
+      const orderRefs: string[] = [];
+      for (const payload of payloads) {
+        const quote = await SokoApiClient.post<SupplierOrderQuote>('/pricing/calculate-quote', payload);
+        const receipt = await SokoApiClient.post<{ orderRef?: string }>(
+          '/marketplace/orders/submit-request',
+          { ...payload, deliveryFeeTzs: quote.deliveryFeeTzs },
+        );
+        orderRefs.push(receipt?.orderRef ?? quote.sellerBusinessName);
+      }
+      setRestockNotice(
+        isSw
+          ? `Oda za B2B zimewasilishwa: ${orderRefs.join(', ')}.`
+          : `Supplier B2B order(s) submitted: ${orderRefs.join(', ')}.`,
+      );
+      setSupplierRestockQty({});
+      setSupplierQuotes([]);
+      await Promise.all([loadSupplierCatalog(), loadWholesalerData()]);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : isSw
+              ? 'Imeshindikana kuwasilisha oda la msambizaji.'
+              : 'Failed to submit the supplier restock order.',
+        );
+      }
+    } finally {
+      setPlacingSupplierOrder(false);
+    }
+  };
+
+  const handleToggleFreeDelivery = async () => {
+    setApiError(null);
+    setMarketNotice(null);
+    setSavingFreeDelivery(true);
+    try {
+      const res = await SokoApiClient.patch<{ offersFreeDelivery: boolean }>(
+        '/merchant/market-settings/free-delivery',
+        { offersFreeDelivery: !offersFreeDelivery },
+      );
+      setOffersFreeDelivery(Boolean(res?.offersFreeDelivery));
+      setMarketNotice(
+        res?.offersFreeDelivery
+          ? isSw
+            ? 'Usafiri wa bure umewashwa kwenye soko.'
+            : 'Free delivery is now enabled on your marketplace storefront.'
+          : isSw
+            ? 'Usafiri wa bure umezimwa.'
+            : 'Free delivery has been disabled.',
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kubadili mpangilio wa usafiri.'
+              : 'Failed to update free delivery setting.',
+        );
+      }
+    } finally {
+      setSavingFreeDelivery(false);
+    }
+  };
+
+  const handleToggleMarketProduct = (product: MarketProductRow) => {
+    setSelectedMarketQty((prev) => {
+      const next = { ...prev };
+      if (next[product.productId] && next[product.productId] > 0) {
+        delete next[product.productId];
+      } else {
+        next[product.productId] = 10;
+      }
+      return next;
+    });
+  };
+
+  const handlePublishMarketStock = async () => {
+    setApiError(null);
+    setMarketNotice(null);
+
+    const items = Object.entries(selectedMarketQty)
+      .filter(([, quantity]) => Number(quantity) > 0)
+      .map(([productId, quantityQuanta]) => ({
+        productId,
+        quantityQuanta: Math.max(1, Math.trunc(Number(quantityQuanta))),
+      }));
+
+    if (items.length === 0) {
+      setApiError(
+        isSw
+          ? 'Chagua angalau bidhaa moja na weka quantity ya kupeleka sokoni.'
+          : 'Select at least one product and enter a market quantity.',
+      );
+      return;
+    }
+
+    setPublishingMarket(true);
+    try {
+      const res = await SokoApiClient.post<{ publishedCount: number }>(
+        '/merchant/market-stock',
+        { items },
+      );
+      setMarketNotice(
+        isSw
+          ? `Bidhaa ${res?.publishedCount ?? items.length} zimepelekwa sokoni kikamilifu.`
+          : `${res?.publishedCount ?? items.length} product(s) published to the market shelf.`,
+      );
+      setSelectedMarketQty({});
+      await loadMarketData();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupeleka bidhaa sokoni.'
+              : 'Failed to publish products to the market.',
+        );
+      }
+    } finally {
+      setPublishingMarket(false);
+    }
+  };
+
+  const selectedMarketCount = Object.values(selectedMarketQty).filter(
+    (qty) => Number(qty) > 0,
+  ).length;
+
   const handleDispatchOrder = async (orderId: string) => {
     setApiError(null);
+    const driverUserId = selectedDriverByOrder[orderId];
+    if (!isUuid(driverUserId)) {
+      setApiError(
+        isSw
+          ? 'Chagua dereva aliyesajiliwa kabla ya kutuma oda hii.'
+          : 'Select a registered driver before dispatching this order.'
+      );
+      return;
+    }
     setDispatchingOrderId(orderId);
     try {
       const resp = await SokoApiClient.post<{
@@ -201,7 +649,7 @@ export function WholesalerOperationsView({
         expectedCashAmountTzs: number;
         buyerConfirmationPin: string;
         driverConfirmationPin: string;
-      }>(`/orders/${orderId}/dispatch`, {});
+      }>(`/orders/${orderId}/dispatch`, { driverUserId });
 
       setDispatchNotice({
         orderRef: resp.orderRef,
@@ -317,6 +765,30 @@ export function WholesalerOperationsView({
             <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
             <span>{isSw ? 'Mapato & Uvunjaji Magunia' : 'Split Revenue & Stock'}</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('market')}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-md whitespace-nowrap cursor-pointer ${
+              subTab === 'market'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Store className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>{isSw ? 'Soko & Usafiri' : 'Market & Delivery'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('restock')}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-md whitespace-nowrap cursor-pointer ${
+              subTab === 'restock'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <PackagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>{isSw ? 'Kagiza kutoka Supplier' : 'Supplier Restock'}</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
@@ -412,6 +884,8 @@ export function WholesalerOperationsView({
                 {placedOrders.map((order) => (
                   <div
                     key={order.orderId}
+                    data-order-ref={order.orderRef}
+                    data-order-id={order.orderId}
                     className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-4"
                   >
                     <div className="space-y-0.5 text-xs">
@@ -424,7 +898,28 @@ export function WholesalerOperationsView({
                         TZS {order.expectedTotalTzs.toLocaleString('en-US')}
                       </div>
                     </div>
-                    <button
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        aria-label={isSw ? 'Chagua dereva' : 'Assign driver'}
+                        value={selectedDriverByOrder[order.orderId] ?? ''}
+                        onChange={(e) =>
+                          setSelectedDriverByOrder((prev) => ({
+                            ...prev,
+                            [order.orderId]: e.target.value,
+                          }))
+                        }
+                        className="px-3 py-2 text-xs bg-white border border-slate-300 rounded-md text-slate-900"
+                      >
+                        <option value="">
+                          {isSw ? 'Chagua dereva...' : 'Select driver...'}
+                        </option>
+                        {availableDrivers.map((driver) => (
+                          <option key={driver.driverId} value={driver.driverId}>
+                            {driver.driverName}
+                          </option>
+                        ))}
+                      </select>
+                      <button
                       type="button"
                       disabled={dispatchingOrderId === order.orderId}
                       onClick={() => void handleDispatchOrder(order.orderId)}
@@ -440,7 +935,8 @@ export function WholesalerOperationsView({
                             ? 'Tuma kwa Dereva & Toa PIN'
                             : 'Dispatch & Issue Dual-PIN'}
                       </span>
-                    </button>
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -590,6 +1086,394 @@ export function WholesalerOperationsView({
       {subTab === 'eod' && <WholesalerEodReconciliation locale={locale} businessId={businessId} />}
       {subTab === 'analytics' && (
         <HybridAnalyticsDashboard locale={locale} businessId={businessId} />
+      )}
+
+      {subTab === 'market' && (
+        <div className="space-y-6">
+          {marketNotice && (
+            <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3.5 text-xs font-semibold text-emerald-900 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                <span>{marketNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMarketNotice(null)}
+                className="text-emerald-800 hover:text-emerald-950 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Free delivery toggle */}
+          <section className="border border-slate-200 bg-white rounded-lg p-5 flex flex-wrap items-center justify-between gap-4">
+            <div className="space-y-1 max-w-xl">
+              <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                <Truck className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                <span>{isSw ? 'Usafiri wa Bure (Free Delivery)' : 'Free Delivery'}</span>
+              </h2>
+              <p className="text-xs text-slate-600">
+                {isSw
+                  ? 'Ikiwashwa, wateja wanaona usafiri wa bure kwenye duka lako na bei ya usafiri inakuwa TZS 0 kwenye oda mpya.'
+                  : 'When enabled, buyers see free delivery on your storefront and new orders are quoted at TZS 0 delivery.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={offersFreeDelivery}
+              disabled={savingFreeDelivery}
+              onClick={() => void handleToggleFreeDelivery()}
+              className={`min-h-[44px] px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-60 ${
+                offersFreeDelivery
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300'
+              }`}
+            >
+              <span
+                className={`w-8 h-4 rounded-full relative transition-colors ${
+                  offersFreeDelivery ? 'bg-emerald-900/40' : 'bg-slate-300'
+                }`}
+                aria-hidden="true"
+              >
+                <span
+                  className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${
+                    offersFreeDelivery ? 'left-4' : 'left-0.5'
+                  }`}
+                />
+              </span>
+              <span>
+                {savingFreeDelivery
+                  ? isSw
+                    ? 'Inahifadhi...'
+                    : 'Saving...'
+                  : offersFreeDelivery
+                    ? isSw
+                      ? 'Imewashwa'
+                      : 'Enabled'
+                    : isSw
+                      ? 'Imezimwa'
+                      : 'Disabled'}
+              </span>
+            </button>
+          </section>
+
+          {/* Publish products to market */}
+          <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                  <PackagePlus className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                  <span>
+                    {isSw ? 'Peleka Bidhaa Sokoni' : 'Publish Products to the Market'}
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-600">
+                  {isSw
+                    ? 'Chagua bidhaa na quantity ya kuongeza kwenye rafu ya soko lako.'
+                    : 'Select products and quantities to add to your live market shelf.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadMarketData()}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{isSw ? 'Sasisha' : 'Refresh'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={publishingMarket || selectedMarketCount === 0}
+                  onClick={() => void handlePublishMarketStock()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+                >
+                  <PackagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {publishingMarket
+                      ? isSw
+                        ? 'Inapeleka...'
+                        : 'Publishing...'
+                      : isSw
+                        ? `Peleka Sokoni (${selectedMarketCount})`
+                        : `Publish (${selectedMarketCount})`}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {marketProducts.length === 0 ? (
+              <div className="p-6">
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna bidhaa bado"
+                  titleEn="No products yet"
+                  descriptionSw="Ongeza bidhaa kwenye rafu yako kwanza kisha uzilete sokoni."
+                  descriptionEn="Add products to your shelf first, then publish them to the market."
+                />
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {marketProducts.map((product) => {
+                  const quantity = selectedMarketQty[product.productId] ?? 0;
+                  const isSelected = quantity > 0;
+                  return (
+                    <div
+                      key={product.productId}
+                      className={`px-5 py-3.5 flex flex-wrap items-center justify-between gap-4 ${
+                        isSelected ? 'bg-emerald-50/50' : 'bg-white'
+                      }`}
+                    >
+                      <label className="flex items-start gap-3 min-w-0 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleMarketProduct(product)}
+                          className="mt-0.5 w-4 h-4 accent-emerald-600"
+                        />
+                        <span className="min-w-0 space-y-0.5">
+                          <span className="block text-xs font-semibold text-slate-900 truncate">
+                            {isSw ? product.nameSw : product.nameEn}{' '}
+                            <span className="font-mono text-slate-500">({product.sku})</span>
+                          </span>
+                          <span className="block text-[11px] text-slate-500 font-mono">
+                            {isSw ? 'Rafuni' : 'On shelf'}: {product.availableQuarterQuanta} ·{' '}
+                            {isSw ? 'Magunia' : 'Sealed'}: {product.sealedBulkPackagesStock} · TZS{' '}
+                            {product.unitPriceTzs.toLocaleString('en-US')}
+                          </span>
+                        </span>
+                      </label>
+
+                      <div className="flex items-center gap-2">
+                        <label
+                          htmlFor={`market-qty-${product.productId}`}
+                          className="text-[11px] font-semibold text-slate-600"
+                        >
+                          {isSw ? 'Quantity' : 'Qty'}
+                        </label>
+                        <input
+                          id={`market-qty-${product.productId}`}
+                          type="number"
+                          min={1}
+                          step={1}
+                          disabled={!isSelected}
+                          value={isSelected ? quantity : ''}
+                          placeholder="0"
+                          onChange={(e) => {
+                            const parsed = Math.max(1, Math.trunc(Number(e.target.value) || 1));
+                            setSelectedMarketQty((prev) => ({
+                              ...prev,
+                              [product.productId]: parsed,
+                            }));
+                          }}
+                          className="w-24 px-2.5 py-1.5 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded-md text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {subTab === 'restock' && (
+        <div className="space-y-6">
+          {restockNotice && (
+            <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3.5 text-xs font-semibold text-emerald-900 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                <span>{restockNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRestockNotice(null)}
+                className="text-emerald-800 hover:text-emerald-950 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <section className="border border-emerald-200 bg-emerald-50/40 rounded-lg overflow-hidden">
+            <div className="px-5 py-4 border-b border-emerald-200 flex flex-wrap items-center justify-between gap-4">
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                  <PackagePlus className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                  {isSw ? 'Kagiza Bidhaa kutoka Supplier' : 'Restock Bulk Stock from Suppliers'}
+                </h2>
+                <p className="text-xs text-slate-600">
+                  {isSw
+                    ? 'Oda zote zinakokotolewa na API kwa kutumia channel SUPPLIER_TO_WHOLESALER na bei iliyochapishwa na supplier.'
+                    : 'Every order is server-quoted through SUPPLIER_TO_WHOLESALER using published supplier bulk pricing.'}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadSupplierCatalog()}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{isSw ? 'Sasisha' : 'Refresh'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={quotingSupplierOrder}
+                  onClick={() => void handleQuoteSupplierRestock()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+                >
+                  <Search className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {quotingSupplierOrder
+                      ? isSw ? 'Inahesabu...' : 'Quoting...'
+                      : isSw ? 'Hesabu Bei (Server)' : 'Calculate Server Quote'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={placingSupplierOrder}
+                  onClick={() => void handlePlaceSupplierRestock()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 cursor-pointer disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {placingSupplierOrder
+                      ? isSw ? 'Inawasilisha...' : 'Submitting...'
+                      : isSw ? 'Wasilisha Oda za B2B' : 'Submit B2B Orders'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {supplierListings.length === 0 ? (
+              <div className="p-6">
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna orodha ya supplier iliyochapishwa"
+                  titleEn="No published supplier listings"
+                  descriptionSw="Msambizaji anapopeleka orodha sokoni, bidhaa zake zitaonekana hapa."
+                  descriptionEn="Published supplier bulk offerings will appear here for restocking."
+                />
+              </div>
+            ) : (
+              <div className="divide-y divide-emerald-100 bg-white">
+                {supplierListings.map((listing) => {
+                  const quantity = supplierRestockQty[listing.listingId] ?? listing.minOrderQuantity;
+                  return (
+                    <div
+                      key={listing.listingId}
+                      className={`px-5 py-4 flex flex-wrap items-center justify-between gap-4 ${
+                        listing.isAvailable ? '' : 'opacity-60'
+                      }`}
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-900">
+                          {listing.imagekitCdnUrl ? (
+                            <img
+                              src={listing.imagekitCdnUrl}
+                              alt=""
+                              className="w-10 h-10 rounded-md object-cover border border-slate-200"
+                            />
+                          ) : null}
+                          <span>
+                            {isSw ? listing.nameSw : listing.nameEn}{' '}
+                            <span className="font-mono text-slate-500">({listing.canonicalSku})</span>
+                          </span>
+                          {listing.isFreeDeliveryEnabled && (
+                            <span className="px-2 py-1 rounded-md bg-emerald-600 text-white font-mono text-[10px] font-bold inline-flex items-center gap-1">
+                              <Truck className="w-3 h-3" aria-hidden="true" />
+                              FREE DELIVERY
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-500">
+                          {listing.supplierName} · {listing.systemUnitCode} ·{' '}
+                          {listing.quarterQuantaPerUnit} quanta/kitengo · MOQ{' '}
+                          {listing.minOrderQuantity} · {isSw ? 'Zilizopo' : 'Available'}{' '}
+                          {listing.maxOrderQuantity}
+                        </div>
+                        <div className="text-xs font-mono font-bold text-emerald-800">
+                          TZS {Number(listing.supplierBulkPriceTzs).toLocaleString('en-US')}
+                          {listing.isFreeDeliveryEnabled && (
+                            <span className="ml-2 text-[10px] font-semibold text-slate-500">
+                              {isSw
+                                ? 'Kiwango cha bure: TZS '
+                                : 'Free threshold: TZS '}
+                              {Number(listing.freeDeliveryMinOrderTzs).toLocaleString('en-US')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <label className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold text-slate-600">
+                          {isSw ? 'Idadi' : 'Qty'}
+                        </span>
+                        <input
+                          type="number"
+                          min={listing.minOrderQuantity}
+                          max={Math.max(listing.minOrderQuantity, listing.maxOrderQuantity)}
+                          step={1}
+                          disabled={!listing.isAvailable || !listing.productId}
+                          value={quantity}
+                          onChange={(e) => {
+                            const parsed = Math.trunc(Number(e.target.value) || 0);
+                            setSupplierRestockQty((prev) => ({
+                              ...prev,
+                              [listing.listingId]: parsed,
+                            }));
+                            setSupplierQuotes([]);
+                          }}
+                          className="w-24 px-2.5 py-1.5 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded-md text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {supplierQuotes.length > 0 && (
+            <section className="border border-slate-200 bg-white rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200">
+                <h2 className="text-sm font-semibold text-slate-900">
+                  {isSw ? 'Nukuu Rasmi kutoka API' : 'Authoritative API Quotes'}
+                </h2>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {supplierQuotes.map((quote) => (
+                  <div key={quote.sellerBusinessId} className="px-5 py-4 space-y-2 text-xs">
+                    <div className="font-semibold text-slate-900">
+                      {quote.sellerBusinessName} · {quote.sellerTier} · {quote.orderChannel}
+                    </div>
+                    <div className="flex flex-wrap gap-x-5 gap-y-1 font-mono text-slate-700">
+                      <span>{isSw ? 'Bidhaa' : 'Items'}: {quote.itemsSubtotalTzs.toLocaleString('en-US')}</span>
+                      <span>
+                        {isSw ? 'Usafiri' : 'Delivery'}: {quote.deliveryFeeTzs.toLocaleString('en-US')}
+                      </span>
+                      <span className="font-bold text-emerald-800">
+                        {isSw ? 'Jumla' : 'Total'}: {quote.expectedTotalTzs.toLocaleString('en-US')} TZS
+                      </span>
+                      <span>Quanta: {quote.totalQuarterQuanta.toLocaleString('en-US')}</span>
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-500">
+                      {quote.lines
+                        .map(
+                          (line) =>
+                            `${line.quantity} × ${line.unitType} @ ${line.unitPriceTzs} (${line.pricingRuleReason})`,
+                        )
+                        .join(' · ')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
       )}
     </div>
   );

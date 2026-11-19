@@ -9,6 +9,8 @@ export interface GlobalCatalogEntry {
   staticImageUrl: string;
   defaultBaseUnitSw: string;
   defaultBaseUnitEn: string;
+  baseQuantumUnit?: string;
+  isActive?: boolean;
   clonedByStoresCount: number;
   updatedAtEat: string;
 }
@@ -117,13 +119,19 @@ export type DispatchTargetPipeline =
   | 'SUPER_ADMIN_HELPDESK_PIPELINE'
   | 'WHOLESALER_VENDOR_TERMINAL';
 
-export type AdminManagedOrderStatus = 'PENDING' | 'RECEIVED' | 'DISPATCHED';
+export type AdminManagedOrderStatus = 'PENDING' | 'RECEIVED' | 'IN_TRANSIT' | 'DISPATCHED';
 
 export interface OrderDispatchAuditTrace {
   traceId: string;
   orderRef8: string;
   sellerBusinessId: string;
   sellerBusinessName: string;
+  sellerOwnerName?: string;
+  sellerPhoneE164?: string;
+  buyerName?: string;
+  buyerPhoneE164?: string;
+  driverName?: string | null;
+  driverPhoneE164?: string | null;
   isPlatformManagedAtSubmit: boolean;
   routingCode: DispatchRoutingCode;
   targetPipeline: DispatchTargetPipeline;
@@ -133,6 +141,7 @@ export interface OrderDispatchAuditTrace {
   recordedAtEat: string;
   adminStatus?: AdminManagedOrderStatus;
   adminHandledAtEat?: string;
+  orderStatus?: string;
 }
 
 export type GlobalCloneSyncStatus = 'SYNCED' | 'PENDING_GLOBAL_CLONE_SYNC';
@@ -396,7 +405,7 @@ export function formatBusinessTierLabel(
   locale: 'sw' | 'en' = 'sw'
 ): string {
   switch (tier) {
-    case 'WHOLESALE_HUB':
+    case 'WHOLESALE':
       return locale === 'sw' ? 'Duka la Jumla' : 'Wholesale Hub';
     case 'HYBRID_STORE':
       return locale === 'sw' ? 'Duka Mseto' : 'Hybrid Store';
@@ -426,7 +435,7 @@ export interface SokoStoreGeoNode {
   businessId: string;
   smsShortCode: string;
   businessName: string;
-  tierLabel: 'Wholesale Hub' | 'Retail Duka';
+  tierLabel: 'Wholesale Hub' | 'Retail Merchant' | 'Retail Duka';
   region: TanzaniaRegion;
   ward: string;
   latitude: number;

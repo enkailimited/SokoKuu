@@ -587,7 +587,7 @@ export function ManagedOrderInterceptorPanel({ locale = 'en' }: { locale?: Local
           <span>
             {isSw
               ? 'Wauzaji wanaonakili bidhaa kutoka Katalogi Kuu huanzishiwa hasa na 0 stock na 0 TZS kwenye wasifu wao wa ndani.'
-              : 'Merchants cloning items from the Master Catalog receive an isolated local shop entry initialized with strictly 0 stock and 0 TZS pricing.'}
+              : 'Merchants cloning items from the Master Catalog receive an isolated local merchant storefront initialized with strictly 0 stock and 0 TZS pricing.'}
           </span>
         </div>
       </section>

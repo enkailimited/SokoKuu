@@ -32,6 +32,13 @@ export class AuditController {
     return this.auditService.listManagedOrders(query);
   }
 
+  @Get('admin/drivers')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'List active DRIVER users assignable to managed order transit' })
+  listActiveDrivers() {
+    return this.auditService.listActiveDrivers();
+  }
+
   @Patch('admin/managed-orders/:traceId/status')
   @Roles(Role.SUPER_ADMIN)
   @ApiOperation({

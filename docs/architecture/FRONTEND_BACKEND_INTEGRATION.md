@@ -41,7 +41,7 @@ This document catalogs every client-side storage mechanism (`localStorage`, `Ind
 
 - `src/types/auth.ts`: `SEED_PLATFORM_ACCOUNTS` (`CONSUMER`, `RETAILER`, `WHOLESALER`, `DRIVER`, `SUPER_ADMIN`).
 - `src/components/SokoniDirectory.tsx`: `NEARBY_STORES`, `STORE_CATALOG_DB`.
-- `src/components/SokoniCoreEngine.tsx`: `WHOLESALE_HUBS`, `STORE_PRODUCTS_BY_ID`, `INITIAL_DISPATCHED_ORDERS`.
+- `src/components/SokoniCoreEngine.tsx`: `WHOLESALES`, `STORE_PRODUCTS_BY_ID`, `INITIAL_DISPATCHED_ORDERS`.
 - `src/components/ConsumerDashboardView.tsx`: `NEIGHBORHOOD_DUKAS`, `DUKA_LOOSE_PRODUCTS`, `INITIAL_CONSUMER_ORDERS`.
 - `src/components/WholesalerOperationsView.tsx`: `ACTIVE_RIDERS`.
 - `src/components/WholesalerEodReconciliation.tsx`: `INITIAL_DRIVERS`.

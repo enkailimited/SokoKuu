@@ -1,12 +1,14 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { NotificationInboxController } from './notification-inbox.controller';
 import { NotificationsController } from './notifications.controller';
 import { OutboundSmsService } from './outbound-sms.service';
 import { OutboxRelayWorker } from './outbox-relay.worker';
 import { RealtimeGateway } from './realtime.gateway';
 import { WebPushDispatchService } from './web-push.service';
 import { WebPushController } from './web-push.controller';
+import { UserNotificationService } from './user-notification.service';
 
 @Module({
   imports: [
@@ -21,18 +23,20 @@ import { WebPushController } from './web-push.controller';
       }),
     }),
   ],
-  controllers: [NotificationsController, WebPushController],
+  controllers: [NotificationsController, WebPushController, NotificationInboxController],
   providers: [
     OutboundSmsService,
     OutboxRelayWorker,
     RealtimeGateway,
     WebPushDispatchService,
+    UserNotificationService,
   ],
   exports: [
     OutboundSmsService,
     OutboxRelayWorker,
     RealtimeGateway,
     WebPushDispatchService,
+    UserNotificationService,
   ],
 })
 export class NotificationsModule {}

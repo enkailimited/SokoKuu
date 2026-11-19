@@ -1,5 +1,5 @@
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
-process.env.PORT = process.env.PORT || '3001';
+process.env.PORT = process.env.PORT || '8080';
 process.env.TZ = 'Africa/Dar_es_Salaam';
 process.env.LOG_LEVEL = 'silent';
 process.env.DATABASE_URL =
@@ -17,4 +17,5 @@ process.env.VAPID_PUBLIC_KEY =
 process.env.VAPID_PRIVATE_KEY =
   process.env.VAPID_PRIVATE_KEY || 'valid_vapid_private_key_placeholder_123456';
 process.env.CORS_ALLOWED_ORIGINS =
-  process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000,https://sokokuu.tz';
+  process.env.CORS_ALLOWED_ORIGINS ||
+  'http://localhost:3000,http://127.0.0.1:3000,https://sokokuu.tz';

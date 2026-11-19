@@ -24,13 +24,13 @@ describe('Phase 3D: EOD Driver Settlement, Partial Payments, Mobile Money Verifi
     role: Role.WHOLESALER,
     businessId: wholesalerBusinessId,
     merchantId: wholesalerBusinessId,
-    tier: 'WHOLESALE_HUB',
+    tier: 'WHOLESALE',
   };
 
   const wholesalerTenant: TenantContext = {
     businessId: wholesalerBusinessId,
     merchantId: wholesalerBusinessId,
-    tier: 'WHOLESALE_HUB',
+    tier: 'WHOLESALE',
     isPlatformManaged: true,
     geospatialMapEnabled: false,
     isSuperAdmin: false,
@@ -64,7 +64,7 @@ describe('Phase 3D: EOD Driver Settlement, Partial Payments, Mobile Money Verifi
       businessProfile: {
         findFirst: jest.fn().mockResolvedValue({
           id: wholesalerBusinessId,
-          tier: 'WHOLESALE_HUB',
+          tier: 'WHOLESALE',
           isPlatformManaged: true,
           geospatialMapEnabled: false,
         }),

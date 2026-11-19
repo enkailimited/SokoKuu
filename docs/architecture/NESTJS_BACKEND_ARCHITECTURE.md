@@ -45,7 +45,7 @@ backend/
 | :-: | :--- | :--- |
 | 1 | **Identity & Authentication** | Phone/email login, Argon2id password/PIN verification, short-lived JWT Access Tokens (`15m`), rotating opaque Refresh Tokens hashed in Redis/PostgreSQL with reuse-detection revocation, brute-force PIN lockout. |
 | 2 | **Authorization & RBAC** | Guards for `SUPER_ADMIN`, `WHOLESALER`, `RETAILER`, `CONSUMER`, `DRIVER`; resource-ownership policies; `@Public()`, `@Roles()`, `@RequirePermissions()`. |
-| 3 | **Multi-Tenant Business Management** | `business_profiles` lifecycle, `WHOLESALE_HUB` / `RETAIL_DUKA` / `HYBRID_STORE` tier management, `is_platform_managed` flag, server-derived `TenantContext` (`req.user.businessId`). |
+| 3 | **Multi-Tenant Business Management** | `business_profiles` lifecycle, `WHOLESALE` / `RETAIL_DUKA` / `HYBRID_STORE` tier management, `is_platform_managed` flag, server-derived `TenantContext` (`req.user.businessId`). |
 | 4 | **Business Branch Management** | PostGIS `GEOGRAPHY(Point, 4326)` coordinates, `get_businesses_ordered_by_proximity()`, `geospatial_map_enabled` (default `FALSE`), Dar es Salaam ward routing. |
 | 5 | **Catalog Management** | Store-isolated active SKU queries (`businessId`), `soko_global_catalog` & `soko_catalog_categories`, atomic Base-Zero cloning (`0` stock, `0` TZS + `cloned_by_stores_count` trigger), ImageKit URL validation. |
 | 6 | **Inventory Management** | Integer Quarter-Quanta math (`1 Robo = 1`, `1 KG/L = 4`, `50 KG = 200`), `auto_break_bulk_package` (`FOR UPDATE` row lock), automated Retailer Stock-In hydration on `OrderDeliveredEvent`. |

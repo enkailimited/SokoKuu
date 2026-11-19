@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { PackagingUnit } from '@prisma/client';
+import { OrderChannel, PackagingUnit } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
@@ -25,6 +25,14 @@ export class QuoteLineItemDto {
   @IsInt()
   @Min(1)
   quantity!: number;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Required when orderChannel is SUPPLIER_TO_WHOLESALER',
+  })
+  @IsOptional()
+  @IsUUID()
+  supplierListingId?: string;
 }
 
 export class CalculateQuoteDto {
@@ -37,6 +45,14 @@ export class CalculateQuoteDto {
   @IsInt()
   @Min(0)
   deliveryFeeTzs?: number;
+
+  @ApiPropertyOptional({
+    enum: OrderChannel,
+    default: OrderChannel.RETAIL_MARKETPLACE,
+  })
+  @IsOptional()
+  @IsEnum(OrderChannel)
+  orderChannel?: OrderChannel;
 
   @ApiProperty({ type: [QuoteLineItemDto] })
   @IsArray()

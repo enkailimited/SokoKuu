@@ -143,6 +143,8 @@ export class SalesLeadsService {
           longitude: true,
           status: true,
           version: true,
+          convertedBusinessId: true,
+          convertedAt: true,
         },
       });
 
@@ -150,16 +152,36 @@ export class SalesLeadsService {
         throw new NotFoundException(`Field lead ${leadId} was not found.`);
       }
 
+      // Idempotent return: if this lead was already converted, return the
+      // existing merchant instead of throwing an optimistic-lock conflict.
+      if (existingLead.status === 'CONVERTED' && existingLead.convertedBusinessId) {
+        return {
+          leadId,
+          merchantId: existingLead.convertedBusinessId,
+          ownerUserId: null,
+          merchantName: existingLead.merchantName,
+          smsShortCode: null,
+          isPlatformManaged: true,
+          geospatialMapEnabled: false,
+          status: 'CONVERTED',
+          newVersion: Number(existingLead.version),
+          nextSmsQueued: false,
+          convertedAtEat:
+            existingLead.convertedAt?.toISOString?.() ??
+            new Date().toISOString(),
+        };
+      }
+
       // Strict Optimistic Lock: only 1 concurrent worker with matching version & PROSPECT status succeeds
       const updatedRows = await tx.$executeRaw`
         UPDATE soko_leads
            SET status = 'CONVERTED'::lead_status,
                version = version + 1,
-               converted_business_id = ${businessId}::uuid,
                converted_by_admin_id = ${adminUserId}::uuid,
                converted_at = NOW(),
                updated_at = NOW()
          WHERE id = ${leadId}::uuid
+           AND ${businessId}::uuid IS NOT NULL
            AND version = ${BigInt(dto.expectedVersion)}
            AND status = 'PROSPECT'::lead_status
       `;
@@ -171,7 +193,7 @@ export class SalesLeadsService {
       }
 
       const ownerRole =
-        existingLead.businessTier === 'WHOLESALE_HUB' ? 'WHOLESALER' : 'RETAILER';
+        existingLead.businessTier === 'WHOLESALE' ? 'WHOLESALER' : 'RETAILER';
 
       let ownerUser = await tx.user.findUnique({
         where: { phoneE164: existingLead.ownerPhoneE164 },
@@ -204,7 +226,6 @@ export class SalesLeadsService {
           district,
           latitude,
           longitude,
-          location,
           is_open,
           is_platform_managed,
           geospatial_map_enabled
@@ -219,11 +240,18 @@ export class SalesLeadsService {
           ${dto.district?.trim() || 'Dar es Salaam'},
           ${existingLead.latitude}::numeric(9,6),
           ${existingLead.longitude}::numeric(9,6),
-          ST_SetSRID(ST_MakePoint(${existingLead.longitude}::double precision, ${existingLead.latitude}::double precision), 4326)::geography,
           TRUE,
           TRUE,
           FALSE
         )
+      `;
+
+      // Link the converted business after it exists (avoids FK violation).
+      await tx.$executeRaw`
+        UPDATE soko_leads
+           SET converted_business_id = ${businessId}::uuid,
+               updated_at = NOW()
+         WHERE id = ${leadId}::uuid
       `;
 
       const smsMessage = buildSwahiliLeadActivationSms(

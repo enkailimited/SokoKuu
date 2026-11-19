@@ -26,10 +26,7 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
-import azaniaFlourImg from '../assets/images/azania_wheat_flour_1794734183041.jpg';
-import korieOilImg from '../assets/images/korie_cooking_oil_1794734183539.jpg';
-import kilomberoSugarImg from '../assets/images/kilombero_brown_sugar_1794734184028.jpg';
-import mbeyaRiceImg from '../assets/images/mbeya_super_rice_1794734184118.jpg';
+import { resolveBackendImageUrl } from '../lib/sokoProductImage';
 
 type ConsumerScreen = 'HOME' | 'DUKAS' | 'SHOP' | 'PIN_VERIFY';
 
@@ -49,6 +46,7 @@ interface NeighborhoodDuka {
   dukaId: string;
   name: string;
   initials: string;
+  logoUrl?: string;
   ward: string;
   distanceMeters: number;
   deliveryFeeTzs: number;
@@ -87,6 +85,8 @@ interface BackendMerchantDto {
   tier: string;
   ward: string;
   district: string;
+  offersFreeDelivery?: boolean;
+  logoUrl?: string;
 }
 
 interface BackendProductDto {
@@ -96,6 +96,8 @@ interface BackendProductDto {
   nameSw: string;
   nameEn: string;
   unitPriceTzs: number;
+  imagekitCdnUrl?: string;
+  staticImageUrl?: string;
   priceTiers?: Array<{
     id: string;
     unitType: PackagingUnit;
@@ -122,14 +124,6 @@ interface BackendOrderDto {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUuid(val?: string | null): val is string {
   return Boolean(val && UUID_REGEX.test(val));
-}
-
-function resolveImage(sku: string, name: string): string {
-  const hay = `${sku} ${name}`.toUpperCase();
-  if (hay.includes('KOR') || hay.includes('OIL') || hay.includes('MAFUTA')) return korieOilImg;
-  if (hay.includes('KLM') || hay.includes('SUG') || hay.includes('SUKARI')) return kilomberoSugarImg;
-  if (hay.includes('MBY') || hay.includes('RIC') || hay.includes('MCHELE')) return mbeyaRiceImg;
-  return azaniaFlourImg;
 }
 
 function formatLooseMeasure(unit: PackagingUnit, quanta: number, isSw: boolean): string {
@@ -219,8 +213,9 @@ export function ConsumerDashboardView({
               .join('')
               .toUpperCase(),
           ward: `${m.ward}, ${m.district}`,
+          logoUrl: m.logoUrl,
           distanceMeters: 150 + idx * 190,
-          deliveryFeeTzs: 1_000,
+          deliveryFeeTzs: m.offersFreeDelivery ? 0 : 1_000,
           modeTagSw:
             m.tier === 'HYBRID_STORE'
               ? 'Duka Mseto (Rejareja B2C)'
@@ -342,7 +337,7 @@ export function ConsumerDashboardView({
             unitMeasureEn: measureEn,
             quarterQuantaPerUnit: t.quarterQuantaPerUnit,
             pricePerUnitTzs: Number(t.priceTzs),
-            imageSrc: resolveImage(p.sku, p.nameEn),
+            imageSrc: resolveBackendImageUrl(p.imagekitCdnUrl, p.staticImageUrl),
           });
         }
       }
@@ -506,7 +501,10 @@ export function ConsumerDashboardView({
       const res = await SokoApiClient.post<{
         reconciled: boolean;
         verificationStatus: string;
-      }>(`/ledgers/${activePinOrder.orderId}/buyer-confirm`, payload);
+      }>('/orders/reconcile/buyer-pin', {
+        orderId: activePinOrder.orderId,
+        ...payload,
+      });
 
       setToast({
         title: res.reconciled
@@ -683,7 +681,7 @@ export function ConsumerDashboardView({
             >
               <div className="space-y-1">
                 <div className="text-xl font-bold">
-                  {isSw ? 'Nunua Dukani 🛒' : 'Shop Nearby Dukas 🛒'}
+                  {isSw ? 'Nunua Dukani 🛒' : 'Visit Nearby Dukas 🛒'}
                 </div>
                 <div className="text-xs text-emerald-50">
                   {isSw
@@ -822,8 +820,12 @@ export function ConsumerDashboardView({
                   className="bg-white border border-slate-100 rounded-lg p-5 flex items-center justify-between gap-4"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center font-mono font-bold text-sm text-emerald-700 shrink-0">
-                      {duka.initials}
+                    <div className="w-12 h-12 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center font-mono font-bold text-sm text-emerald-700 shrink-0 overflow-hidden">
+                      {duka.logoUrl ? (
+                        <img src={duka.logoUrl} alt={duka.name} className="w-full h-full object-cover" />
+                      ) : (
+                        duka.initials
+                      )}
                     </div>
                     <div className="min-w-0 space-y-1">
                       <h3 className="text-sm font-bold text-slate-900 truncate">{duka.name}</h3>

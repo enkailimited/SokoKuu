@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { OrderOrigin, PackagingUnit } from '@prisma/client';
+import { OrderChannel, OrderOrigin, PackagingUnit } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
@@ -28,6 +28,14 @@ export class CreateOrderLineDto {
   @IsInt()
   @Min(1)
   quantity!: number;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Published Supplier listing id for SUPPLIER_TO_WHOLESALER orders',
+  })
+  @IsOptional()
+  @IsUUID()
+  supplierListingId?: string;
 }
 
 export class CreateOrderRequestDto {
@@ -39,6 +47,14 @@ export class CreateOrderRequestDto {
   @IsOptional()
   @IsEnum(OrderOrigin)
   originChannel?: OrderOrigin;
+
+  @ApiPropertyOptional({
+    enum: OrderChannel,
+    default: OrderChannel.RETAIL_MARKETPLACE,
+  })
+  @IsOptional()
+  @IsEnum(OrderChannel)
+  orderChannel?: OrderChannel;
 
   @ApiPropertyOptional({ enum: ['CASH', 'M-PESA', 'TIGO-PESA'], default: 'CASH' })
   @IsOptional()

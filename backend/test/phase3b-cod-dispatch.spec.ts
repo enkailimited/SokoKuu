@@ -171,7 +171,7 @@ describe('Phase 3B: Dispatch Dual-PIN Allocation, Signed QR Token, Brute-Force L
       {
         businessId: sellerId,
         merchantId: sellerId,
-        tier: 'WHOLESALE_HUB',
+        tier: 'WHOLESALE',
         isPlatformManaged: true,
         geospatialMapEnabled: false,
         isSuperAdmin: false,

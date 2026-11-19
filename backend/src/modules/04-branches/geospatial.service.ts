@@ -93,7 +93,7 @@ export class GeospatialService {
                bp.latitude::DOUBLE PRECISION AS latitude,
                bp.longitude::DOUBLE PRECISION AS longitude,
                ROUND(ST_Distance(bp.location, o.geog, false)::NUMERIC, 1)::DOUBLE PRECISION AS distance_meters,
-               COALESCE(bp.logo_cdn_url, 'https://ik.imagekit.io/sokokuutz/catalog/default-merchant.webp') AS logo_url,
+               COALESCE(bp.logo_cdn_url, 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/default-merchant.webp') AS logo_url,
                bp.is_platform_managed
           FROM business_profiles bp
           CROSS JOIN origin o

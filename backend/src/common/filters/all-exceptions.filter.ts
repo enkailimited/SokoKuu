@@ -86,6 +86,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
+    // body-parser / raw-body reject oversized request bodies with a 413.
+    // These are client errors — map them correctly instead of logging them as
+    // unhandled 500s (which also pollutes error logs and hides real failures).
+    const bodyError = exception as { status?: number; type?: string };
+    if (
+      bodyError?.status === HttpStatus.PAYLOAD_TOO_LARGE ||
+      bodyError?.type === 'entity.too.large' ||
+      (exception instanceof Error && exception.name === 'PayloadTooLargeError')
+    ) {
+      return {
+        type: 'https://sokokuu.tz/problems/http-413',
+        title: HttpStatus[HttpStatus.PAYLOAD_TOO_LARGE],
+        status: HttpStatus.PAYLOAD_TOO_LARGE,
+        detail: 'Request payload is too large. Please reduce the size of your request.',
+        instance,
+        timestamp,
+      };
+    }
+
     const base: ProblemDetailsResponse = {
       type: 'https://sokokuu.tz/problems/internal-server-error',
       title: 'Internal Server Error',

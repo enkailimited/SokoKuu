@@ -5,7 +5,7 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 
-export type BusinessTierMode = 'WHOLESALE_HUB' | 'RETAIL_DUKA' | 'HYBRID_STORE';
+export type BusinessTierMode = 'WHOLESALE' | 'RETAIL_DUKA' | 'HYBRID_STORE';
 
 export interface LocalCatalogProduct {
   productId: string;
@@ -92,7 +92,7 @@ export function useDynamicCartCalculator(sellerBusinessId?: string | null) {
       } else {
         const hybrid =
           list.find((m) => m.tier === 'HYBRID_STORE') ??
-          list.find((m) => m.tier === 'WHOLESALE_HUB') ??
+          list.find((m) => m.tier === 'WHOLESALE') ??
           list[0];
         if (hybrid) {
           targetSellerId = hybrid.businessId;
@@ -178,7 +178,7 @@ export function useDynamicCartCalculator(sellerBusinessId?: string | null) {
       const totalQuarterQuanta = qty * product.quarterQuantaPerUnit;
 
       const crossesThreshold =
-        product.sellerTier === 'WHOLESALE_HUB' ||
+        product.sellerTier === 'WHOLESALE' ||
         (product.sellerTier === 'HYBRID_STORE' &&
           qty > 0 &&
           (qty >= product.wholesaleMinUnitsThreshold ||

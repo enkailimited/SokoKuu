@@ -11,6 +11,10 @@ import {
   Tag,
   PackagePlus,
   RotateCcw,
+  Search,
+  Minus,
+  Plus,
+  Boxes,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
@@ -169,6 +173,7 @@ export function InventoryAndUnitManager({
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
   // Dynamic POS Modal State
+  const [posSearch, setPosSearch] = useState<string>('');
   const [selectedItemForSale, setSelectedItemForSale] = useState<DukaInventoryItem | null>(null);
   const [promptQuantity, setPromptQuantity] = useState<number>(4);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'CASH' | 'M-PESA' | 'TIGO-PESA'>('CASH');
@@ -272,6 +277,8 @@ export function InventoryAndUnitManager({
                 cartonPriceTzs: number;
                 availableQuarterQuanta: number;
                 sealedBulkPackagesStock: number;
+                imagekitCdnUrl?: string;
+                globalCatalogId?: string;
                 priceTiers: Array<{
                   id: string;
                   unitType: string;
@@ -324,6 +331,8 @@ export function InventoryAndUnitManager({
             sealedBulkPackagesStock: p.sealedBulkPackagesStock,
             unitPriceTzs: p.unitPriceTzs,
             cartonPriceTzs: p.cartonPriceTzs,
+            imagekitCdnUrl: p.imagekitCdnUrl,
+            globalCatalogId: p.globalCatalogId,
             lowStockThresholdQuanta: 20,
             unitType: p.priceTiers?.[0]?.unitType ?? 'UNIT',
             lastRestockedEat: new Date().toLocaleDateString(),
@@ -387,7 +396,13 @@ export function InventoryAndUnitManager({
         if (isSokoNetworkError(err)) {
           return;
         }
-        syncedIds.push(p.globalCatalogId);
+        // A reachable backend rejected the staged clone (400/403/500).
+        // Keep it pending in IndexedDB so it is never silently discarded.
+        setErrorNotice(
+          err instanceof Error
+            ? err.message
+            : 'Failed to sync a staged catalog clone; it remains queued.'
+        );
       }
     }
 
@@ -474,8 +489,8 @@ export function InventoryAndUnitManager({
         setBackendOffline(true);
         setErrorNotice(
           isSw
-            ? 'Seva haipatikani: Huwezi kuhifadhi kipimo maalum bila muunganisho wa NestJS API.'
-            : 'Backend Offline: Saving custom units requires a live NestJS API connection.'
+            ? 'Hakuna muunganisho kwa sasa. Kipimo hakijahifadhiwa.'
+            : 'Offline right now — the custom unit was not saved.'
         );
       } else {
         setErrorNotice(err instanceof Error ? err.message : 'Failed to save custom unit.');
@@ -581,8 +596,8 @@ export function InventoryAndUnitManager({
         setBackendOffline(true);
         setErrorNotice(
           isSw
-            ? 'Mtandao umekatika: Stakabadhi ya POS inahitaji muunganisho wa seva ya NestJS.'
-            : 'Backend Offline: Unable to post POS receipt without live NestJS connection.'
+            ? 'Mtandao umekatika: Stakabadhi ya POS haikusajiliwa.'
+            : 'Offline right now — the POS receipt was not posted.'
         );
       } else {
         setErrorNotice(
@@ -732,6 +747,7 @@ export function InventoryAndUnitManager({
       );
       setPricingModalClone(null);
       await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
     } catch (err) {
       if (isSokoNetworkError(err)) setBackendOffline(true);
       setErrorNotice(err instanceof Error ? err.message : 'Failed to reset price.');
@@ -759,9 +775,16 @@ export function InventoryAndUnitManager({
         setPurchaseUnitId('');
         setPurchaseQuantaPerUnit(4);
       }
-    } catch {
+    } catch (err) {
       setPurchaseModalUnits([]);
       setPurchaseUnitId('');
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorNotice(
+          err instanceof Error ? err.message : 'Failed to load product units from NestJS.'
+        );
+      }
     }
   };
 
@@ -773,8 +796,8 @@ export function InventoryAndUnitManager({
     try {
       const res = await SokoApiClient.post<{
         receiptStatus: string;
-        stockAddedQuanta: number;
-        newAvailableQuantaStock: number;
+        receivedQuanta: number;
+        availableQuantaStock: number;
         lastBuyingPricePerQuantumTzs: number;
         weightedAvgBuyingCostPerQuantumTzs: number;
       }>('/merchant/purchases/external-receipt', {
@@ -791,8 +814,8 @@ export function InventoryAndUnitManager({
 
       setToastNotice(
         isSw
-          ? `Manunuzi yamesajiliwa (${res.receiptStatus}): +${res.stockAddedQuanta}Q · Wastani wa Ununuzi: TZS ${res.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}/Q`
-          : `Purchase recorded (${res.receiptStatus}): +${res.stockAddedQuanta}Q · Weighted Avg Cost: TZS ${res.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}/Q`
+          ? `Manunuzi yamesajiliwa (${res.receiptStatus}): +${res.receivedQuanta}Q · Wastani wa Ununuzi: TZS ${res.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}/Q`
+          : `Purchase recorded (${res.receiptStatus}): +${res.receivedQuanta}Q · Weighted Avg Cost: TZS ${res.weightedAvgBuyingCostPerQuantumTzs.toLocaleString('en-US')}/Q`
       );
       setPurchaseModalClone(null);
       await loadLiveWorkspaceData();
@@ -851,8 +874,8 @@ export function InventoryAndUnitManager({
         setBackendOffline(true);
         setErrorNotice(
           isSw
-            ? 'Seva haipatikani: Usajili wa bidhaa unahitaji muunganisho wa NestJS API.'
-            : 'Backend Offline: Creating products requires a live NestJS API connection.'
+            ? 'Hakuna muunganisho kwa sasa. Bidhaa haijaundwa.'
+            : 'Offline right now — the product was not created.'
         );
       } else {
         setErrorNotice(err instanceof Error ? err.message : 'Product creation failed.');
@@ -926,10 +949,10 @@ export function InventoryAndUnitManager({
               {loadingLive
                 ? isSw
                   ? 'Inapakia Hifadhidata...'
-                  : 'Syncing PostgreSQL...'
+                  : 'Syncing...'
                 : isSw
-                  ? 'Hifadhidata ya PostgreSQL Iko Hai'
-                  : 'Live PostgreSQL Inventory Connected'}
+                  ? 'Hifadhidata'
+                  : 'Inventory Connected'}
             </span>
           </div>
           <button
@@ -938,7 +961,7 @@ export function InventoryAndUnitManager({
             disabled={loadingLive}
             className="text-[11px] font-mono font-semibold px-2.5 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 cursor-pointer disabled:opacity-50"
           >
-            {isSw ? 'Onyesha Upya' : 'Refresh DB'}
+            {isSw ? 'Onyesha Upya' : 'Refresh'}
           </button>
         </div>
       )}
@@ -950,7 +973,7 @@ export function InventoryAndUnitManager({
             <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-950">
-                  {isSw ? 'Sanduku la Mauzo la POS (Live PostgreSQL)' : 'POS Sales Registry (Live DB)'}
+                  {isSw ? 'Sanduku la Mauzo la POS' : 'POS Sales Registry'}
                 </h3>
                 <p className="text-xs text-slate-500">
                   {isSw
@@ -969,53 +992,124 @@ export function InventoryAndUnitManager({
                 descriptionEn="Register a new product or clone from the Global Catalog under Inventory & Shelf."
               />
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {shelfItems.map((item) => {
-                  const isLow = item.availableQuanta <= item.lowStockThresholdQuanta;
+              <div className="space-y-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" aria-hidden="true" />
+                  <input
+                    type="search"
+                    value={posSearch}
+                    onChange={(e) => setPosSearch(e.target.value)}
+                    placeholder={isSw ? 'Tafuta bidhaa au SKU...' : 'Search products by name or SKU...'}
+                    aria-label={isSw ? 'Tafuta bidhaa za POS' : 'Search POS products'}
+                    className="w-full min-h-[44px] pl-9 pr-3 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:border-emerald-600 focus:outline-none"
+                  />
+                </div>
+                {(() => {
+                  const query = posSearch.trim().toLowerCase();
+                  const visible = query
+                    ? shelfItems.filter(
+                        (i) =>
+                          i.sku.toLowerCase().includes(query) ||
+                          i.productNameSw.toLowerCase().includes(query) ||
+                          i.productNameEn.toLowerCase().includes(query)
+                      )
+                    : shelfItems;
+                  if (visible.length === 0) {
+                    return (
+                      <div className="text-center text-xs text-slate-500 py-6">
+                        {isSw ? 'Hakuna bidhaa inayolingana na utafutaji.' : 'No products match your search.'}
+                      </div>
+                    );
+                  }
                   return (
-                    <button
-                      key={item.itemId}
-                      type="button"
-                      onClick={() => handleOpenPosModal(item)}
-                      className="text-left bg-white border border-slate-200 hover:border-emerald-600 rounded-lg p-4 shadow-sm transition-all cursor-pointer space-y-2 group"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="font-mono text-xs font-bold text-emerald-700">{item.sku}</div>
-                        <span className="text-[11px] font-medium bg-slate-100 px-2 py-0.5 rounded text-slate-700">
-                          {formatUnitTypeLabel(item.unitType, locale)}
-                        </span>
-                      </div>
-                      <div className="text-sm font-bold text-slate-950 group-hover:text-emerald-700 transition-colors">
-                        {isSw ? item.productNameSw : item.productNameEn}
-                      </div>
-                      <div className="flex items-center justify-between text-xs text-slate-600 pt-1 border-t border-slate-100">
-                        <span>
-                          {isSw ? 'Wazi:' : 'Loose:'}{' '}
-                          <strong className="font-mono text-slate-950">{item.availableQuanta}Q</strong>
-                          {typeof item.sealedBulkPackagesStock === 'number' && (
-                            <span className="text-slate-500 font-mono">
-                              {' '}· +{item.sealedBulkPackagesStock} sealed
-                            </span>
-                          )}
-                        </span>
-                        {isLow && (
-                          <span className="text-amber-700 font-semibold flex items-center gap-1">
-                            <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
-                            {isSw ? 'Chache!' : 'Low!'}
-                          </span>
-                        )}
-                      </div>
-                    </button>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {visible.map((item) => {
+                        const isLow = item.availableQuanta <= item.lowStockThresholdQuanta;
+                        const isOut = item.availableQuanta <= 0 && (item.sealedBulkPackagesStock ?? 0) <= 0;
+                        return (
+                          <button
+                            key={item.itemId}
+                            type="button"
+                            onClick={() => handleOpenPosModal(item)}
+                            className={`text-left bg-white border rounded-lg p-3 shadow-sm transition-all cursor-pointer group flex gap-3 min-h-[92px] ${
+                              isOut
+                                ? 'border-slate-200 opacity-60 hover:border-slate-300'
+                                : 'border-slate-200 hover:border-emerald-600 hover:shadow-md'
+                            }`}
+                          >
+                            <div className="w-16 h-16 shrink-0 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center">
+                              {item.imagekitCdnUrl ? (
+                                <img
+                                  src={item.imagekitCdnUrl}
+                                  alt={isSw ? item.productNameSw : item.productNameEn}
+                                  className="w-full h-full object-cover"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <Boxes className="w-7 h-7 text-slate-300" aria-hidden="true" />
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-[11px] font-bold text-emerald-700">{item.sku}</span>
+                                <span className="text-[10px] font-medium bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 whitespace-nowrap">
+                                  {formatUnitTypeLabel(item.unitType, locale)}
+                                </span>
+                              </div>
+                              <div className="text-sm font-bold text-slate-950 group-hover:text-emerald-700 transition-colors truncate">
+                                {isSw ? item.productNameSw : item.productNameEn}
+                              </div>
+                              <div className="text-[11px] font-mono text-emerald-800 font-semibold">
+                                TZS {Math.round(item.unitPriceTzs / 4).toLocaleString('en-US')}
+                                <span className="text-slate-500 font-sans font-normal"> / Q</span>
+                              </div>
+                              <div className="flex items-center justify-between text-[11px] text-slate-600">
+                                <span>
+                                  <strong className="font-mono text-slate-950">{item.availableQuanta}Q</strong>
+                                  {typeof item.sealedBulkPackagesStock === 'number' && (
+                                    <span className="text-slate-500"> · +{item.sealedBulkPackagesStock}</span>
+                                  )}
+                                </span>
+                                {isOut ? (
+                                  <span className="text-red-700 font-semibold">{isSw ? 'Imeisha!' : 'Out!'}</span>
+                                ) : isLow ? (
+                                  <span className="text-amber-700 font-semibold flex items-center gap-0.5">
+                                    <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                                    {isSw ? 'Chache!' : 'Low!'}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   );
-                })}
+                })()}
               </div>
             )}
           </div>
 
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              {isSw ? 'Stakabadhi za Hivi Punde za POS' : 'Recent POS Receipts Ledger'}
-            </h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                {isSw ? 'Stakabadhi za Hivi Punde za POS' : 'Recent POS Receipts Ledger'}
+                {receiptLedger.length > 0 && (
+                  <span className="bg-emerald-50 text-emerald-700 font-mono px-1.5 py-0.5 rounded-full text-[10px]">
+                    {receiptLedger.length}
+                  </span>
+                )}
+              </h4>
+              <button
+                type="button"
+                onClick={() => void loadLiveWorkspaceData()}
+                disabled={loadingLive}
+                title={isSw ? 'OnyeshaUpya' : 'Refresh'}
+                className="text-slate-500 hover:text-emerald-700 p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer disabled:opacity-50"
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
             {receiptLedger.length === 0 ? (
               <EmptyStateCard
                 locale={locale}
@@ -1062,8 +1156,8 @@ export function InventoryAndUnitManager({
                   <Globe className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
                   <span>
                     {isSw
-                      ? 'Katalogi Kuu ya SokoKuu (soko_global_catalog)'
-                      : 'Global Standard Catalog Registry (soko_global_catalog)'}
+                      ? 'Katalogi Kuu ya SokoKuu'
+                      : 'Global Standard Catalog Registry'}
                   </span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -1072,9 +1166,6 @@ export function InventoryAndUnitManager({
                     : 'Clone standardized catalog SKUs into your Merchant shelf initialized at 0 stock & 0 TZS.'}
                 </p>
               </div>
-              <span className="text-[11px] font-mono text-emerald-700 shrink-0">
-                GET /marketplace/catalog
-              </span>
             </div>
 
             {globalCatalog.length === 0 ? (
@@ -1082,8 +1173,8 @@ export function InventoryAndUnitManager({
                 locale={locale}
                 titleSw="Katalogi Kuu haina bidhaa bado"
                 titleEn="Global catalog is empty"
-                descriptionSw="Hakuna bidhaa sanifu zilizosajiliwa kwenye soko_global_catalog."
-                descriptionEn="No standardized SKUs exist in soko_global_catalog yet."
+                descriptionSw="Hakuna bidhaa sanifu zilizosajiliwa kwenye soko global catalog."
+                descriptionEn="No standardized SKUs exist in soko global catalog yet."
               />
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1263,12 +1354,12 @@ export function InventoryAndUnitManager({
           <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
             <div className="border-b border-slate-100 pb-3">
               <h3 className="text-sm font-bold text-slate-950">
-                {isSw ? 'Usajili wa Bidhaa Mpya Kwenye Rafu (PostgreSQL)' : 'Create Active Merchant Product'}
+                {isSw ? 'Usajili wa Bidhaa Mpya Kwenye Rafu' : 'Create Active Merchant Product'}
               </h3>
               <p className="text-xs text-slate-500">
                 {isSw
-                  ? 'Ongeza bidhaa inayouzika dukani moja kwa moja kwenye PostgreSQL.'
-                  : 'Register a live sellable Merchant SKU synced directly to PostgreSQL.'}
+                  ? 'Ongeza bidhaa inayouzika dukani moja kwa moja.'
+                  : 'Register a live sellable Merchant SKU synced directly.'}
               </p>
             </div>
 
@@ -1547,8 +1638,8 @@ export function InventoryAndUnitManager({
                       ? 'Inahifadhi...'
                       : 'Saving...'
                     : isSw
-                      ? 'Hifadhi Kipimo Kipya (PostgreSQL)'
-                      : 'Save Custom Unit to PostgreSQL'}
+                      ? 'Hifadhi Kipimo Kipya'
+                      : 'Save Custom Unit'}
                 </span>
               </button>
             </form>
@@ -1594,54 +1685,148 @@ export function InventoryAndUnitManager({
 
       {/* DYNAMIC POS QUANTITY PROMPT MODAL OVERLAY */}
       {selectedItemForSale && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden p-6 space-y-5">
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-              <div>
-                <div className="font-mono text-xs font-bold text-emerald-700">
-                  {selectedItemForSale.sku}
-                </div>
-                <h3 className="text-base font-bold text-slate-950 mt-0.5">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full max-h-[92vh] overflow-y-auto">
+            {/* Product header */}
+            <div className="flex items-start gap-3 border-b border-slate-100 p-5">
+              <div className="w-16 h-16 shrink-0 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center">
+                {selectedItemForSale.imagekitCdnUrl ? (
+                  <img
+                    src={selectedItemForSale.imagekitCdnUrl}
+                    alt={isSw ? selectedItemForSale.productNameSw : selectedItemForSale.productNameEn}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <Boxes className="w-8 h-8 text-slate-300" aria-hidden="true" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-xs font-bold text-emerald-700">{selectedItemForSale.sku}</div>
+                <h3 className="text-base font-bold text-slate-950 mt-0.5 leading-tight">
                   {isSw ? selectedItemForSale.productNameSw : selectedItemForSale.productNameEn}
                 </h3>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  {formatUnitTypeLabel(selectedItemForSale.unitType, locale)} · 1 Quanta = 250g/mL
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedItemForSale(null)}
-                className="text-slate-400 hover:text-slate-900 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+                aria-label={isSw ? 'Funga' : 'Close'}
+                className="text-slate-400 hover:text-slate-900 p-2 -m-1 rounded-lg hover:bg-slate-100 cursor-pointer"
               >
                 <X className="w-5 h-5" aria-hidden="true" />
               </button>
             </div>
 
-            <form onSubmit={handleExecutePosSale} className="space-y-4">
-              <div className="space-y-2 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
-                  <span>{isSw ? 'Weka Idadi ya Quanta (Inayouzwa):' : 'Declared Quanta Volume:'}</span>
-                  <strong className="font-mono text-emerald-700 text-sm">{promptQuantity} Quanta</strong>
+            <form onSubmit={handleExecutePosSale} className="p-5 space-y-4">
+              {/* Stock preview + low-stock warning */}
+              <div
+                className={`rounded-xl p-3 border flex items-center justify-between text-xs ${
+                  selectedItemForSale.availableQuanta <= selectedItemForSale.lowStockThresholdQuanta
+                    ? 'bg-amber-50 border-amber-200 text-amber-900'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 font-medium">
+                  <Boxes className="w-4 h-4" aria-hidden="true" />
+                  {isSw ? 'Hifadhi iliyopo:' : 'Stock available:'}{' '}
+                  <strong className="font-mono">{selectedItemForSale.availableQuanta}Q</strong>
+                  {typeof selectedItemForSale.sealedBulkPackagesStock === 'number' && (
+                    <span className="font-mono opacity-80">
+                      (+{selectedItemForSale.sealedBulkPackagesStock}{' '}
+                      {isSw ? 'mifuko' : 'sealed'})
+                    </span>
+                  )}
+                </span>
+                {selectedItemForSale.availableQuanta <= selectedItemForSale.lowStockThresholdQuanta && (
+                  <span className="flex items-center gap-1 font-bold whitespace-nowrap">
+                    <AlertTriangle className="w-4 h-4" aria-hidden="true" />
+                    {isSw ? 'Hifadhi chache!' : 'Low stock!'}
+                  </span>
+                )}
+              </div>
+
+              {/* Quantity control */}
+              <div className="space-y-2.5 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <label htmlFor="pos-quanta-input" className="block text-xs font-semibold text-slate-700">
+                  {isSw ? 'Idadi ya Quanta ya Kuuza:' : 'Quanta to sell:'}
+                </label>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    aria-label={isSw ? 'Punguza' : 'Decrease'}
+                    onClick={() => setPromptQuantity((q) => Math.max(1, q - 1))}
+                    className="w-12 h-12 shrink-0 rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 cursor-pointer flex items-center justify-center transition-colors"
+                  >
+                    <Minus className="w-5 h-5" aria-hidden="true" />
+                  </button>
+                  <input
+                    id="pos-quanta-input"
+                    type="number"
+                    min={1}
+                    max={maxPosQuanta}
+                    value={promptQuantity}
+                    onChange={(e) => {
+                      const parsed = Number(e.target.value);
+                      const next = Number.isFinite(parsed) ? Math.trunc(parsed) : 1;
+                      setPromptQuantity(Math.min(maxPosQuanta, Math.max(1, next)));
+                    }}
+                    className="w-24 h-12 text-center font-mono text-xl font-bold text-emerald-700 bg-white border-2 border-emerald-200 rounded-xl focus:border-emerald-600 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    aria-label={isSw ? 'Ongeza' : 'Increase'}
+                    onClick={() => setPromptQuantity((q) => Math.min(maxPosQuanta, q + 1))}
+                    className="w-12 h-12 shrink-0 rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 cursor-pointer flex items-center justify-center transition-colors"
+                  >
+                    <Plus className="w-5 h-5" aria-hidden="true" />
+                  </button>
+                  <span className="font-mono text-emerald-700 font-bold">Q</span>
                 </div>
                 <input
                   type="range"
                   min="1"
                   max={maxPosQuanta}
                   value={promptQuantity}
+                  aria-label={isSw ? 'Idadi ya Quanta' : 'Quanta amount'}
                   onChange={(e) => setPromptQuantity(parseInt(e.target.value, 10) || 1)}
-                  className="w-full accent-emerald-600 cursor-pointer"
+                  className="w-full h-2 accent-emerald-600 cursor-pointer"
                 />
-                <div className="flex justify-between text-[11px] font-mono text-slate-500">
-                  <span>1 Quanta (250g/mL)</span>
-                  <span>
-                    Loose: {selectedItemForSale.availableQuanta}Q
-                    {typeof selectedItemForSale.sealedBulkPackagesStock === 'number'
-                      ? ` · Sealed: ${selectedItemForSale.sealedBulkPackagesStock}`
-                      : ''}
-                  </span>
+                {/* Quick quanta chips */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[1, 2, 4, 8].filter((q) => q <= maxPosQuanta).map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => setPromptQuantity(q)}
+                      className={`min-w-[44px] min-h-[34px] px-2 rounded-lg text-xs font-bold border cursor-pointer transition-colors ${
+                        promptQuantity === q
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50 hover:border-emerald-400'
+                      }`}
+                    >
+                      {q}Q
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setPromptQuantity(maxPosQuanta)}
+                    className={`min-h-[34px] px-2.5 rounded-lg text-xs font-bold border cursor-pointer transition-colors ${
+                      promptQuantity === maxPosQuanta
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50 hover:border-emerald-400'
+                    }`}
+                  >
+                    {isSw ? 'Zote' : 'Max'} ({maxPosQuanta}Q)
+                  </button>
                 </div>
               </div>
 
+              {/* Payment method — CASH first and default */}
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-700">
-                  {isSw ? 'Njia ya Malipo (Payment Method):' : 'Payment Channel:'}
+                <label className="block text-xs font-semibold text-slate-700">
+                  {isSw ? 'Njia ya Malipo:' : 'Payment method:'}
                 </label>
                 <div className="grid grid-cols-3 gap-2">
                   {(['CASH', 'M-PESA', 'TIGO-PESA'] as const).map((method) => (
@@ -1649,9 +1834,9 @@ export function InventoryAndUnitManager({
                       key={method}
                       type="button"
                       onClick={() => setSelectedPaymentMethod(method)}
-                      className={`min-h-[40px] px-2 py-2 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      className={`min-h-[52px] px-2 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
                         selectedPaymentMethod === method
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 shadow-sm'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 shadow-sm ring-1 ring-emerald-600'
                           : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                       }`}
                     >
@@ -1661,30 +1846,45 @@ export function InventoryAndUnitManager({
                 </div>
               </div>
 
-              <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-3.5 flex items-center justify-between text-xs">
-                <span className="text-slate-700 font-medium">
-                  {isSw ? 'Makadirio ya Mauzo:' : 'Estimated POS Total:'}
-                </span>
-                <span className="font-mono font-bold text-emerald-800 text-sm">
-                  TZS{' '}
-                  {Math.round(
-                    (promptQuantity * selectedItemForSale.unitPriceTzs) / 4
-                  ).toLocaleString('en-US')}
-                </span>
+              {/* Price breakdown */}
+              <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-4 space-y-2">
+                <div className="flex items-center justify-between text-xs text-slate-700">
+                  <span>{isSw ? 'Bei kwa Quanta:' : 'Price per quantum:'}</span>
+                  <span className="font-mono font-semibold text-slate-900">
+                    TZS {Math.round(selectedItemForSale.unitPriceTzs / 4).toLocaleString('en-US')}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-700">
+                  <span>{isSw ? 'Idadi:' : 'Quantity:'}</span>
+                  <span className="font-mono font-semibold text-slate-900">
+                    {promptQuantity} Q
+                  </span>
+                </div>
+                <div className="border-t border-emerald-200 pt-2 flex items-center justify-between">
+                  <span className="text-sm font-bold text-slate-800">
+                    {isSw ? 'Jumla ya Mauzo:' : 'POS Total:'}
+                  </span>
+                  <span className="font-mono font-bold text-emerald-800 text-lg">
+                    TZS{' '}
+                    {Math.round(
+                      (promptQuantity * selectedItemForSale.unitPriceTzs) / 4
+                    ).toLocaleString('en-US')}
+                  </span>
+                </div>
               </div>
 
-              <div className="flex items-center gap-3 pt-2">
+              <div className="flex items-center gap-3 pt-1">
                 <button
                   type="button"
                   onClick={() => setSelectedItemForSale(null)}
-                  className="flex-1 min-h-[44px] px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold text-xs rounded-xl cursor-pointer transition-colors"
+                  className="flex-1 min-h-[48px] px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold text-sm rounded-xl cursor-pointer transition-colors"
                 >
                   {isSw ? 'Ghairi' : 'Cancel'}
                 </button>
                 <button
                   type="submit"
                   disabled={submittingPos}
-                  className="flex-1 min-h-[44px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold text-xs rounded-xl shadow-sm cursor-pointer transition-colors flex items-center justify-center gap-2"
+                  className="flex-[2] min-h-[48px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold text-sm rounded-xl shadow-sm cursor-pointer transition-colors flex items-center justify-center gap-2"
                 >
                   <DollarSign className="w-4 h-4" aria-hidden="true" />
                   <span>
@@ -1693,8 +1893,8 @@ export function InventoryAndUnitManager({
                         ? 'Inakata...'
                         : 'Processing...'
                       : isSw
-                        ? 'Thibitisha & Kata Mauzo'
-                        : 'Confirm & Deduct Stock'}
+                        ? 'Thibitisha Mauzo'
+                        : 'Confirm Sale'}
                   </span>
                 </button>
               </div>

@@ -30,8 +30,8 @@ export function OfflineIndicator({ locale = 'sw' }: { locale?: Locale }) {
       <WifiOff className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
       <span>
         {isSw
-          ? 'Hali ya Nje ya Mtandao — POS & IndexedDB zinafanya kazi.'
-          : 'Offline Mode — Cached shell & IndexedDB POS active.'}
+          ? 'Hali ya Nje ya Mtandao.'
+          : 'Offline Mode.'}
       </span>
     </div>
   );

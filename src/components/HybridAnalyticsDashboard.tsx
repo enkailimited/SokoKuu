@@ -68,6 +68,21 @@ function formatTzs(amount: number): string {
   return `TZS ${amount.toLocaleString('en-US')}`;
 }
 
+async function resolveAnalyticsBusinessId(
+  businessId?: string | null,
+): Promise<string | null> {
+  let targetBusinessId = isUuid(businessId)
+    ? businessId
+    : SokoApiClient.getActiveUser()?.businessId ?? null;
+
+  if (!isUuid(targetBusinessId) && SokoApiClient.hasAccessToken()) {
+    const me = await SokoApiClient.get<{ businessId?: string | null }>('/auth/me');
+    targetBusinessId = me?.businessId ?? null;
+  }
+
+  return isUuid(targetBusinessId) ? targetBusinessId : null;
+}
+
 export function HybridAnalyticsDashboard({
   locale = 'en',
   businessId,
@@ -95,16 +110,9 @@ export function HybridAnalyticsDashboard({
     setBackendOffline(false);
 
     try {
-      let targetBusinessId = isUuid(businessId)
-        ? businessId
-        : SokoApiClient.getActiveUser()?.businessId ?? null;
+      const targetBusinessId = await resolveAnalyticsBusinessId(businessId);
 
-      if (!isUuid(targetBusinessId) && SokoApiClient.hasAccessToken()) {
-        const me = await SokoApiClient.get<{ businessId?: string | null }>('/auth/me');
-        targetBusinessId = me?.businessId ?? null;
-      }
-
-      if (!isUuid(targetBusinessId)) {
+      if (!targetBusinessId) {
         setAnalytics(null);
         setStockItems([]);
         return;
@@ -124,16 +132,23 @@ export function HybridAnalyticsDashboard({
         (Array.isArray(prodRes) ? prodRes : []).map((p) => {
           const bulkTier =
             p.priceTiers?.find((t) => t.isWholesaleTier) ?? p.priceTiers?.[0];
+          const quantaPerBulkPackage = Number(bulkTier?.quarterQuantaPerUnit ?? 200);
+          // Derive the reorder trigger from the live wholesale MOQ returned by
+          // NestJS instead of a static demo velocity.
+          const dailyVelocityQuanta = Math.max(
+            1,
+            Math.round(Number(p.wholesaleThresholdUnits ?? 1) * quantaPerBulkPackage),
+          );
           return {
             productId: p.productId,
             sku: p.sku,
             nameSw: p.nameSw,
             nameEn: p.nameEn,
             parentUnit: bulkTier?.unitType ?? 'SACK_50KG',
-            quantaPerBulkPackage: bulkTier?.quarterQuantaPerUnit ?? 200,
+            quantaPerBulkPackage,
             sealedBulkStock: Number(p.sealedBulkPackagesStock ?? 0),
             looseQuantaStock: Number(p.availableQuarterQuanta ?? 0),
-            dailyVelocityQuanta: 40,
+            dailyVelocityQuanta,
           };
         }),
       );
@@ -179,10 +194,8 @@ export function HybridAnalyticsDashboard({
     setApiError(null);
     setBackendOffline(false);
     try {
-      const targetId = isUuid(businessId)
-        ? businessId
-        : SokoApiClient.getActiveUser()?.businessId ?? null;
-      const query = isUuid(targetId) ? `?businessId=${encodeURIComponent(targetId)}` : '';
+      const targetId = await resolveAnalyticsBusinessId(businessId);
+      const query = targetId ? `?businessId=${encodeURIComponent(targetId)}` : '';
       const blob = await SokoApiClient.downloadBlob(`/hybrid/analytics/export-csv${query}`);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

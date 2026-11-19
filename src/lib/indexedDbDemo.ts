@@ -12,10 +12,14 @@ export interface OfflineQueuedOrder {
   sellerHub: string;
   compactSmsBody: string;
   totalTzs: number;
+  /** Preserved so queued supplier restocks replay with correct channel pricing. */
+  orderChannel?: 'RETAIL_MARKETPLACE' | 'SUPPLIER_TO_WHOLESALER';
+  deliveryFeeTzs?: number;
   items?: Array<{
     productId: string;
     unitType: string;
     quantity: number;
+    supplierListingId?: string;
   }>;
   clientCreatedAt: string;
   syncStatus: OfflineQueueSyncStatus;

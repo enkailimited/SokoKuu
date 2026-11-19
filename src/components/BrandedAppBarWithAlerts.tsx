@@ -4,6 +4,7 @@ import {
   BellRing,
   CheckCheck,
   ChevronDown,
+  ChevronRight,
   Languages,
   LogOut,
   Menu,
@@ -28,11 +29,13 @@ import {
 import { BrandLogo } from './BrandLogo';
 import { PWAInstallButton } from './PWAInstallButton';
 import {
+  getWebPushStatus,
   initializeWebPushRegistration,
   triggerLocalServiceWorkerPushTest,
 } from '../services/webPushRegistrationService';
 import { sokoRealtime } from '../services/sokoRealtimeClient';
-import { SokoApiClient, checkBackendHealth } from '../services/sokoApiClient';
+import { SokoApiClient } from '../services/sokoApiClient';
+import { SUPPLIER_TAB_LABELS, type SupplierTab } from './SupplierDashboardView';
 
 export type StompPacketType =
   | 'NEW_B2B_ORDER_REQUEST'
@@ -41,6 +44,8 @@ export type StompPacketType =
 
 export interface StompAlertPacket {
   id: string;
+  /** Durable UserNotification UUID (absent for legacy derived packets). */
+  notificationId?: string;
   packetType: StompPacketType;
   title: string;
   message: string;
@@ -48,6 +53,34 @@ export interface StompAlertPacket {
   amountTzs?: number;
   receivedAt: string;
   acknowledged: boolean;
+  deepLink?: string;
+}
+
+interface DurableNotificationRow {
+  notificationId: string;
+  eventType: string;
+  category: string;
+  title: string;
+  body: string;
+  deepLink: string | null;
+  metadata?: Record<string, unknown> | null;
+  isRead: boolean;
+  readAt?: string | null;
+  createdAt: string;
+}
+
+const NOTIFICATION_UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function packetTypeForNotification(category: string, eventType: string): StompPacketType {
+  const hay = `${category} ${eventType}`.toUpperCase();
+  if (hay.includes('MANAGED') || hay.includes('HELPDESK')) {
+    return 'ROUTED_PLATFORM_MANAGED_HELPDESK';
+  }
+  if (hay.includes('ORDER') || hay.includes('DISPATCH') || hay.includes('DELIVERY')) {
+    return 'NEW_B2B_ORDER_REQUEST';
+  }
+  return 'STANDARD_UPDATE';
 }
 
 export type RetailerNavTab =
@@ -64,12 +97,17 @@ export interface BrandedAppBarWithAlertsProps {
   onSelectPage: (page: 'DASHBOARD' | 'PROFILE' | 'SETTINGS') => void;
   retailerTab: RetailerNavTab;
   onSelectRetailerTab: (tab: RetailerNavTab) => void;
+  wholesalerTab?: 'operations' | 'sokoni';
+  onSelectWholesalerTab?: (tab: 'operations' | 'sokoni') => void;
+  supplierTab: SupplierTab;
+  onSelectSupplierTab: (tab: SupplierTab) => void;
   retailerMapEnabled: boolean;
   onLogout: () => void;
   mobileMenuOpen: boolean;
   onToggleMobileMenu: () => void;
   adminMobileSidebarOpen: boolean;
   onToggleAdminMobileSidebar: () => void;
+  onOpenDeepLink?: (deepLink: string) => void;
   stompEndpointUrl?: string;
   compactContainer?: boolean;
 }
@@ -189,12 +227,17 @@ export function BrandedAppBarWithAlerts({
   onSelectPage,
   retailerTab,
   onSelectRetailerTab,
+  wholesalerTab = 'operations',
+  onSelectWholesalerTab,
+  supplierTab,
+  onSelectSupplierTab,
   retailerMapEnabled,
   onLogout,
   mobileMenuOpen,
   onToggleMobileMenu,
   adminMobileSidebarOpen,
   onToggleAdminMobileSidebar,
+  onOpenDeepLink,
   stompEndpointUrl = '/ws-sokokuu',
   compactContainer = false,
 }: BrandedAppBarWithAlertsProps) {
@@ -202,6 +245,14 @@ export function BrandedAppBarWithAlerts({
 
   const [profileMenuOpen, setProfileMenuOpen] = useState<boolean>(false);
   const [bellOpen, setBellOpen] = useState<boolean>(false);
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setIsScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   const [audioMuted, setAudioMuted] = useState<boolean>(false);
   const [stompStatus, setStompStatus] = useState<'SUBSCRIBED' | 'STANDBY_CHANNEL' | 'CONNECTING'>(
     'CONNECTING'
@@ -213,95 +264,118 @@ export function BrandedAppBarWithAlerts({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const alarmIntervalRef = useRef<number | null>(null);
   const [pushBanner, setPushBanner] = useState<string | null>(null);
-  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
+  const [pushPermission, setPushPermission] = useState<NotificationPermission | 'unsupported'>(
+    'default'
+  );
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [showPushPrompt, setShowPushPrompt] = useState(false);
 
+  // Check Web Push state on visit. When permission is still "default", ask
+  // politely in-app (the browser's own dialog needs a real user gesture).
   useEffect(() => {
     let active = true;
-    const poll = async () => {
-      const res = await checkBackendHealth();
-      if (active) setBackendOnline(res.online);
-    };
-    void poll();
-    const timer = window.setInterval(poll, 20000);
+    let timer: number | null = null;
+
+    void getWebPushStatus(activeProfile.userId).then((status) => {
+      if (!active) return;
+      setPushPermission(status.permission);
+      setPushSubscribed(status.subscribed);
+
+      if (!status.supported || status.permission !== 'default' || status.subscribed) return;
+      try {
+        if (window.sessionStorage.getItem('sokokuu:push-ask-dismissed') === '1') return;
+      } catch {
+        // Ignore storage failures and still offer the prompt.
+      }
+      timer = window.setTimeout(() => {
+        if (active) setShowPushPrompt(true);
+      }, 2500);
+    });
+
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
-  }, []);
+  }, [activeProfile.userId]);
+
+  const handleAllowPush = async () => {
+    setShowPushPrompt(false);
+    const reg = await initializeWebPushRegistration(activeProfile.userId);
+    if (reg.status === 'SUBSCRIBED') {
+      setPushPermission('granted');
+      setPushSubscribed(true);
+      setPushBanner(isSw ? 'Web Push imeamilishwa.' : 'Web Push active.');
+      await triggerLocalServiceWorkerPushTest({
+        title: isSw ? 'SokoKuu TZ — Arifa ya Push' : 'SokoKuu TZ — Web Push Ready',
+        body: isSw
+          ? 'Kifaa kimesajiliwa kupokea kengele hata kivinjari kikifungwa.'
+          : 'Device subscribed for background order alerts.',
+        deepLinkUrl: roleDeepLink,
+      });
+    } else {
+      setPushPermission(
+        typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
+      );
+      setPushBanner(reg.message);
+    }
+  };
+
+  const handleDismissPush = () => {
+    setShowPushPrompt(false);
+    try {
+      window.sessionStorage.setItem('sokokuu:push-ask-dismissed', '1');
+    } catch {
+      // Ignore storage failures.
+    }
+  };
 
   useEffect(() => {
     if (!SokoApiClient.hasAccessToken()) return;
     let active = true;
 
-    if (activeProfile.role === 'SUPER_ADMIN') {
-      SokoApiClient.get<{
-        traces?: Array<{
-          traceId: string;
-          orderRef8: string;
-          merchantName: string;
-          routingOutputCode: string;
-          helpdeskStatus: string;
-          expectedTotalTzs: number;
-          recordedAt: string;
-        }>;
-      }>('/admin/managed-orders?routingOutputCode=ROUTED_PLATFORM_MANAGED_HELPDESK')
-        .then((res) => {
-          if (!active || !Array.isArray(res?.traces)) return;
-          const openAlerts: StompAlertPacket[] = res.traces
-            .filter((t) => t.helpdeskStatus === 'OPEN')
-            .slice(0, 10)
-            .map((t) => ({
-              id: t.traceId,
-              packetType: 'ROUTED_PLATFORM_MANAGED_HELPDESK',
-              title: t.merchantName,
-              message: `Oda #${t.orderRef8} — Dawati la Msaada`,
-              orderRef: t.orderRef8,
-              amountTzs: Number(t.expectedTotalTzs ?? 0),
-              receivedAt: new Date(t.recordedAt).toLocaleTimeString(),
-              acknowledged: false,
-            }));
-          setAlerts(openAlerts);
-        })
-        .catch(() => {
-          if (active) setAlerts([]);
-        });
-    } else if (activeProfile.role === 'WHOLESALER' || activeProfile.role === 'RETAILER') {
-      SokoApiClient.get<{
-        orders?: Array<{
-          id: string;
-          orderRef: string;
-          status: string;
-          expectedTotalTzs: number;
-          placedAt: string;
-          buyer?: { fullName?: string } | null;
-        }>;
-      }>('/orders/my-orders?scope=selling')
-        .then((res) => {
-          if (!active || !Array.isArray(res?.orders)) return;
-          const placed = res.orders
-            .filter((o) => o.status === 'PLACED')
-            .slice(0, 8)
-            .map((o) => ({
-              id: o.id,
-              packetType: 'NEW_B2B_ORDER_REQUEST' as StompPacketType,
-              title: o.buyer?.fullName || (isSw ? 'Oda Mpya' : 'New Order'),
-              message: `#${o.orderRef} — ${o.status}`,
-              orderRef: o.orderRef,
-              amountTzs: Number(o.expectedTotalTzs ?? 0),
-              receivedAt: new Date(o.placedAt).toLocaleTimeString(),
-              acknowledged: false,
-            }));
-          setAlerts(placed);
-        })
-        .catch(() => {
-          if (active) setAlerts([]);
-        });
-    }
+    const mapRow = (row: DurableNotificationRow): StompAlertPacket => ({
+      id: row.notificationId,
+      notificationId: row.notificationId,
+      packetType: packetTypeForNotification(row.category, row.eventType),
+      title: row.title,
+      message: row.body,
+      receivedAt: new Date(row.createdAt).toLocaleString(),
+      acknowledged: Boolean(row.isRead),
+      deepLink: row.deepLink ?? undefined,
+    });
+
+    // UserNotification is the single source of truth for every role. The
+    // role-specific order lists are no longer used as a notification cache.
+    SokoApiClient.get<{
+      count: number;
+      notifications?: DurableNotificationRow[];
+      unreadCount?: number;
+    }>('/notifications/inbox?limit=50')
+      .then((res) => {
+        if (!active || !Array.isArray(res?.notifications)) return;
+        setAlerts(res.notifications.map(mapRow));
+      })
+      .catch(() => {
+        if (active) setAlerts([]);
+      });
 
     return () => {
       active = false;
     };
-  }, [activeProfile.role, isSw]);
+  }, [activeProfile.role, activeProfile.userId]);
+
+  const roleDeepLink =
+    activeProfile.role === 'SUPER_ADMIN'
+      ? '/dashboard/admin'
+      : activeProfile.role === 'WHOLESALER'
+        ? '/dashboard/wholesaler'
+        : activeProfile.role === 'RETAILER'
+          ? '/dashboard/retailer'
+          : activeProfile.role === 'SUPPLIER'
+            ? '/dashboard/supplier'
+            : activeProfile.role === 'DRIVER'
+              ? '/dashboard/driver'
+              : '/dashboard/consumer';
 
   const unreadCount = alerts.filter((a) => !a.acknowledged).length;
   const activeHighPriorityCount = alerts.filter(
@@ -413,6 +487,25 @@ export function BrandedAppBarWithAlerts({
       // fallback
     }
 
+    const unsubNotifications = sokoRealtime.on('notification:new', (payload: any) => {
+      const row = payload?.notification;
+      if (!row?.id) return;
+      setStompStatus('SUBSCRIBED');
+      ingestPacket({
+        id: String(row.id),
+        notificationId: String(row.id),
+        packetType: packetTypeForNotification(
+          String(row.category ?? ''),
+          String(row.eventType ?? payload?.event ?? '')
+        ),
+        title: String(row.title ?? 'SokoKuu Alert'),
+        message: String(row.body ?? ''),
+        receivedAt: new Date(row.createdAt ?? Date.now()).toLocaleString(),
+        acknowledged: false,
+        deepLink: row.deepLink ?? undefined,
+      });
+    });
+
     const unsubRealtime = sokoRealtime.on('admin:managed-alert', (payload: any) => {
       setStompStatus('SUBSCRIBED');
       ingestPacket({
@@ -521,6 +614,8 @@ export function BrandedAppBarWithAlerts({
 
     return () => {
       isDisposed = true;
+      unsubNotifications();
+      unsubRealtime();
       window.removeEventListener('sokokuu:managed-order-alert', handleManagedAlert);
       window.removeEventListener('sokokuu:stomp-alert', handleStompAlert);
       bc?.close();
@@ -535,33 +630,45 @@ export function BrandedAppBarWithAlerts({
     };
   }, [stompEndpointUrl, ingestPacket]);
 
-  const triggerAudioHardwareTest = (packetType: StompPacketType) => {
-    setAudioMuted(false);
-    if (packetType === 'NEW_B2B_ORDER_REQUEST') {
-      playDukaAlarmChime(audioCtxRef);
-      setPushBanner(
-        isSw ? 'Kengele ya duka imejiribika (Audio OK).' : 'Alarm audio hardware test played.'
-      );
-    } else {
-      playSoftNotificationChime(audioCtxRef);
-      setPushBanner(
-        isSw ? 'Mlio laini umejibiwa (Audio OK).' : 'Soft notification chime played.'
+  const acknowledgeAlert = (id: string) => {
+    const target = alerts.find((a) => a.id === id);
+    setAlerts((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a))
+    );
+
+    const durableId =
+      target?.notificationId ??
+      (NOTIFICATION_UUID_REGEX.test(id) ? id : null);
+    if (durableId) {
+      void SokoApiClient.patch(`/notifications/inbox/${durableId}/read`, {}).catch(
+        () => undefined
       );
     }
   };
 
-  const acknowledgeAlert = (id: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a))
-    );
-  };
-
   const acknowledgeAllAlerts = () => {
     setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
+    if (SokoApiClient.hasAccessToken()) {
+      void SokoApiClient.patch('/notifications/inbox/read-all', {}).catch(() => undefined);
+    }
+  };
+
+  const handleOpenAlert = (packet: StompAlertPacket) => {
+    acknowledgeAlert(packet.id);
+    if (packet.deepLink && onOpenDeepLink) {
+      onOpenDeepLink(packet.deepLink);
+    }
+    setBellOpen(false);
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-white border-b border-slate-100">
+    <header
+      className={`sticky top-0 z-40 border-b transition-all duration-300 ${
+        isScrolled
+          ? 'bg-white/90 backdrop-blur-md border-slate-200 shadow-sm'
+          : 'bg-white border-slate-100'
+      }`}
+    >
       <div
         className={`${
           compactContainer ? 'max-w-2xl' : 'max-w-6xl'
@@ -654,7 +761,7 @@ export function BrandedAppBarWithAlerts({
                       : 'hover:text-slate-900'
                   }`}
                 >
-                  {isSw ? 'Sokoni & Oda' : 'Sokoni Marketplace'}
+                  {isSw ? 'Nenda Sokoni' : 'Sokoni Marketplace'}
                 </button>
 
                 {retailerMapEnabled && (
@@ -673,6 +780,57 @@ export function BrandedAppBarWithAlerts({
                     {isSw ? 'Ramani (GIS)' : 'Proximity Map'}
                   </button>
                 )}
+              </>
+            ) : activeProfile.role === 'WHOLESALER' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectWholesalerTab?.('operations');
+                    onSelectPage('DASHBOARD');
+                  }}
+                  className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activePage === 'DASHBOARD' && wholesalerTab === 'operations'
+                      ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-emerald-600 font-semibold'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  {isSw ? 'Shughuli za Jumla' : 'Wholesale Operations'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectWholesalerTab?.('sokoni');
+                    onSelectPage('DASHBOARD');
+                  }}
+                  className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activePage === 'DASHBOARD' && wholesalerTab === 'sokoni'
+                      ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-emerald-600 font-semibold'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  {isSw ? 'Nenda Sokoni' : 'Sokoni Marketplace'}
+                </button>
+              </>
+            ) : activeProfile.role === 'SUPPLIER' ? (
+              <>
+                {(['warehouse', 'publish', 'orders', 'reports'] as SupplierTab[]).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => {
+                      onSelectSupplierTab(tab);
+                      onSelectPage('DASHBOARD');
+                    }}
+                    className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                      activePage === 'DASHBOARD' && supplierTab === tab
+                        ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-emerald-600 font-semibold'
+                        : 'hover:text-slate-900'
+                    }`}
+                  >
+                    {SUPPLIER_TAB_LABELS[tab]}
+                  </button>
+                ))}
               </>
             ) : (
               <button
@@ -715,26 +873,6 @@ export function BrandedAppBarWithAlerts({
 
         {/* Top-Right Telemetry Bell + PWA Install + Language Switcher + Always-Visible Profile Matrix */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <span
-            className={`hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-mono font-semibold ${
-              backendOnline === true
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                : backendOnline === false
-                  ? 'bg-amber-50 border-amber-200 text-amber-800'
-                  : 'bg-slate-50 border-slate-200 text-slate-600'
-            }`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                backendOnline === true
-                  ? 'bg-emerald-600'
-                  : backendOnline === false
-                    ? 'bg-amber-500'
-                    : 'bg-slate-400'
-              }`}
-            />
-            <span>{backendOnline === true ? 'API: ONLINE' : backendOnline === false ? 'OFFLINE' : 'API'}</span>
-          </span>
           <PWAInstallButton locale={locale} />
 
           {/* Interactive White-Labeled STOMP Notification Bell */}
@@ -788,7 +926,7 @@ export function BrandedAppBarWithAlerts({
               <div
                 role="dialog"
                 aria-label={isSw ? 'Kituo cha Arifa za Wakati Halisi' : 'Real-Time STOMP Alerts'}
-                className="fixed sm:absolute right-3 sm:right-0 top-[68px] sm:top-auto sm:mt-2 w-[calc(100vw-1.5rem)] sm:w-96 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden z-50"
+                className="animate-scale-in fixed sm:absolute right-3 sm:right-0 top-[68px] sm:top-auto sm:mt-2 w-[calc(100vw-1.5rem)] sm:w-96 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden z-50"
               >
                 <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between gap-2">
                   <div className="min-w-0">
@@ -830,62 +968,71 @@ export function BrandedAppBarWithAlerts({
                         className="px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-[11px] font-semibold text-slate-700 inline-flex items-center gap-1 cursor-pointer"
                       >
                         <CheckCheck className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                        <span>{isSw ? 'Pokea' : 'Ack'}</span>
+                        <span>{isSw ? 'Soma Zote' : 'Mark all read'}</span>
                       </button>
                     )}
                   </div>
                 </div>
 
-                {/* Native Web Audio Hardware Check Controls */}
-                <div className="px-3 py-2 bg-slate-50/40 border-b border-slate-100 flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => triggerAudioHardwareTest('NEW_B2B_ORDER_REQUEST')}
-                    className="flex-1 min-w-[140px] px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <BellRing className="w-3 h-3 text-amber-400 shrink-0" aria-hidden="true" />
-                    <span>{isSw ? 'Jaribu Sauti ya Kengele' : 'Test Alarm Audio'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => triggerAudioHardwareTest('STANDARD_UPDATE')}
-                    className="flex-1 min-w-[130px] px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Volume2 className="w-3 h-3 text-emerald-600 shrink-0" aria-hidden="true" />
-                    <span>{isSw ? 'Jaribu Mlio Laini' : 'Test Soft Chime'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const reg = await initializeWebPushRegistration(activeProfile.userId);
-                      if (reg.status === 'SUBSCRIBED') {
-                        await triggerLocalServiceWorkerPushTest({
-                          title: isSw ? 'SokoKuu TZ — Arifa ya Push' : 'SokoKuu TZ — Web Push Ready',
-                          body: isSw
-                            ? 'Kifaa kimesajiliwa kupokea kengele hata kivinjari kikifungwa.'
-                            : 'Device subscribed for background order alerts.',
-                          deepLinkUrl: '/dashboard/retailer',
-                        });
-                        setPushBanner(isSw ? 'Web Push imeamilishwa.' : 'Web Push active.');
-                      } else {
-                        setPushBanner(reg.message);
-                      }
-                    }}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Radio className="w-3 h-3 text-emerald-600 shrink-0" aria-hidden="true" />
-                    <span>
-                      {isSw
-                        ? 'Washa Web Push (Kivinjari Kikifungwa)'
-                        : 'Enable Background Web Push (VAPID)'}
-                    </span>
-                  </button>
-                  {pushBanner && (
-                    <div className="w-full text-[10px] font-mono text-slate-600 px-1">
-                      {pushBanner}
-                    </div>
-                  )}
-                </div>
+                {/* Background Web Push Controls — hidden once permission is granted */}
+                {pushPermission !== 'granted' && pushPermission !== 'unsupported' && (
+                  <div className="px-3 py-2 bg-slate-50/40 border-b border-slate-100 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const reg = await initializeWebPushRegistration(activeProfile.userId);
+                        if (reg.status === 'SUBSCRIBED') {
+                          setPushPermission('granted');
+                          setPushSubscribed(true);
+                          await triggerLocalServiceWorkerPushTest({
+                            title: isSw ? 'SokoKuu TZ — Arifa ya Push' : 'SokoKuu TZ — Web Push Ready',
+                            body: isSw
+                              ? 'Kifaa kimesajiliwa kupokea kengele hata kivinjari kikifungwa.'
+                              : 'Device subscribed for background order alerts.',
+                            deepLinkUrl: roleDeepLink,
+                          });
+                          setPushBanner(isSw ? 'Web Push imeamilishwa.' : 'Web Push active.');
+                        } else {
+                          setPushBanner(reg.message);
+                        }
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Radio className="w-3 h-3 text-emerald-600 shrink-0" aria-hidden="true" />
+                      <span>
+                        {isSw
+                          ? 'Washa Web Push (Kivinjari Kikifungwa)'
+                          : 'Enable Background Web Push (VAPID)'}
+                      </span>
+                    </button>
+                    {pushBanner && (
+                      <div className="w-full text-[10px] font-mono text-slate-600 px-1">
+                        {pushBanner}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {pushPermission === 'granted' && !pushSubscribed && (
+                  <div className="px-3 py-1.5 bg-slate-50/40 border-b border-slate-100 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const reg = await initializeWebPushRegistration(activeProfile.userId);
+                        if (reg.status === 'SUBSCRIBED') {
+                          setPushSubscribed(true);
+                          setPushBanner(isSw ? 'Web Push imeamilishwa.' : 'Web Push active.');
+                        } else {
+                          setPushBanner(reg.message);
+                        }
+                      }}
+                      className="text-emerald-700 font-semibold underline underline-offset-2 cursor-pointer"
+                    >
+                      {isSw ? 'Sajili tena Web Push' : 'Retry Web Push registration'}
+                    </button>
+                    {pushBanner && <span className="ml-2 text-slate-600">{pushBanner}</span>}
+                  </div>
+                )}
 
                 {/* Live Alert Stream */}
                 <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
@@ -901,7 +1048,16 @@ export function BrandedAppBarWithAlerts({
                       return (
                         <div
                           key={alert.id}
-                          className={`px-4 py-3 text-xs space-y-1 transition-colors ${
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleOpenAlert(alert)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              handleOpenAlert(alert);
+                            }
+                          }}
+                          className={`px-4 py-3 text-xs space-y-1 transition-colors cursor-pointer ${
                             !alert.acknowledged && urgent
                               ? 'bg-amber-50/80'
                               : !alert.acknowledged
@@ -938,15 +1094,10 @@ export function BrandedAppBarWithAlerts({
                             ) : (
                               <span />
                             )}
-                            {!alert.acknowledged && (
-                              <button
-                                type="button"
-                                onClick={() => acknowledgeAlert(alert.id)}
-                                className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
-                              >
-                                {isSw ? 'Pokea & Nyamazisha' : 'Acknowledge'}
-                              </button>
-                            )}
+                            <span className="text-[11px] font-semibold text-emerald-700 inline-flex items-center gap-1">
+                              <span>{isSw ? 'Nenda kwenye oda' : 'Open item'}</span>
+                              <ChevronRight className="w-3 h-3" aria-hidden="true" />
+                            </span>
                           </div>
                         </div>
                       );
@@ -1004,7 +1155,7 @@ export function BrandedAppBarWithAlerts({
             {profileMenuOpen && (
               <div
                 role="menu"
-                className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                className="animate-scale-in absolute right-0 mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
               >
                 <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/70 space-y-0.5">
                   <div className="text-sm font-bold text-slate-900 truncate">
@@ -1145,7 +1296,7 @@ export function BrandedAppBarWithAlerts({
                         : 'text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    {isSw ? 'Sokoni & Oda' : 'Sokoni Marketplace'}
+                    {isSw ? 'Nenda Sokoni' : 'Sokoni Marketplace'}
                   </button>
                   {retailerMapEnabled && (
                     <button
@@ -1164,6 +1315,60 @@ export function BrandedAppBarWithAlerts({
                       {isSw ? 'Ramani (GIS)' : 'Proximity Map'}
                     </button>
                   )}
+                </>
+              ) : activeProfile.role === 'WHOLESALER' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectWholesalerTab?.('operations');
+                      onSelectPage('DASHBOARD');
+                      onToggleMobileMenu();
+                    }}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activePage === 'DASHBOARD' && wholesalerTab === 'operations'
+                        ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {isSw ? 'Shughuli za Jumla' : 'Wholesale Operations'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectWholesalerTab?.('sokoni');
+                      onSelectPage('DASHBOARD');
+                      onToggleMobileMenu();
+                    }}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activePage === 'DASHBOARD' && wholesalerTab === 'sokoni'
+                        ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {isSw ? 'Nenda Sokoni' : 'Sokoni Marketplace'}
+                  </button>
+                </>
+              ) : activeProfile.role === 'SUPPLIER' ? (
+                <>
+                  {(['warehouse', 'publish', 'orders', 'reports'] as SupplierTab[]).map((tab) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => {
+                        onSelectSupplierTab(tab);
+                        onSelectPage('DASHBOARD');
+                        onToggleMobileMenu();
+                      }}
+                      className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                        activePage === 'DASHBOARD' && supplierTab === tab
+                          ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {SUPPLIER_TAB_LABELS[tab]}
+                    </button>
+                  ))}
                 </>
               ) : (
                 <button
@@ -1228,6 +1433,55 @@ export function BrandedAppBarWithAlerts({
               </button>
             </div>
           </aside>
+        </div>
+      )}
+
+      {/* Proactive, in-app notification permission ask (browser dialog needs a user gesture) */}
+      {showPushPrompt && (
+        <div
+          role="dialog"
+          aria-modal="false"
+          className="animate-slide-in-right fixed inset-x-4 bottom-4 z-40 mx-auto w-full max-w-sm rounded-xl border border-emerald-200 bg-white p-3.5 shadow-xl sm:left-auto sm:right-4 sm:mx-0"
+        >
+          <div className="flex items-start gap-2.5">
+            <div className="mt-0.5 rounded-lg bg-emerald-50 p-1.5 shrink-0">
+              <BellRing className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-slate-900">
+                {isSw ? 'Ungependa kupokea arifa?' : 'Get important alerts?'}
+              </p>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">
+                {isSw
+                  ? 'Washa arifa za kivinjari kupokea taarifa za maagizo hata kivinjari kikifungwa.'
+                  : 'Enable browser notifications for order alerts even when the browser is closed.'}
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleAllowPush()}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold cursor-pointer"
+                >
+                  {isSw ? 'Kubali' : 'Allow'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDismissPush}
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] font-semibold cursor-pointer"
+                >
+                  {isSw ? 'Hapana, asante' : 'Not now'}
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleDismissPush}
+              aria-label={isSw ? 'Funga' : 'Close'}
+              className="p-1 rounded text-slate-400 hover:text-slate-900 cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
     </header>

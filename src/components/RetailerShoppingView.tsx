@@ -8,12 +8,15 @@ export type RetailerTab = 'pos_register' | 'inventory_shelf' | 'core_engine' | '
 export function RetailerShoppingView({
   locale = 'en',
   activeTab = 'pos_register',
+  userRole = 'RETAILER',
+  userTier = null,
   businessId,
   onRedirectToWorkspace,
 }: {
   locale?: Locale;
   activeTab?: RetailerTab;
   userRole?: 'RETAILER' | 'CONSUMER';
+  userTier?: string | null;
   businessId?: string | null;
   onRedirectToWorkspace?: () => void;
 }) {
@@ -33,7 +36,9 @@ export function RetailerShoppingView({
           businessId={businessId}
         />
       )}
-      {activeTab === 'core_engine' && <SokoniCoreEngine locale={locale} />}
+      {activeTab === 'core_engine' && (
+        <SokoniCoreEngine locale={locale} userRole={userRole} userTier={userTier} />
+      )}
       {activeTab === 'proximity_map' && (
         <FullPageMarketplaceMap
           locale={locale}

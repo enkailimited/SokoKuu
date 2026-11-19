@@ -207,7 +207,7 @@ export function DukaShelfTerminal({
         setErrorNotice(
           isSw
             ? 'Mtandao haupatikani: POS inahitaji muunganisho wa seva ya NestJS.'
-            : 'Backend Offline: Unable to post POS sale without NestJS API connection.'
+            : 'Offline right now — this POS sale could not be posted.'
         );
       } else {
         setErrorNotice(err instanceof Error ? err.message : 'POS sale failed.');

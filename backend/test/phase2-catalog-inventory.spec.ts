@@ -15,10 +15,10 @@ import { kgToQuarterQuantaChecked } from '@modules/06-inventory/quarter-quanta.u
 
 describe('Phase 2: Master Catalog Cloning, Channel Harmony, Custom Units & Quarter-Quanta Bulk-Breaking', () => {
   describe('Channel Harmony Policy', () => {
-    it('rejects WHOLESALE_HUB listing QUARTER_KILO_LITRE (Robo) fractions', () => {
+    it('rejects WHOLESALE listing QUARTER_KILO_LITRE (Robo) fractions', () => {
       expect(() =>
         assertChannelHarmonyForTier({
-          merchantTier: 'WHOLESALE_HUB',
+          merchantTier: 'WHOLESALE',
           unitType: PackagingUnitDto.QUARTER_KILO_LITRE,
           isWholesaleTier: true,
         }),
@@ -77,7 +77,7 @@ describe('Phase 2: Master Catalog Cloning, Channel Harmony, Custom Units & Quart
           findUnique: jest.fn(async () => ({
             id: 'global-1',
             canonicalSku: 'GC-AZN-WHEAT-2KG',
-            imagekitCdnUrl: 'https://ik.imagekit.io/sokokuutz/catalog/wheat.webp',
+            imagekitCdnUrl: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/wheat.webp',
             clonedByStoresCount: adoptionCount,
             isActive: true,
           })),
@@ -126,7 +126,7 @@ describe('Phase 2: Master Catalog Cloning, Channel Harmony, Custom Units & Quart
       expect(first.initializedPriceTzs).toBe(0);
       expect(first.updatedClonedByStoresCount).toBe(1);
       expect(first.idempotentReplay).toBe(false);
-      expect(first.imagekitCdnUrl).toBe('https://ik.imagekit.io/sokokuutz/catalog/wheat.webp');
+      expect(first.imagekitCdnUrl).toBe('https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/wheat.webp');
 
       const replay = await catalogService.cloneStandardCatalogItem(
         { globalCatalogId: 'global-1' },
@@ -235,7 +235,8 @@ describe('Phase 2: Master Catalog Cloning, Channel Harmony, Custom Units & Quart
       expect(receipt.bulkPackagesBroken).toBe(1);
       expect(receipt.remainingLooseQuanta).toBe(196);
       expect(receipt.remainingSealedPackages).toBe(4);
-      expect(receipt.totalTzs).toBe(8000);
+      // unit_price_tzs is per base unit (4 quarter-quanta); 8 quanta x 1000 / 4 = 2000.
+      expect(receipt.totalTzs).toBe(2000);
       expect(deconstructionLogs).toHaveLength(1);
       expect(deconstructionLogs[0].looseQuantaBefore).toBe(4);
       expect(deconstructionLogs[0].looseQuantaAfter).toBe(204);

@@ -66,16 +66,16 @@ export class WebPushDispatchService {
     }
   }
 
-  async broadcastToRole(role: string, payload: WebPushPayload): Promise<number> {
-    const users = await this.prismaService.user.findMany({
-      where: { role: role as any, isActive: true },
-      select: { id: true },
-    });
-    const userIds = users.map((u) => u.id);
-    if (userIds.length === 0) return 0;
+  async sendToUser(userId: string, payload: WebPushPayload): Promise<number> {
+    return this.sendToUsers([userId], payload);
+  }
+
+  async sendToUsers(userIds: string[], payload: WebPushPayload): Promise<number> {
+    const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+    if (uniqueUserIds.length === 0) return 0;
 
     const subs = await this.prismaService.webPushSubscription.findMany({
-      where: { userId: { in: userIds } },
+      where: { userId: { in: uniqueUserIds }, user: { isActive: true } },
     });
 
     let sentCount = 0;
@@ -105,5 +105,16 @@ export class WebPushDispatchService {
     }
 
     return sentCount;
+  }
+
+  async broadcastToRole(role: string, payload: WebPushPayload): Promise<number> {
+    const users = await this.prismaService.user.findMany({
+      where: { role: role as any, isActive: true },
+      select: { id: true },
+    });
+    return this.sendToUsers(
+      users.map((user) => user.id),
+      payload,
+    );
   }
 }

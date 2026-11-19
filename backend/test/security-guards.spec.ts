@@ -200,6 +200,65 @@ describe('Phase 1 Security Guards', () => {
         isSuperAdmin: true,
       });
     });
+
+    it('retries a transient Neon connection failure before deriving tenant context', async () => {
+      const reflector = {
+        getAllAndOverride: jest.fn().mockReturnValue(false),
+      } as unknown as Reflector;
+      const findFirst = jest
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              "Can't reach database server at `ep-cold-sun.neon.tech:5432`. " +
+                'Please make sure your database server is running.',
+            ),
+            { code: 'P1001' },
+          ),
+        )
+        .mockResolvedValueOnce({
+          id: 'merchant-db-2',
+          tier: 'MANUFACTURER_SUPPLIER',
+          isPlatformManaged: false,
+          geospatialMapEnabled: false,
+        });
+      const guard = new TenantContextGuard(reflector, {
+        businessProfile: { findFirst },
+      } as any);
+      const req: Partial<AuthenticatedRequest> = {
+        user: { sub: 'owner-2', role: Role.SUPPLIER, businessId: null },
+        params: {},
+        query: {},
+        body: {},
+      };
+
+      await expect(guard.canActivate(createHttpExecutionContext(req))).resolves.toBe(true);
+      expect(findFirst).toHaveBeenCalledTimes(2);
+      expect(req.tenantContext?.businessId).toBe('merchant-db-2');
+      expect(req.tenantContext?.tier).toBe('MANUFACTURER_SUPPLIER');
+    });
+
+    it('does not swallow non-transient database errors from the tenant lookup', async () => {
+      const reflector = {
+        getAllAndOverride: jest.fn().mockReturnValue(false),
+      } as unknown as Reflector;
+      const findFirst = jest.fn().mockRejectedValue(new Error('invalid tenant schema'));
+      const guard = new TenantContextGuard(reflector, {
+        businessProfile: { findFirst },
+      } as any);
+
+      await expect(
+        guard.canActivate(
+          createHttpExecutionContext({
+            user: { sub: 'owner-3', role: Role.RETAILER, businessId: 'merchant-A' },
+            params: {},
+            query: {},
+            body: {},
+          }),
+        ),
+      ).rejects.toThrow('invalid tenant schema');
+      expect(findFirst).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('NextSmsGatewayTokenGuard', () => {

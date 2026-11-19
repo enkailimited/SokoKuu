@@ -1,20 +1,35 @@
 import { Body, Controller, Delete, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { IsOptional, IsString, ValidateNested } from 'class-validator';
 import { AuthenticatedUser } from '@common/security/auth.types';
 import { CurrentUser, Roles, TenantScoped } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
 import { WebPushDispatchService } from './web-push.service';
 
+class WebPushKeysDto {
+  @IsString()
+  p256dh!: string;
+
+  @IsString()
+  auth!: string;
+}
+
 class WebPushSubscriptionDto {
+  @IsString()
   endpoint!: string;
-  keys!: {
-    p256dh: string;
-    auth: string;
-  };
+
+  @ValidateNested()
+  @Type(() => WebPushKeysDto)
+  keys!: WebPushKeysDto;
+
+  @IsOptional()
+  @IsString()
   deviceType?: string;
 }
 
 class UnsubscribeDto {
+  @IsString()
   endpoint!: string;
 }
 
@@ -26,8 +41,7 @@ export class WebPushController {
 
   @Post('subscribe')
   @HttpCode(HttpStatus.CREATED)
-  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.DRIVER, Role.CONSUMER)
-  @TenantScoped()
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.DRIVER, Role.CONSUMER, Role.SUPPLIER)
   @ApiOperation({ summary: 'Register or update Web Push browser subscription bound strictly to JWT userId' })
   subscribe(
     @Body() dto: WebPushSubscriptionDto,
@@ -38,8 +52,7 @@ export class WebPushController {
 
   @Delete('unsubscribe')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.DRIVER, Role.CONSUMER)
-  @TenantScoped()
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.DRIVER, Role.CONSUMER, Role.SUPPLIER)
   @ApiOperation({ summary: 'Remove browser Web Push subscription endpoint' })
   unsubscribe(@Body() dto: UnsubscribeDto) {
     return this.webPushService.removeSubscription(dto.endpoint);

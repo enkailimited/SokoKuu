@@ -3,9 +3,9 @@
 // Intercepts navigation shells, static bundles, and offline POS/Catalog mutations.
 // ============================================================================
 
-const SHELL_CACHE = 'sokokuu-shell-v7';
-const STATIC_CACHE = 'sokokuu-static-v7';
-const API_CACHE = 'sokokuu-api-v7';
+const SHELL_CACHE = 'sokokuu-shell-v9';
+const STATIC_CACHE = 'sokokuu-static-v9';
+const API_CACHE = 'sokokuu-api-v9';
 
 const PRECACHE_URLS = [
   '/',
@@ -178,7 +178,9 @@ self.addEventListener('push', (event) => {
 
   try {
     const data = event.data.json();
+    const nestedData = data && typeof data.data === 'object' && data.data ? data.data : {};
     const title = data.title || 'SokoKuu TZ Alert';
+    const deepLink = nestedData.url || data.url || '/dashboard';
 
     const options = {
       body: data.body || 'New marketplace order or doorstep arrival update.',
@@ -186,9 +188,10 @@ self.addEventListener('push', (event) => {
       badge: '/pwa-192x192.png',
       vibrate: [200, 100, 200, 100, 400],
       data: {
-        url: data.url || '/dashboard/retailer',
+        ...nestedData,
+        url: deepLink,
       },
-      tag: data.tag || 'sokokuu-order-alert',
+      tag: data.tag || nestedData.eventType || 'sokokuu-order-alert',
       requireInteraction: true,
     };
 
@@ -198,21 +201,33 @@ self.addEventListener('push', (event) => {
   }
 });
 
+// Only same-origin absolute paths may be opened from a push payload. This
+// prevents a poisoned push message from navigating the user to an arbitrary
+// external origin (phishing / open redirect).
+function safeSokokuuDeepLink(candidate) {
+  const value = typeof candidate === 'string' ? candidate : '';
+  if (!value.startsWith('/') || value.startsWith('//')) return '/dashboard';
+  return value;
+}
+
 // 5. Action Terminal Deep Linking on Notification Tap
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetDeepLinkUrl =
-    (event.notification.data && event.notification.data.url) || '/dashboard/retailer';
+  const targetDeepLinkUrl = safeSokokuuDeepLink(
+    event.notification.data && event.notification.data.url
+  );
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
       for (const client of windowClients) {
-        if (client.url.includes(targetDeepLinkUrl) && 'focus' in client) {
+        client.postMessage({
+          type: 'SOKOKUU_NOTIFICATION_OPEN',
+          deepLink: targetDeepLinkUrl,
+          notificationData: event.notification.data || {},
+        });
+        if ('focus' in client) {
           return client.focus();
         }
-      }
-      if (windowClients.length > 0 && 'focus' in windowClients[0]) {
-        return windowClients[0].focus();
       }
       if (self.clients.openWindow) {
         return self.clients.openWindow(targetDeepLinkUrl);

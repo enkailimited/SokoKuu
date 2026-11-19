@@ -90,7 +90,7 @@ export function RetailerCheckoutCart({
         false
       );
       const suppliers = (Array.isArray(merchantList) ? merchantList : []).filter(
-        (m) => m.tier === 'WHOLESALE_HUB' || m.tier === 'HYBRID_STORE'
+        (m) => m.tier === 'WHOLESALE' || m.tier === 'HYBRID_STORE'
       );
       const selectable = suppliers.length > 0 ? suppliers : Array.isArray(merchantList) ? merchantList : [];
       setMerchants(selectable);
@@ -216,9 +216,9 @@ export function RetailerCheckoutCart({
     try {
       const res = await SokoApiClient.post<{
         orderId: string;
-        orderRef8: string;
+        orderRef: string;
         status: string;
-        totalCashDueTzs: number;
+        expectedTotalTzs: number;
       }>('/marketplace/orders/submit-request', {
         sellerBusinessId: selectedMerchantId,
         originChannel: 'PWA_ONLINE',
@@ -226,17 +226,19 @@ export function RetailerCheckoutCart({
         deliveryFeeTzs: 0,
         items: cartSummary.bareTokenItems,
       });
+      const orderRef = res.orderRef;
+      const totalCashDueTzs = Number(res.expectedTotalTzs ?? 0);
 
       setQuantities({});
       setSubmissionNote({
         mode: 'API',
-        orderRef: res.orderRef8,
+        orderRef,
         headline: isSw
           ? `Ombi la Oda Limepokelewa · Hali: ${res.status}`
           : `B2B Purchase Request Placed · Status: ${res.status}`,
         summaryLine: isSw
-          ? `Oda #${res.orderRef8} · Bidhaa ${cartSummary.bareTokenItems.length} (${cartSummary.totalUnits} vipimo) · TZS ${res.totalCashDueTzs.toLocaleString('en-US')}`
-          : `Order #${res.orderRef8} · ${cartSummary.bareTokenItems.length} SKUs (${cartSummary.totalUnits} units) · Server-verified CoD TZS ${res.totalCashDueTzs.toLocaleString('en-US')}`,
+          ? `Oda #${orderRef} · Bidhaa ${cartSummary.bareTokenItems.length} (${cartSummary.totalUnits} vipimo) · TZS ${totalCashDueTzs.toLocaleString('en-US')}`
+          : `Order #${orderRef} · ${cartSummary.bareTokenItems.length} SKUs (${cartSummary.totalUnits} units) · Server-verified CoD TZS ${totalCashDueTzs.toLocaleString('en-US')}`,
       });
     } catch (err) {
       if (isSokoNetworkError(err)) {

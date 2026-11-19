@@ -26,9 +26,10 @@ export interface SokoniStoreProfile {
   businessId: string;
   name: string;
   initials: string;
-  tier: 'WHOLESALE_HUB' | 'HYBRID_STORE' | 'RETAIL_DUKA';
+  tier: 'WHOLESALE' | 'HYBRID_STORE' | 'RETAIL_DUKA';
   ward: string;
   city: string;
+  logoUrl?: string;
   distanceMeters: number;
 }
 
@@ -53,9 +54,10 @@ interface BackendMerchantDto {
   merchantId: string;
   smsShortCode: string;
   merchantName: string;
-  tier: 'WHOLESALE_HUB' | 'HYBRID_STORE' | 'RETAIL_DUKA';
+  tier: 'WHOLESALE' | 'HYBRID_STORE' | 'RETAIL_DUKA';
   ward: string;
   district: string;
+  logoUrl?: string;
 }
 
 interface BackendProductDto {
@@ -107,7 +109,7 @@ export function SokoniDirectory({ locale = 'en' }: { locale?: Locale }) {
       const list = await SokoApiClient.get<BackendMerchantDto[]>('/marketplace/merchants');
       setStores(
         (Array.isArray(list) ? list : [])
-          .filter((m) => m.tier === 'WHOLESALE_HUB' || m.tier === 'HYBRID_STORE')
+          .filter((m) => m.tier === 'WHOLESALE' || m.tier === 'HYBRID_STORE')
           .map((m, idx) => ({
             businessId: m.merchantId,
             name: m.merchantName,
@@ -122,6 +124,7 @@ export function SokoniDirectory({ locale = 'en' }: { locale?: Locale }) {
             tier: m.tier,
             ward: m.ward,
             city: m.district,
+            logoUrl: m.logoUrl,
             distanceMeters: 250 + idx * 280,
           }))
       );
@@ -392,8 +395,12 @@ export function SokoniDirectory({ locale = 'en' }: { locale?: Locale }) {
                   className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 font-mono font-bold text-sm text-emerald-700">
-                      {store.initials}
+                    <div className="w-12 h-12 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 font-mono font-bold text-sm text-emerald-700 overflow-hidden">
+                      {store.logoUrl ? (
+                        <img src={store.logoUrl} alt={store.name} className="w-full h-full object-cover" />
+                      ) : (
+                        store.initials
+                      )}
                     </div>
                     <div className="min-w-0 space-y-1">
                       <h3 className="text-sm font-bold text-slate-900 truncate">{store.name}</h3>

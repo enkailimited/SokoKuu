@@ -1,11 +1,15 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { TenantContext } from '@common/security/auth.types';
+import { UserRole } from '@prisma/client';
+import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
+import { Role } from '@common/security/roles.enum';
 import { PrismaService } from '@database/prisma.service';
+import { DispatchService } from '@modules/12-dispatch/dispatch.service';
 import { ListManagedOrdersQueryDto, UpdateManagedOrderStatusDto } from './dto/audit.dto';
 import { RetentionCronService } from './retention-cron.service';
 
@@ -14,6 +18,7 @@ export class AuditService {
   constructor(
     private readonly prismaService: PrismaService,
     @Optional() private readonly retentionCronService?: RetentionCronService,
+    @Optional() private readonly dispatchService?: DispatchService,
   ) {}
 
   async listManagedOrders(query: ListManagedOrdersQueryDto) {
@@ -34,6 +39,21 @@ export class AuditService {
             expectedTotalTzs: true,
             paymentMethod: true,
             placedAt: true,
+            dispatchedAt: true,
+            deliveredAt: true,
+            buyer: {
+              select: {
+                fullName: true,
+                phoneE164: true,
+              },
+            },
+            driver: {
+              select: {
+                id: true,
+                fullName: true,
+                phoneE164: true,
+              },
+            },
           },
         },
         seller: {
@@ -42,6 +62,14 @@ export class AuditService {
             businessName: true,
             smsShortCode: true,
             isPlatformManaged: true,
+            allowAdminReceive: true,
+            tier: true,
+            owner: {
+              select: {
+                fullName: true,
+                phoneE164: true,
+              },
+            },
           },
         },
       },
@@ -56,7 +84,15 @@ export class AuditService {
         sellerBusinessId: trace.sellerBusinessId,
         merchantName: trace.seller.businessName,
         merchantShortCode: trace.seller.smsShortCode,
+        sellerOwnerName: trace.seller.owner.fullName,
+        sellerPhoneE164: trace.seller.owner.phoneE164,
+        buyerName: trace.order.buyer.fullName,
+        buyerPhoneE164: trace.order.buyer.phoneE164,
+        driverName: trace.order.driver?.fullName ?? null,
+        driverPhoneE164: trace.order.driver?.phoneE164 ?? null,
         isPlatformManagedSnapshot: trace.isPlatformManagedSnapshot,
+        sellerTier: trace.seller.tier,
+        sellerAllowAdminReceive: trace.seller.allowAdminReceive,
         routingOutputCode: trace.routingOutputCode,
         targetPipeline: trace.targetPipeline,
         txIsolationLevel: trace.txIsolationLevel,
@@ -66,6 +102,25 @@ export class AuditService {
         recordedAt: trace.recordedAt.toISOString(),
         orderStatus: trace.order.status,
         expectedTotalTzs: Number(trace.order.expectedTotalTzs),
+        dispatchedAt: trace.order.dispatchedAt?.toISOString() ?? null,
+        deliveredAt: trace.order.deliveredAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
+  async listActiveDrivers() {
+    const drivers = await this.prismaService.user.findMany({
+      where: { role: UserRole.DRIVER, isActive: true },
+      orderBy: { fullName: 'asc' },
+      select: { id: true, fullName: true, phoneE164: true },
+    });
+
+    return {
+      count: drivers.length,
+      drivers: drivers.map((driver) => ({
+        driverId: driver.id,
+        driverName: driver.fullName,
+        phoneE164: driver.phoneE164,
       })),
     };
   }
@@ -75,7 +130,55 @@ export class AuditService {
     dto: UpdateManagedOrderStatusDto,
     adminUserId: string,
   ) {
-    return this.prismaService.runInTransaction('RepeatableRead', async (tx) => {
+    let dispatchResult: Awaited<
+      ReturnType<DispatchService['dispatchOrderAndAllocatePins']>
+    > | null = null;
+
+    if (dto.helpdeskStatus === 'IN_TRANSIT') {
+      const trace = await this.prismaService.orderDispatchAuditTrace.findUnique({
+        where: { id: traceId },
+        select: { id: true, orderId: true },
+      });
+
+      if (!trace) {
+        throw new NotFoundException(`Order dispatch audit trace ${traceId} was not found.`);
+      }
+
+      if (!trace.orderId) {
+        throw new ConflictException(
+          `Order dispatch audit trace ${traceId} is not linked to a live order.`,
+        );
+      }
+
+      const order = await this.prismaService.order.findUnique({
+        where: { id: trace.orderId },
+        select: { id: true, status: true },
+      });
+
+      if (!order) {
+        throw new NotFoundException(`Order ${trace.orderId} was not found.`);
+      }
+
+      if (order.status === 'PLACED') {
+        if (!this.dispatchService) {
+          throw new ConflictException(
+            'Dispatch service is unavailable; cannot start order transit.',
+          );
+        }
+
+        dispatchResult = await this.dispatchService.dispatchOrderAndAllocatePins(
+          trace.orderId,
+          { driverUserId: dto.driverUserId },
+          { sub: adminUserId, role: Role.SUPER_ADMIN },
+        );
+      } else if (order.status !== 'DISPATCHED') {
+        throw new ConflictException(
+          `Order ${trace.orderId} cannot start transit from ${order.status}.`,
+        );
+      }
+    }
+
+    const result = await this.prismaService.runInTransaction('RepeatableRead', async (tx) => {
       const trace = await tx.orderDispatchAuditTrace.findUnique({
         where: { id: traceId },
       });
@@ -119,6 +222,16 @@ export class AuditService {
         handledAt: updated.handledAt?.toISOString() ?? null,
       };
     });
+
+    return {
+      ...result,
+      orderStatus: dispatchResult?.status ?? null,
+      driverUserId: dispatchResult?.driverUserId ?? null,
+      ledgerId: dispatchResult?.ledgerId ?? null,
+      buyerConfirmationPin: dispatchResult?.buyerConfirmationPin ?? null,
+      driverConfirmationPin: dispatchResult?.driverConfirmationPin ?? null,
+      dispatchedAtEat: dispatchResult?.dispatchedAtEat ?? null,
+    };
   }
 
   async listFinancialAuditLogs(

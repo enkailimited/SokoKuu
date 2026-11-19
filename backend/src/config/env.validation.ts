@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3001),
+  PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   TZ: z.literal('Africa/Dar_es_Salaam', {
     errorMap: () => ({
       message: 'TZ must be strictly set to Africa/Dar_es_Salaam',
@@ -37,6 +37,7 @@ export const envSchema = z.object({
   NEXTSMS_API_BASE_URL: z.string().url().default('https://messaging-service.co.tz'),
   NEXTSMS_USERNAME: z.string().optional(),
   NEXTSMS_PASSWORD: z.string().optional(),
+  NEXTSMS_API_TOKEN: z.string().optional(),
   NEXTSMS_SENDER_ID: z.string().min(2).max(11).default('SOKOKUU'),
   SECURITY_ADMIN_ALERT_PHONE: z
     .string()
@@ -47,9 +48,15 @@ export const envSchema = z.object({
   VAPID_SUBJECT: z.string().min(5).default('mailto:ops@sokokuu.tz'),
   VAPID_PUBLIC_KEY: z.string().min(16, 'VAPID_PUBLIC_KEY is required'),
   VAPID_PRIVATE_KEY: z.string().min(16, 'VAPID_PRIVATE_KEY is required'),
+  IMAGEKIT_PUBLIC_KEY: z.string().optional(),
+  IMAGEKIT_PRIVATE_KEY: z.string().optional(),
+  IMAGEKIT_URL_ENDPOINT: z.string().url().optional(),
+  CORS_ORIGINS: z.string().optional(),
   CORS_ALLOWED_ORIGINS: z
     .string()
-    .default('http://localhost:3000,http://localhost:5173,https://sokokuu.tz'),
+    .default(
+      'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,https://sokokuu.tz',
+    ),
 });
 
 export type ValidatedEnv = z.infer<typeof envSchema>;

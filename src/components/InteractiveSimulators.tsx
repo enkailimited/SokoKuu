@@ -805,11 +805,23 @@ export function OfflineQueueSimulator({ locale }: { locale: Locale }) {
           '/orders/request',
           {
             sellerBusinessId: item.sellerBusinessId,
-            originChannel: 'PWA_OFFLINE_SYNC',
+            originChannel: 'PWA_IDB_SYNC',
             paymentMethod: 'CASH',
-            items: item.items,
+            ...(item.orderChannel ? { orderChannel: item.orderChannel } : {}),
+            ...(item.deliveryFeeTzs !== undefined
+              ? { deliveryFeeTzs: item.deliveryFeeTzs }
+              : {}),
+            items: item.items.map((line) => ({
+              productId: line.productId,
+              unitType: line.unitType,
+              quantity: line.quantity,
+              ...(line.supplierListingId
+                ? { supplierListingId: line.supplierListingId }
+                : {}),
+            })),
           },
           true,
+          { 'X-Idempotency-Key': item.idempotencyKey },
         );
         await putQueuedOrder({
           ...item,

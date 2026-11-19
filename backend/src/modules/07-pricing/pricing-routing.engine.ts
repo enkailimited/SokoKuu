@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   BusinessTier,
+  OrderChannel,
   PackagingUnit,
   Prisma,
   StandardPricingProfileType,
@@ -48,6 +49,7 @@ export interface CalculatedOrderQuote {
   sellerBusinessName: string;
   sellerTier: BusinessTier;
   isPlatformManaged: boolean;
+  orderChannel: OrderChannel;
   currency: 'TZS';
   itemsSubtotalTzs: number;
   deliveryFeeTzs: number;
@@ -84,6 +86,11 @@ export class PricingRoutingEngine {
         tier: true,
         isOpen: true,
         isPlatformManaged: true,
+        allowAdminReceive: true,
+        offersFreeDelivery: true,
+        isFreeDeliveryEnabled: true,
+        freeDeliveryMinOrderTzs: true,
+        standardDeliveryFeeTzs: true,
       },
     });
 
@@ -94,6 +101,72 @@ export class PricingRoutingEngine {
       throw new UnprocessableEntityException(
         `Seller Merchant ${seller.businessName} is currently closed for orders.`,
       );
+    }
+
+    const isSupplierChannel = dto.orderChannel === OrderChannel.SUPPLIER_TO_WHOLESALER;
+    if (isSupplierChannel && seller.tier !== BusinessTier.MANUFACTURER_SUPPLIER) {
+      throw new UnprocessableEntityException(
+        'SUPPLIER_TO_WHOLESALER orders must be placed against a MANUFACTURER_SUPPLIER tenant.',
+      );
+    }
+    if (!isSupplierChannel && seller.tier === BusinessTier.MANUFACTURER_SUPPLIER) {
+      throw new UnprocessableEntityException(
+        'MANUFACTURER_SUPPLIER procurement must use the SUPPLIER_TO_WHOLESALER order channel.',
+      );
+    }
+
+    const routesThroughAdmin = isSupplierChannel
+      ? seller.isPlatformManaged && seller.allowAdminReceive
+      : seller.isPlatformManaged;
+
+    const supplierListingMap = new Map<string, { id: string; globalCatalogId: string; systemUnitId: string; supplierBulkPriceTzs: bigint; minOrderQuantity: number }>();
+    const supplierQpuMap = new Map<string, number>();
+    if (isSupplierChannel) {
+      const listingIds = dto.items
+        .map((item) => item.supplierListingId)
+        .filter((id): id is string => Boolean(id));
+      if (listingIds.length !== dto.items.length || new Set(listingIds).size !== dto.items.length) {
+        throw new BadRequestException(
+          'Every SUPPLIER_TO_WHOLESALER line requires a unique published supplierListingId.',
+        );
+      }
+
+      const listings = await client.supplierCatalogListing.findMany({
+        where: {
+          id: { in: listingIds },
+          supplierBusinessId: seller.id,
+          isPublishedToMarket: true,
+        },
+        select: {
+          id: true,
+          globalCatalogId: true,
+          systemUnitId: true,
+          supplierBulkPriceTzs: true,
+          minOrderQuantity: true,
+        },
+      });
+      for (const listing of listings) {
+        supplierListingMap.set(listing.id, listing);
+      }
+      for (const listingId of listingIds) {
+        if (!supplierListingMap.has(listingId)) {
+          throw new BadRequestException(
+            `Supplier listing ${listingId} is not published by Merchant ${seller.id}.`,
+          );
+        }
+      }
+
+      const productUnits = await client.globalProductUnit.findMany({
+        where: {
+          globalCatalogId: { in: listings.map((listing) => listing.globalCatalogId) },
+          systemUnitId: { in: listings.map((listing) => listing.systemUnitId) },
+          isActive: true,
+        },
+        select: { globalCatalogId: true, systemUnitId: true, quarterQuantaPerUnit: true },
+      });
+      for (const unit of productUnits) {
+        supplierQpuMap.set(`${unit.globalCatalogId}:${unit.systemUnitId}`, unit.quarterQuantaPerUnit);
+      }
     }
 
     const uniqueProductIds = Array.from(new Set(dto.items.map((item) => item.productId)));
@@ -158,14 +231,14 @@ export class PricingRoutingEngine {
       let isWholesaleTierApplied = false;
       let pricingRuleReason = 'RETAIL_BASE_TIER';
 
-      if (seller.tier === 'WHOLESALE_HUB') {
+      if (seller.tier === 'WHOLESALE') {
         assertChannelHarmonyForTier({
-          merchantTier: 'WHOLESALE_HUB',
+          merchantTier: 'WHOLESALE',
           unitType: reqItem.unitType,
           isWholesaleTier: true,
         });
         isWholesaleTierApplied = true;
-        pricingRuleReason = 'WHOLESALE_HUB_ENFORCED';
+        pricingRuleReason = 'WHOLESALE_ENFORCED';
       } else if (seller.tier === 'RETAIL_DUKA') {
         assertChannelHarmonyForTier({
           merchantTier: 'RETAIL_DUKA',
@@ -197,12 +270,43 @@ export class PricingRoutingEngine {
         ? wholesaleTier ?? retailTier
         : retailTier ?? wholesaleTier;
 
-      const quarterQuantaPerUnit = selectedTier?.quarterQuantaPerUnit ?? fallbackQuanta;
-      const finalItemQuanta = quarterQuantaPerUnit * reqItem.quantity;
+      let quarterQuantaPerUnit = selectedTier?.quarterQuantaPerUnit ?? fallbackQuanta;
+      let finalItemQuanta = quarterQuantaPerUnit * reqItem.quantity;
 
-      const unitPriceBigInt = selectedTier
+      let unitPriceBigInt = selectedTier
         ? BigInt(selectedTier.priceTzs)
         : this.resolveFallbackUnitPriceBigInt(product, reqItem.unitType);
+
+      if (isSupplierChannel) {
+        const listing = supplierListingMap.get(reqItem.supplierListingId!)!;
+        if (listing.globalCatalogId !== product.globalCatalogId) {
+          throw new UnprocessableEntityException(
+            `Supplier listing ${listing.id} does not describe product ${product.id}.`,
+          );
+        }
+        if (reqItem.quantity < listing.minOrderQuantity) {
+          throw new BadRequestException(
+            `Supplier listing ${listing.id} minimum order quantity is ${listing.minOrderQuantity} units.`,
+          );
+        }
+        const supplierQpu = supplierQpuMap.get(
+          `${listing.globalCatalogId}:${listing.systemUnitId}`,
+        );
+        if (!supplierQpu || supplierQpu <= 0) {
+          throw new UnprocessableEntityException(
+            `Supplier listing ${listing.id} has no active Quarter-Quanta unit conversion.`,
+          );
+        }
+        quarterQuantaPerUnit = supplierQpu;
+        finalItemQuanta = quarterQuantaPerUnit * reqItem.quantity;
+        unitPriceBigInt = listing.supplierBulkPriceTzs;
+        isWholesaleTierApplied = true;
+        pricingRuleReason = 'SUPPLIER_B2B_BULK_PRICE';
+      }
+
+      if (!Number.isSafeInteger(finalItemQuanta) || finalItemQuanta < reqItem.quantity) {
+        throw new BadRequestException('Invalid Quarter-Quanta quantity calculation.');
+      }
 
       const lineTotalTzs = safeMultiplyIntegerTzs(reqItem.quantity, unitPriceBigInt);
       const unitPriceTzs = Number(unitPriceBigInt);
@@ -230,14 +334,31 @@ export class PricingRoutingEngine {
       });
     }
 
-    const deliveryFeeTzs = dto.deliveryFeeTzs ?? 0;
+    let deliveryFeeBigInt = BigInt(dto.deliveryFeeTzs ?? 0);
+
+    if (isSupplierChannel) {
+      const minimum = BigInt(seller.freeDeliveryMinOrderTzs ?? 0n);
+      const standardFee = BigInt(seller.standardDeliveryFeeTzs ?? 0n);
+      const qualifies =
+        seller.isFreeDeliveryEnabled &&
+        (minimum === 0n || BigInt(itemsSubtotalTzs) >= minimum);
+      deliveryFeeBigInt = qualifies ? 0n : standardFee;
+    } else if (seller.offersFreeDelivery) {
+      deliveryFeeBigInt = 0n;
+    }
+
+    if (deliveryFeeBigInt < 0n || deliveryFeeBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new BadRequestException('Delivery fee is outside the supported whole-TZS range.');
+    }
+    const deliveryFeeTzs = Number(deliveryFeeBigInt);
     const expectedTotalTzs = itemsSubtotalTzs + deliveryFeeTzs;
 
     return {
       sellerBusinessId: seller.id,
       sellerBusinessName: seller.businessName,
       sellerTier: seller.tier,
-      isPlatformManaged: seller.isPlatformManaged,
+      isPlatformManaged: routesThroughAdmin,
+      orderChannel: dto.orderChannel ?? OrderChannel.RETAIL_MARKETPLACE,
       currency: 'TZS',
       itemsSubtotalTzs,
       deliveryFeeTzs,

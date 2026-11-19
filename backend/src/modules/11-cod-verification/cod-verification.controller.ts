@@ -31,7 +31,7 @@ export class CodVerificationController {
 
   @Post('ledgers/:orderId/buyer-confirm')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.CONSUMER, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Submit Buyer confirmation PIN for Cash-on-Delivery ledger' })
   confirmBuyer(
     @Param('orderId', new ParseUUIDPipe()) orderId: string,
@@ -59,7 +59,7 @@ export class CodVerificationController {
 
   @Post('orders/verify-doorstep-qr')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.DRIVER, Role.RETAILER, Role.SUPER_ADMIN)
+  @Roles(Role.DRIVER, Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Verify time-bounded HMAC QR token + Dual-PIN + cash match atomically under SERIALIZABLE',
   })
@@ -76,7 +76,7 @@ export class CodVerificationController {
 
   @Post('orders/reconcile/retailer-qr-scan')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.CONSUMER, Role.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Device-isolated Buyer QR scan triggering Driver PIN terminal outbox signal',
   })
@@ -86,7 +86,7 @@ export class CodVerificationController {
 
   @Post('orders/reconcile/buyer-pin')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.CONSUMER, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Device-isolated Buyer PIN confirmation' })
   isolatedBuyerPin(
     @Body() dto: IsolatedBuyerPinDto,

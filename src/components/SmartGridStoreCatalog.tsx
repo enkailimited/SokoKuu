@@ -20,10 +20,7 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
-import azaniaFlourImg from '../assets/images/azania_wheat_flour_1794734183041.jpg';
-import korieOilImg from '../assets/images/korie_cooking_oil_1794734183539.jpg';
-import kilomberoSugarImg from '../assets/images/kilombero_brown_sugar_1794734184028.jpg';
-import mbeyaRiceImg from '../assets/images/mbeya_super_rice_1794734184118.jpg';
+import { resolveBackendImageUrl } from '../lib/sokoProductImage';
 
 export interface GridProduct {
   id: string;
@@ -43,13 +40,7 @@ function isUuid(val?: string | null): val is string {
   return Boolean(val && UUID_REGEX.test(val));
 }
 
-function resolveSkuImage(sku: string): string {
-  const s = sku.toUpperCase();
-  if (s.includes('AZN') || s.includes('FLR') || s.includes('WHEAT')) return azaniaFlourImg;
-  if (s.includes('KOR') || s.includes('OIL')) return korieOilImg;
-  if (s.includes('KLM') || s.includes('SUG')) return kilomberoSugarImg;
-  return mbeyaRiceImg;
-}
+
 
 export function SmartGridStoreCatalog({
   storeName,
@@ -98,6 +89,7 @@ export function SmartGridStoreCatalog({
             wholesalePriceTzs: number;
             moqLabel: string;
             requiresUrgentReorder: boolean;
+            imagekitCdnUrl?: string;
           }>
         >(`/marketplace/catalog/intelligent-view?wholesalerId=${encodeURIComponent(sellerBusinessId)}`),
         SokoApiClient.get<
@@ -124,7 +116,7 @@ export function SmartGridStoreCatalog({
           unitType: unitByProd.get(r.productId) ?? 'SACK_50KG',
           minMoq: r.moqLabel,
           minMoqEn: r.moqLabel,
-          imageSrc: resolveSkuImage(r.sku),
+          imageSrc: resolveBackendImageUrl(r.imagekitCdnUrl),
           isLowStockInDuka: r.requiresUrgentReorder,
         })),
       );

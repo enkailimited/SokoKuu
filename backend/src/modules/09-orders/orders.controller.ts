@@ -24,7 +24,7 @@ export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Get('orders')
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPPLIER, Role.SUPER_ADMIN)
   @ApiQuery({ name: 'scope', required: false, enum: ['buying', 'selling', 'all'] })
   @ApiOperation({
     summary: 'List orders scoped to authenticated buyer, seller Merchant, or Super Admin',
@@ -38,7 +38,7 @@ export class OrdersController {
   }
 
   @Get('orders/my-orders')
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPPLIER, Role.SUPER_ADMIN)
   @ApiQuery({ name: 'scope', required: false, enum: ['buying', 'selling', 'all'] })
   @ApiOperation({
     summary: 'List orders scoped to authenticated buyer, seller Merchant, or Super Admin',
@@ -87,7 +87,7 @@ export class OrdersController {
 
   @Post('orders/:orderId/cancel')
   @HttpCode(HttpStatus.OK)
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPPLIER, Role.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Cancel PLACED or DISPATCHED order atomically and release reserved Quarter-Quanta',
   })
@@ -103,7 +103,7 @@ export class OrdersController {
   }
 
   @Get('orders/:orderId')
-  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPER_ADMIN)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.DRIVER, Role.SUPPLIER, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Retrieve tenant-scoped order details and cash ledger summary' })
   getOrderDetails(
     @Param('orderId', new ParseUUIDPipe()) orderId: string,

@@ -273,7 +273,7 @@ export function OptimizationLabPanel({ locale }: { locale: Locale }) {
               <ShieldAlert className="w-4 h-4 text-amber-600" aria-hidden="true" />
               <span>
                 {isSw
-                  ? 'Tahadhari za Usalama na Mizozo 3 ya Madereva (PostgreSQL)'
+                  ? 'Tahadhari za Usalama na Mizozo 3 ya Madereva'
                   : '3-Strike Driver Disputes & Security Audit Feed'}
               </span>
             </h2>

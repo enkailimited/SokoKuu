@@ -17,6 +17,7 @@ import { Role } from '@common/security/roles.enum';
 import { AdminMerchantsService } from './admin-merchants.service';
 import {
   ListMerchantsQueryDto,
+  SetMerchantVerifiedDto,
   ToggleMerchantMapDto,
   TogglePlatformManagedDto,
   ToggleTenantMapRequestDto,
@@ -54,6 +55,24 @@ export class AdminMerchantsController {
     return this.adminMerchantsService.setPlatformManagedFlag(
       businessId,
       dto.isPlatformManaged,
+      admin.sub,
+    );
+  }
+
+  @Patch(':businessId/verification')
+  @ApiOperation({
+    summary: 'Verify or suspend a Merchant (isOpen) so they appear in marketplace and receive orders',
+  })
+  @ApiResponse({ status: 200, description: 'Merchant verification status updated' })
+  @ApiResponse({ status: 404, description: 'Merchant profile not found' })
+  setMerchantVerification(
+    @Param('businessId', new ParseUUIDPipe()) businessId: string,
+    @Body() dto: SetMerchantVerifiedDto,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.adminMerchantsService.setMerchantVerified(
+      businessId,
+      dto.isOpen,
       admin.sub,
     );
   }

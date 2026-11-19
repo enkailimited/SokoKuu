@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OrderStatus } from '@prisma/client';
+import { OrderChannel, OrderStatus, UserRole } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomInt } from 'crypto';
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
@@ -26,6 +26,7 @@ interface LockedDispatchOrderRow {
   seller_business_id: string;
   driver_user_id: string | null;
   status: OrderStatus;
+  order_channel: OrderChannel;
   expected_total_tzs: bigint;
   payment_method: string;
 }
@@ -78,6 +79,7 @@ export class DispatchService {
                seller_business_id::text AS seller_business_id,
                driver_user_id::text AS driver_user_id,
                status,
+               order_channel,
                expected_total_tzs,
                payment_method
           FROM orders
@@ -92,7 +94,9 @@ export class DispatchService {
 
       const isAuthorized =
         user.role === Role.SUPER_ADMIN ||
-        ((user.role === Role.WHOLESALER || user.role === Role.RETAILER) &&
+        ((user.role === Role.WHOLESALER ||
+          user.role === Role.RETAILER ||
+          user.role === Role.SUPPLIER) &&
           tenantContext?.businessId === order.seller_business_id) ||
         (user.role === Role.DRIVER &&
           (!order.driver_user_id || order.driver_user_id === user.sub));
@@ -122,6 +126,7 @@ export class DispatchService {
         create: {
           orderId,
           driverUserId: assignedDriverId,
+          orderChannel: order.order_channel,
           buyerConfirmationPin: buyerPinHash,
           driverConfirmationPin: driverPinHash,
           expectedCashAmount: BigInt(order.expected_total_tzs),
@@ -131,6 +136,7 @@ export class DispatchService {
         },
         update: {
           driverUserId: assignedDriverId,
+          orderChannel: order.order_channel,
           buyerConfirmationPin: buyerPinHash,
           driverConfirmationPin: driverPinHash,
           expectedCashAmount: BigInt(order.expected_total_tzs),
@@ -209,6 +215,7 @@ export class DispatchService {
                seller_business_id::text AS seller_business_id,
                driver_user_id::text AS driver_user_id,
                status,
+               order_channel,
                expected_total_tzs,
                payment_method
           FROM orders
@@ -289,6 +296,12 @@ export class DispatchService {
       orderBy: { placedAt: 'desc' },
       take: 50,
       include: {
+        buyer: {
+          select: { fullName: true, phoneE164: true },
+        },
+        seller: {
+          select: { businessName: true, ward: true, owner: { select: { phoneE164: true } } },
+        },
         cashLedger: {
           select: {
             verificationStatus: true,
@@ -309,6 +322,11 @@ export class DispatchService {
         orderRef: order.orderRef,
         sellerBusinessId: order.sellerBusinessId,
         buyerUserId: order.buyerUserId,
+        buyerName: order.buyer.fullName,
+        buyerPhoneE164: order.buyer.phoneE164,
+        sellerName: order.seller.businessName,
+        sellerWard: order.seller.ward,
+        sellerPhoneE164: order.seller.owner.phoneE164,
         status: order.status,
         expectedTotalTzs: Number(order.expectedTotalTzs),
         paymentMethod: order.paymentMethod,
@@ -324,6 +342,23 @@ export class DispatchService {
               qrTokenExpiresAt: order.cashLedger.qrTokenExpiresAt?.toISOString() ?? null,
             }
           : null,
+      })),
+    };
+  }
+
+  async listAvailableDrivers() {
+    const drivers = await this.prismaService.user.findMany({
+      where: { role: UserRole.DRIVER, isActive: true },
+      select: { id: true, fullName: true, phoneE164: true },
+      orderBy: { fullName: 'asc' },
+    });
+
+    return {
+      count: drivers.length,
+      drivers: drivers.map((driver) => ({
+        driverUserId: driver.id,
+        driverName: driver.fullName,
+        phoneE164: driver.phoneE164,
       })),
     };
   }

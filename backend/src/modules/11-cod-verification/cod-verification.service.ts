@@ -9,7 +9,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { LedgerVerificationStatus, OrderStatus, Prisma } from '@prisma/client';
+import { LedgerVerificationStatus, OrderChannel, OrderStatus, Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { timingSafeEqual } from 'crypto';
 import { AuthenticatedUser } from '@common/security/auth.types';
@@ -39,6 +39,7 @@ interface LockedCodOrderRow {
   seller_business_id: string;
   driver_user_id: string | null;
   status: OrderStatus;
+  order_channel: OrderChannel;
   expected_total_tzs: bigint;
 }
 
@@ -384,6 +385,7 @@ export class CodVerificationService {
              seller_business_id::text AS seller_business_id,
              driver_user_id::text AS driver_user_id,
              status,
+             order_channel,
              expected_total_tzs
         FROM orders
        WHERE id = ${orderId}::uuid
@@ -508,6 +510,42 @@ export class CodVerificationService {
              version = version + 1
        WHERE id = ${order.id}::uuid
     `;
+
+    // Append supplier finalization audit rows. Warehouse stock was already reduced by
+    // ORDER_RESERVED at order placement, so delivery must not decrement stock again.
+    if (
+      order.order_channel === OrderChannel.SUPPLIER_TO_WHOLESALER &&
+      tx.supplierStockMovement &&
+      typeof tx.supplierStockMovement.create === 'function'
+    ) {
+      const supplierOrderItems = await tx.orderItem.findMany({
+        where: { orderId: order.id },
+        select: {
+          productId: true,
+          baseUnitsTotal: true,
+          product: { select: { globalCatalogId: true } },
+        },
+      });
+
+      for (const item of supplierOrderItems) {
+        if (!item.product?.globalCatalogId || item.baseUnitsTotal <= 0) {
+          continue;
+        }
+        await tx.supplierStockMovement.create({
+          data: {
+            supplierBusinessId: order.seller_business_id,
+            productId: item.productId,
+            globalCatalogId: item.product.globalCatalogId,
+            movementType: 'ORDER_FINALIZED',
+            quantityQuanta: item.baseUnitsTotal,
+            referenceType: 'ORDER_DELIVERY',
+            referenceId: order.id,
+            recordedByUserId: actorUserId,
+            note: `Supplier B2B order ${order.order_ref} finalized on delivery; stock already reserved.`,
+          },
+        });
+      }
+    }
 
     // Hydrate buyer Merchant inventory shelf cleanly when buyer owns a Merchant profile
     let hydratedSkuCount = 0;

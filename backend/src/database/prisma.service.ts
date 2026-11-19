@@ -34,7 +34,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async runInTransaction<T>(
     isolationLevel: SupportedIsolationLevel,
     fn: (tx: Prisma.TransactionClient) => Promise<T>,
-    timeoutMs = 5000,
+    timeoutMs = 20000,
   ): Promise<T> {
     return this.$transaction(fn, {
       isolationLevel: Prisma.TransactionIsolationLevel[isolationLevel],

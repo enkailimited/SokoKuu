@@ -32,7 +32,17 @@ export class SokoHttpError extends Error {
 export function isSokoNetworkError(error: unknown): boolean {
   if (error instanceof SokoNetworkError) return true;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
-  if (error instanceof TypeError) return true;
+  // A Vite/reverse-proxy 502/503/504 means the upstream NestJS service is not
+  // reachable. Treat it as offline so the PWA cache is used instead of showing
+  // a raw "Bad Gateway" error. Real application HTTP errors still surface.
+  if (
+    error instanceof SokoHttpError &&
+    (error.status === 502 || error.status === 503 || error.status === 504)
+  ) {
+    return true;
+  }
+  // HTTP failures are wrapped in SokoHttpError and must surface to the user.
+  // A bare TypeError here would misclassify coding errors as "offline".
   return false;
 }
 
@@ -234,6 +244,9 @@ export class SokoApiClient {
     const config: RequestInit = {
       ...options,
       headers,
+      // SokoKuu API responses are authoritative. Avoid browser revalidation
+      // 304s, which otherwise surface as parse/validation failures in the PWA.
+      cache: 'no-store',
     };
 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -298,12 +311,18 @@ export class SokoApiClient {
     return this.request<T>(endpoint, { method: 'GET' }, requiresAuth);
   }
 
-  static post<T = any>(endpoint: string, body?: any, requiresAuth = true) {
+  static post<T = any>(
+    endpoint: string,
+    body?: any,
+    requiresAuth = true,
+    headers?: HeadersInit,
+  ) {
     return this.request<T>(
       endpoint,
       {
         method: 'POST',
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        headers,
       },
       requiresAuth,
     );

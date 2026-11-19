@@ -28,6 +28,8 @@ import { NotificationsModule } from '@modules/13-notifications/notifications.mod
 import { WebhooksModule } from '@modules/14-webhooks/webhooks.module';
 import { AuditModule } from '@modules/15-audit/audit.module';
 import { PlatformAdminModule } from '@modules/16-platform-admin/platform-admin.module';
+import { SupplierModule } from '@modules/17-supplier/supplier.module';
+import { ImageKitUploadModule } from '@modules/18-uploads/imagekit-upload.module';
 
 @Module({
   imports: [
@@ -70,6 +72,8 @@ import { PlatformAdminModule } from '@modules/16-platform-admin/platform-admin.m
     WebhooksModule,
     AuditModule,
     PlatformAdminModule,
+    SupplierModule,
+    ImageKitUploadModule,
   ],
   providers: [
     {

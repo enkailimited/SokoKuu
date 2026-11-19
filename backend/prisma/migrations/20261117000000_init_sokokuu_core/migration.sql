@@ -15,7 +15,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE business_tier AS ENUM ('WHOLESALE_HUB', 'RETAIL_DUKA', 'HYBRID_STORE');
+  CREATE TYPE business_tier AS ENUM ('WHOLESALE', 'RETAIL_DUKA', 'HYBRID_STORE');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -386,7 +386,7 @@ CREATE TABLE IF NOT EXISTS soko_leads (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT chk_lead_tz_phone CHECK (owner_phone_e164 ~ '^\+255[67][0-9]{8}$'),
-  CONSTRAINT chk_lead_tier CHECK (business_tier IN ('RETAIL_DUKA', 'WHOLESALE_HUB', 'HYBRID_STORE'))
+  CONSTRAINT chk_lead_tier CHECK (business_tier IN ('RETAIL_DUKA', 'WHOLESALE', 'HYBRID_STORE'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_soko_leads_geo_gist ON soko_leads USING GIST (location);
@@ -495,7 +495,7 @@ BEGIN
     RAISE EXCEPTION 'Product % lacks a valid merchant profile (business_profile).', NEW.product_id;
   END IF;
 
-  IF v_seller_tier = 'WHOLESALE_HUB' AND NEW.unit_type IN (
+  IF v_seller_tier = 'WHOLESALE' AND NEW.unit_type IN (
     'QUARTER_KILO_LITRE',
     'HALF_KILO_LITRE',
     'THREE_QUARTER_KILO',
@@ -504,7 +504,7 @@ BEGIN
     'UNIT'
   ) THEN
     RAISE EXCEPTION
-      'CHANNEL_HARMONY_VIOLATION: WHOLESALE_HUB cannot price retail fraction (%). Use HYBRID_STORE.',
+      'CHANNEL_HARMONY_VIOLATION: WHOLESALE cannot price retail fraction (%). Use HYBRID_STORE.',
       NEW.unit_type
       USING ERRCODE = 'P0001';
   END IF;
@@ -539,8 +539,8 @@ BEGIN
     JOIN business_profiles bp ON bp.id = p.seller_business_id
    WHERE p.id = NEW.product_id;
 
-  IF v_tier = 'WHOLESALE_HUB' AND NEW.is_wholesale_tier = FALSE THEN
-    RAISE EXCEPTION 'WHOLESALE_HUB cannot define retail pricing tiers (is_wholesale_tier = FALSE).'
+  IF v_tier = 'WHOLESALE' AND NEW.is_wholesale_tier = FALSE THEN
+    RAISE EXCEPTION 'WHOLESALE cannot define retail pricing tiers (is_wholesale_tier = FALSE).'
       USING ERRCODE = 'P0001';
   END IF;
 

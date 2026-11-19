@@ -63,8 +63,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         businessId: payload.businessId,
       };
 
-      if (payload.role === Role.SUPER_ADMIN) {
-        void client.join('role:SUPER_ADMIN');
+      if (Object.values(Role).includes(payload.role)) {
+        void client.join(`role:${payload.role}`);
       }
       if (payload.businessId) {
         void client.join(`business:${payload.businessId}`);
@@ -116,6 +116,24 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (this.server) {
       this.server.to(`topic:driver:reconciliation:${driverUserId}`).emit('driver:reconciliation-signal', payload);
       this.server.to(`user:${driverUserId}`).emit('driver:reconciliation-signal', payload);
+    }
+  }
+
+  sendToUser(userId: string, payload: Record<string, any>): void {
+    if (this.server) {
+      this.server.to(`user:${userId}`).emit('notification:new', payload);
+    }
+  }
+
+  sendToRole(role: Role, payload: Record<string, any>): void {
+    if (this.server) {
+      this.server.to(`role:${role}`).emit('notification:new', payload);
+    }
+  }
+
+  broadcastNotification(payload: Record<string, any>): void {
+    if (this.server) {
+      this.server.emit('notification:new', payload);
     }
   }
 }

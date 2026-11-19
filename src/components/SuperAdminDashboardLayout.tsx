@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Container,
+  Copy,
   Database,
   FileCode2,
   FolderPlus,
@@ -19,6 +20,7 @@ import {
   MessageSquareCode,
   Navigation,
   PackagePlus,
+  Pencil,
   Percent,
   Plus,
   Scale,
@@ -43,8 +45,9 @@ import {
   type GlobalCatalogEntry,
   type OrderDispatchAuditTrace,
 } from '../lib/sokoManagedState';
+import type { FocusOrderTarget } from '../lib/sokoFocusOrder';
 import { AdminAlertTerminal } from './AdminAlertTerminal';
-import { AdminShopsDirectoryPanel } from './AdminShopsDirectoryPanel';
+import { AdminMerchantsDirectoryPanel } from './AdminMerchantsDirectoryPanel';
 import { AdminUnitsAndPricingPanel } from './AdminUnitsAndPricingPanel';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { BrandLogo } from './BrandLogo';
@@ -54,6 +57,7 @@ import { DevOpsRetentionPanel } from './DevOpsRetentionPanel';
 import { DynamicPricingRouterPanel } from './DynamicPricingRouterPanel';
 import { HybridAnalyticsDashboard } from './HybridAnalyticsDashboard';
 import { HybridStorefrontPanel } from './HybridStorefrontPanel';
+import { ImageKitUpload } from './ImageKitUpload';
 import {
   DualPinReconciliationSimulator,
   NextSmsPayloadSimulator,
@@ -70,7 +74,7 @@ import { WholesalerEodReconciliation } from './WholesalerEodReconciliation';
 export type AdminSectionKey =
   | 'metrics'
   | 'alarms'
-  | 'shops'
+  | 'merchants'
   | 'map_matrix'
   | 'leads'
   | 'catalog'
@@ -94,6 +98,8 @@ const ADMIN_DOC_MODULES: Array<{ key: AdminModuleKey; icon: typeof ShieldCheck }
   { key: 'devops', icon: Container },
   { key: 'pwa', icon: Smartphone },
 ];
+
+const IMAGEKIT_CDN_REGEX = /^https:\/\/ik\.imagekit\.io\/[a-zA-Z0-9_-]+\/.+$/;
 
 const FALLBACK_SVG_PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
@@ -145,16 +151,23 @@ export function SuperAdminDashboardLayout({
   authority,
   mobileSidebarOpen: controlledMobileOpen,
   onMobileSidebarOpenChange,
+  focusOrder,
 }: {
   locale?: Locale;
   authority: string;
   mobileSidebarOpen?: boolean;
   onMobileSidebarOpenChange?: (open: boolean) => void;
+  focusOrder?: FocusOrderTarget | null;
 }) {
   const isSw = locale === 'sw';
   const t = TRANSLATIONS[locale];
 
   const [activeSection, setActiveSection] = useState<AdminSectionKey>('metrics');
+  useEffect(() => {
+    if (focusOrder?.orderRef || focusOrder?.orderId) {
+      setActiveSection('alarms');
+    }
+  }, [focusOrder]);
   const [internalMobileOpen, setInternalMobileOpen] = useState<boolean>(false);
   const mobileSidebarOpen = controlledMobileOpen ?? internalMobileOpen;
   const setMobileSidebarOpen = (open: boolean) => {
@@ -184,6 +197,16 @@ export function SuperAdminDashboardLayout({
   const [managedAlarmCount, setManagedAlarmCount] = useState<number>(0);
   const [liveIncomingAlarms, setLiveIncomingAlarms] = useState<number>(0);
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
+  const [adminApiError, setAdminApiError] = useState<string | null>(null);
+  const [adminDocs, setAdminDocs] = useState<{
+    vaultName: string;
+    masterSourceReference: string;
+    masterChecksumSha256: string;
+    totalArtifacts: number;
+    implementationStatus: string;
+    databaseCluster: string;
+    timestampEat: string;
+  } | null>(null);
   const [selectedPricingCatalogId, setSelectedPricingCatalogId] = useState<string | undefined>(
     undefined
   );
@@ -195,6 +218,8 @@ export function SuperAdminDashboardLayout({
   // Action Modals
   const [showCategoryModal, setShowCategoryModal] = useState<boolean>(false);
   const [showProductModal, setShowProductModal] = useState<boolean>(false);
+  const [showEditCatalogModal, setShowEditCatalogModal] = useState<boolean>(false);
+  const [editingCatalogEntry, setEditingCatalogEntry] = useState<GlobalCatalogEntry | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
   const [isSubmittingModal, setIsSubmittingModal] = useState<boolean>(false);
 
@@ -210,6 +235,16 @@ export function SuperAdminDashboardLayout({
   const [newProductNameEn, setNewProductNameEn] = useState<string>('');
   const [selectedCategoryCode, setSelectedCategoryCode] = useState<string>('');
   const [newImagekitUrlOverride, setNewImagekitUrlOverride] = useState<string>('');
+  // Reuse / clone an existing standard catalog instead of rebuilding a product.
+  const [cloneSourceCatalogId, setCloneSourceCatalogId] = useState<string>('');
+
+  // Admin-only global catalog edit form. Only the super admin console renders this.
+  const [editNameSw, setEditNameSw] = useState<string>('');
+  const [editNameEn, setEditNameEn] = useState<string>('');
+  const [editCategoryCode, setEditCategoryCode] = useState<string>('');
+  const [editImagekitUrl, setEditImagekitUrl] = useState<string>('');
+  const [editBaseQuantumUnit, setEditBaseQuantumUnit] = useState<string>('');
+  const [editIsActive, setEditIsActive] = useState<boolean>(true);
 
   const loadAdminOverviewFromApi = useCallback(async () => {
     try {
@@ -250,6 +285,7 @@ export function SuperAdminDashboardLayout({
             imagekitCdnUrl: string;
             staticImageUrl: string;
             baseQuantumUnit: string;
+            isActive: boolean;
             clonedByStoresCount: number;
             updatedAt: string;
           }>
@@ -285,6 +321,8 @@ export function SuperAdminDashboardLayout({
         staticImageUrl: item.staticImageUrl,
         defaultBaseUnitSw: item.baseQuantumUnit || 'Quanta (Robo 250g/mL)',
         defaultBaseUnitEn: item.baseQuantumUnit || 'Quanta (250g/mL Base)',
+        baseQuantumUnit: item.baseQuantumUnit || '',
+        isActive: item.isActive,
         clonedByStoresCount: Number(item.clonedByStoresCount ?? 0),
         updatedAtEat: new Date(item.updatedAt).toLocaleDateString(),
       }));
@@ -309,15 +347,55 @@ export function SuperAdminDashboardLayout({
         setCategories([]);
         setManagedAlarmCount(0);
         setLiveIncomingAlarms(0);
+      } else {
+        setAdminApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia takwimu za mfumo.'
+              : 'Failed to load admin workspace from NestJS.'
+        );
       }
     }
   }, [isSw, selectedCategoryCode]);
 
+  const loadAdminDocs = useCallback(async () => {
+    if (!SokoApiClient.hasAccessToken()) return;
+    setAdminApiError(null);
+    try {
+      const docs = await SokoApiClient.get<{
+        vaultName: string;
+        masterSourceReference: string;
+        masterChecksumSha256: string;
+        totalArtifacts: number;
+        implementationStatus: string;
+        databaseCluster: string;
+        timestampEat: string;
+      }>('/admin/docs/blueprints');
+      setAdminDocs(docs);
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setAdminApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia hazina ya blueprints.'
+              : 'Failed to load the architecture vault from NestJS.'
+        );
+      }
+    }
+  }, []);
+
   useEffect(() => {
     void loadAdminOverviewFromApi();
+    void loadAdminDocs();
 
     const handleRefresh = () => {
       void loadAdminOverviewFromApi();
+      void loadAdminDocs();
     };
     const handleLiveAlert = (evt: Event) => {
       const detail = (evt as CustomEvent<OrderDispatchAuditTrace>).detail;
@@ -351,13 +429,14 @@ export function SuperAdminDashboardLayout({
       window.removeEventListener('sokokuu:managed-order-alert', handleLiveAlert);
       channel?.close();
     };
-  }, [loadAdminOverviewFromApi]);
+  }, [loadAdminOverviewFromApi, loadAdminDocs]);
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowCategoryModal(false);
         setShowProductModal(false);
+        setShowEditCatalogModal(false);
         setModalError(null);
       }
     };
@@ -405,6 +484,103 @@ export function SuperAdminDashboardLayout({
     setActiveSection('units');
   };
 
+  /**
+   * Reuse the immutable standard catalog data (names, category and ImageKit
+   * CDN pointer) so the admin never has to recreate or re-upload a product.
+   * Only a unique canonical SKU is required for the new catalog row.
+   */
+  const applyStandardCatalogClone = (entry: GlobalCatalogEntry) => {
+    setModalError(null);
+    setCloneSourceCatalogId(entry.globalCatalogId);
+    setNewProductNameSw(entry.fixedNameSw);
+    setNewProductNameEn(entry.fixedNameEn);
+    setSelectedCategoryCode(entry.categoryCode);
+    setNewImagekitUrlOverride(
+      IMAGEKIT_CDN_REGEX.test(entry.imagekitCdnUrl) ? entry.imagekitCdnUrl : ''
+    );
+    setNewSku(`${entry.canonicalSku}-${Date.now().toString().slice(-5)}`);
+    setShowProductModal(true);
+  };
+
+  const openEditCatalogModal = (entry: GlobalCatalogEntry) => {
+    setModalError(null);
+    setEditingCatalogEntry(entry);
+    setEditNameSw(entry.fixedNameSw);
+    setEditNameEn(entry.fixedNameEn);
+    setEditCategoryCode(entry.categoryCode);
+    setEditImagekitUrl(
+      IMAGEKIT_CDN_REGEX.test(entry.imagekitCdnUrl) ? entry.imagekitCdnUrl : ''
+    );
+    setEditBaseQuantumUnit(entry.baseQuantumUnit ?? '');
+    setEditIsActive(entry.isActive ?? true);
+    setShowEditCatalogModal(true);
+  };
+
+  const handleUpdateCatalogItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setModalError(null);
+    if (!editingCatalogEntry) return;
+
+    const cdnUrl = editImagekitUrl.trim();
+    if (!editNameSw.trim() || !editNameEn.trim() || !editCategoryCode || !cdnUrl) {
+      setModalError(
+        isSw
+          ? 'Jaza majina, kategoria na picha halali ya ImageKit.'
+          : 'Names, category and a valid ImageKit image are required.'
+      );
+      return;
+    }
+    if (!IMAGEKIT_CDN_REGEX.test(cdnUrl)) {
+      setModalError(
+        isSw
+          ? 'URL lazima iwe anuani halisi ya ImageKit CDN (https://ik.imagekit.io/...).'
+          : 'Asset URL must be an absolute ImageKit.io CDN pointer (https://ik.imagekit.io/...).'
+      );
+      return;
+    }
+
+    setIsSubmittingModal(true);
+    try {
+      await SokoApiClient.patch(
+        `/admin/marketplace/catalog/${editingCatalogEntry.globalCatalogId}`,
+        {
+          fixedNameSw: editNameSw.trim(),
+          fixedNameEn: editNameEn.trim(),
+          categoryCode: editCategoryCode.trim().toUpperCase(),
+          imagekitCdnUrl: cdnUrl,
+          baseQuantumUnit: editBaseQuantumUnit.trim() || undefined,
+          isActive: editIsActive,
+        }
+      );
+
+      await loadAdminOverviewFromApi();
+      setShowEditCatalogModal(false);
+      setEditingCatalogEntry(null);
+      setAdminToast(
+        isSw
+          ? `${editingCatalogEntry.canonicalSku} imehaririwa kwenye Global Catalog (admin pekee).`
+          : `${editingCatalogEntry.canonicalSku} updated in Global Catalog (admin only).`
+      );
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setModalError(
+          isSw
+            ? 'Hakuna muunganisho kwa sasa. Jaribu tena baadaye.'
+            : 'Offline right now. Try again when connected.'
+        );
+      } else {
+        setModalError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : 'Failed to update catalog item.'
+        );
+      }
+    } finally {
+      setIsSubmittingModal(false);
+    }
+  };
+
   const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     setModalError(null);
@@ -447,7 +623,9 @@ export function SuperAdminDashboardLayout({
       if (isSokoNetworkError(err)) {
         setBackendOffline(true);
         setModalError(
-          'Backend Offline — Connect to NestJS API (/api/v1/admin/marketplace/catalog/categories).'
+          isSw
+            ? 'Hakuna muunganisho kwa sasa. Jaribu tena baadaye.'
+            : 'Offline right now. Try again when connected.'
         );
       } else {
         setModalError(
@@ -474,7 +652,7 @@ export function SuperAdminDashboardLayout({
       return;
     }
 
-    if (!/^https:\/\/ik\.imagekit\.io\/[a-zA-Z0-9_-]+\/.+$/.test(cdnUrl)) {
+    if (!IMAGEKIT_CDN_REGEX.test(cdnUrl)) {
       setModalError(
         isSw
           ? 'URL lazima iwe anuani halisi ya ImageKit CDN (https://ik.imagekit.io/...).'
@@ -499,17 +677,20 @@ export function SuperAdminDashboardLayout({
       setNewProductNameSw('');
       setNewProductNameEn('');
       setNewImagekitUrlOverride('');
+      setCloneSourceCatalogId('');
       setAdminToast(
         isSw
-          ? `${sku} imeongezwa (/api/v1/admin/marketplace/catalog/add-item) -> PostgreSQL.`
-          : `${sku} added via /api/v1/admin/marketplace/catalog/add-item -> PostgreSQL.`
+          ? `${sku} imeongezwa.`
+          : `${sku} added.`
       );
       setActiveSection('catalog');
     } catch (err) {
       if (isSokoNetworkError(err)) {
         setBackendOffline(true);
         setModalError(
-          'Backend Offline — Connect to NestJS API (/api/v1/admin/marketplace/catalog/add-item).'
+          isSw
+            ? 'Hakuna muunganisho kwa sasa. Jaribu tena baadaye.'
+            : 'Offline right now. Try again when connected.'
         );
       } else {
         setModalError(
@@ -533,8 +714,8 @@ export function SuperAdminDashboardLayout({
   }> = [
     {
       key: 'metrics',
-      labelSw: 'Vipimo vya Mfumo (PostgreSQL)',
-      labelEn: 'System Metrics (PostgreSQL)',
+      labelSw: 'Vipimo vya Mfumo',
+      labelEn: 'System Metrics',
       metaSw: 'Live DB Telemetry',
       metaEn: 'Live PostgreSQL Counts',
       icon: Activity,
@@ -548,7 +729,7 @@ export function SuperAdminDashboardLayout({
       icon: BellRing,
     },
     {
-      key: 'shops',
+      key: 'merchants',
       labelSw: 'Wafanyabiashara & Mipangilio',
       labelEn: 'Merchants & Settings',
       metaSw: 'Uelekezaji · Ruhusa za Wafanyabiashara',
@@ -567,16 +748,16 @@ export function SuperAdminDashboardLayout({
       key: 'leads',
       labelSw: 'Mauzo & Wateja (GPS)',
       labelEn: 'Sales Leads (GPS)',
-      metaSw: 'Geolocation · NextSMS PIN4',
-      metaEn: 'Geolocation · NextSMS PIN4',
+      metaSw: 'Geolocation · SMS PIN4',
+      metaEn: 'Geolocation · SMS PIN4',
       icon: MapPin,
     },
     {
       key: 'catalog',
       labelSw: 'Global Catalog Manager',
       labelEn: 'Global Catalog Manager',
-      metaSw: `${catalogEntries.length} Bidhaa · ImageKit`,
-      metaEn: `${catalogEntries.length} SKUs · ImageKit`,
+      metaSw: `${catalogEntries.length} Bidhaa`,
+      metaEn: `${catalogEntries.length} SKUs`,
       icon: Layers,
     },
     {
@@ -610,7 +791,6 @@ export function SuperAdminDashboardLayout({
   const renderSidebarContent = () => (
     <div className="flex flex-col h-full">
       <div className="px-4 py-4 border-b border-slate-100 space-y-2">
-        <BrandLogo size="sm" />
         <div className="min-w-0">
           <div className="text-sm font-bold text-slate-900 truncate">
             {isSw ? 'Dashibodi ya Super Admin' : 'Super Admin Control'}
@@ -668,7 +848,7 @@ export function SuperAdminDashboardLayout({
           </span>
         </div>
         <div className="text-[11px] font-mono text-slate-500 truncate">
-          ik.imagekit.io/sokokuutz/
+          ik.imagekit.io/ochspoiwa/sokokuutz/
         </div>
         <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
           Inatumiwa na Wafanyabiashara: {totalStoreAdoptions.toLocaleString('en-US')}
@@ -743,6 +923,7 @@ export function SuperAdminDashboardLayout({
               type="button"
               onClick={() => {
                 setModalError(null);
+                setCloneSourceCatalogId('');
                 setShowProductModal(true);
               }}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap shrink-0 cursor-pointer"
@@ -775,8 +956,30 @@ export function SuperAdminDashboardLayout({
         {backendOffline && (
           <BackendOfflineBanner
             locale={locale}
-            onRetry={() => void loadAdminOverviewFromApi()}
+            onRetry={() => {
+              void loadAdminOverviewFromApi();
+              void loadAdminDocs();
+            }}
           />
+        )}
+
+        {adminApiError && (
+          <div
+            role="alert"
+            className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs text-red-900 flex items-start justify-between gap-3"
+          >
+            <div className="flex items-start gap-2">
+              <Lock className="w-4 h-4 text-red-600 shrink-0 mt-0.5" aria-hidden="true" />
+              <span>{adminApiError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAdminApiError(null)}
+              className="text-red-700 hover:text-red-900 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         )}
 
         {/* VIEW 1: SYSTEM METRICS (LIVE POSTGRESQL COUNTS) */}
@@ -829,7 +1032,7 @@ export function SuperAdminDashboardLayout({
               </div>
               <div className="p-4 space-y-1">
                 <div className="text-xs text-slate-500">
-                  {isSw ? 'Matumizi ya Katalogi & SMS' : 'Catalog Adoptions & SMS'}
+                  {isSw ? 'Matumizi ya Wafanyabiashara & SMS' : 'Merchant Adoptions & SMS'}
                 </div>
                 <div className="text-xl font-bold font-mono tabular-nums text-slate-900">
                   {totalStoreAdoptions.toLocaleString('en-US')}
@@ -848,17 +1051,19 @@ export function SuperAdminDashboardLayout({
         )}
 
         {/* VIEW 2: LIVE ADMIN-ONLY ORDERS */}
-        {activeSection === 'alarms' && <AdminAlertTerminal locale={locale} />}
+        {activeSection === 'alarms' && (
+          <AdminAlertTerminal locale={locale} focusOrder={focusOrder} />
+        )}
 
-        {/* VIEW 2A: REGISTERED SHOPS LIST & SETTINGS */}
-        {activeSection === 'shops' && <AdminShopsDirectoryPanel locale={locale} />}
+        {/* VIEW 2A: REGISTERED MERCHANTS LIST & SETTINGS */}
+        {activeSection === 'merchants' && <AdminMerchantsDirectoryPanel locale={locale} />}
 
         {/* VIEW 2B: FULL-PAGE PROXIMITY MAP MATRIX */}
         {activeSection === 'map_matrix' && (
           <FullPageMarketplaceMap
             locale={locale}
             authority="SUPER_ADMIN"
-            onOpenShopsSettings={() => setActiveSection('shops')}
+            onOpenMerchantsSettings={() => setActiveSection('merchants')}
           />
         )}
 
@@ -916,10 +1121,9 @@ export function SuperAdminDashboardLayout({
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-semibold">
-                      <th className="py-2.5 px-3">{isSw ? 'Bidhaa & Picha' : 'Product & ImageKit'}</th>
+                      <th className="py-2.5 px-3">{isSw ? 'Bidhaa & Picha' : 'Product & Image'}</th>
                       <th className="py-2.5 px-3">{isSw ? 'Kategoria' : 'Category'}</th>
-                      <th className="py-2.5 px-3">ImageKit URL</th>
-                      <th className="py-2.5 px-3 text-right">{isSw ? 'Takwimu za Maduka' : 'Store Adoption'}</th>
+                      <th className="py-2.5 px-3 text-right">{isSw ? 'Takwimu za Wafanyabiashara' : 'Merchant Adoption'}</th>
                       <th className="py-2.5 px-3 text-right">{isSw ? 'Nakili' : 'Trigger'}</th>
                     </tr>
                   </thead>
@@ -949,17 +1153,6 @@ export function SuperAdminDashboardLayout({
                             {formatCodeWithoutUnderscores(entry.categoryCode)}
                           </div>
                         </td>
-                        <td className="py-2.5 px-3 max-w-[250px]">
-                          <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-600 truncate">
-                            <ImageIcon
-                              className="w-3.5 h-3.5 text-emerald-600 shrink-0"
-                              aria-hidden="true"
-                            />
-                            <span className="truncate" title={entry.imagekitCdnUrl}>
-                              {entry.imagekitCdnUrl}
-                            </span>
-                          </div>
-                        </td>
                         <td className="py-2.5 px-3 text-right whitespace-nowrap">
                           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-emerald-200 bg-emerald-50 font-mono text-xs font-bold text-emerald-800 tabular-nums">
                             <TrendingUp className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
@@ -969,14 +1162,34 @@ export function SuperAdminDashboardLayout({
                           </div>
                         </td>
                         <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => handleInspectUnitsAndPrices(entry)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-900 text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            <Scale className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                            <span>{isSw ? 'Vipimo & Bei' : 'Units & Pricing'}</span>
-                          </button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => applyStandardCatalogClone(entry)}
+                              title={isSw ? 'Tumia tena bidhaa sanifu' : 'Reuse / clone standard catalog'}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold transition-colors cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>{isSw ? 'Tumia Tena' : 'Clone / Reuse'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openEditCatalogModal(entry)}
+                              title={isSw ? 'Hariri bidhaa sanifu (admin pekee)' : 'Edit canonical item (admin only)'}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-amber-50 hover:border-amber-300 text-slate-700 hover:text-amber-900 text-xs font-semibold transition-colors cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-amber-600" aria-hidden="true" />
+                              <span>{isSw ? 'Hariri' : 'Edit'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleInspectUnitsAndPrices(entry)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-900 text-xs font-semibold transition-colors cursor-pointer"
+                            >
+                              <Scale className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                              <span>{isSw ? 'Vipimo & Bei' : 'Units & Pricing'}</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1066,6 +1279,35 @@ export function SuperAdminDashboardLayout({
         {/* VIEW 5: ARCHITECTURE VAULT */}
         {activeSection === 'vault' && (
           <div className="space-y-5">
+            <section className="border border-emerald-200 bg-emerald-50/50 rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-emerald-950">
+                <FileCode2 className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                <span>
+                  {adminDocs?.vaultName ??
+                    (isSw ? 'Hazina ya Blueprints (NestJS)' : 'Live Blueprint Vault (NestJS)')}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 text-[11px]">
+                <div className="font-mono text-slate-700">
+                  {isSw ? 'Chanzo' : 'Source'}: {adminDocs?.masterSourceReference ?? '—'}
+                </div>
+                <div className="font-mono text-slate-700">
+                  {isSw ? 'Vipengele' : 'Artifacts'}: {adminDocs?.totalArtifacts ?? CODE_ARTIFACTS.length}
+                </div>
+                <div className="font-mono text-slate-700">
+                  {isSw ? 'Hali' : 'Status'}: {adminDocs?.implementationStatus ?? '—'}
+                </div>
+                <div className="font-mono text-slate-700 break-all">
+                  SHA-256: {adminDocs?.masterChecksumSha256 ?? '—'}
+                </div>
+              </div>
+              {adminDocs?.timestampEat && (
+                <div className="text-[11px] font-mono text-slate-500">
+                  {isSw ? 'Imefikiwa' : 'Accessed'}: {adminDocs.timestampEat}
+                </div>
+              )}
+            </section>
+
             <div className="border border-slate-200 bg-white rounded-lg p-3 flex flex-wrap gap-1.5">
               {ADMIN_DOC_MODULES.map(({ key, icon: Icon }) => {
                 const isSelected = selectedDocModule === key;
@@ -1220,7 +1462,7 @@ export function SuperAdminDashboardLayout({
         </div>
       )}
 
-      {/* MODAL 2: ADD CANONICAL PRODUCT + IMAGEKIT ASSET */}
+      {/* MODAL 2: REUSE / CLONE A STANDARD CATALOG OR ADD A CANONICAL ITEM */}
       {showProductModal && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
@@ -1231,11 +1473,10 @@ export function SuperAdminDashboardLayout({
             <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">
-                  {isSw ? 'Ongeza Bidhaa Kuu (ImageKit)' : 'Add Canonical Item (ImageKit)'}
+                  {isSw
+                    ? 'Tumia Tena / Nakili Bidhaa Sanifu'
+                    : 'Reuse / Clone Standard Catalog'}
                 </h3>
-                <div className="text-[11px] font-mono text-slate-500">
-                  /api/v1/admin/marketplace/catalog/add-item
-                </div>
               </div>
               <button
                 type="button"
@@ -1253,6 +1494,51 @@ export function SuperAdminDashboardLayout({
                   {modalError}
                 </div>
               )}
+
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-emerald-900">
+                  <Copy className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                  <span className="text-xs font-bold">
+                    {isSw
+                      ? 'Tumia tena / Nakili kutoka Catalog Sanifu'
+                      : 'Reuse / clone from a standard catalog'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-emerald-900/80">
+                  {isSw
+                    ? 'Chagua bidhaa sanifu iliyopo; majina, kategoria na picha ya ImageKit vitajazwa kiotomatiki — hutahitaji kuunda bidhaa upya.'
+                    : 'Pick an existing standard SKU; names, category and its ImageKit image are filled in automatically — no need to recreate the product.'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    value={cloneSourceCatalogId}
+                    onChange={(e) => setCloneSourceCatalogId(e.target.value)}
+                    className="min-h-[36px] px-2.5 rounded-lg border border-emerald-200 bg-white text-xs text-slate-900 max-w-full"
+                  >
+                    <option value="">
+                      {isSw ? 'Chagua bidhaa sanifu...' : 'Select standard catalog...'}
+                    </option>
+                    {catalogEntries.map((entry) => (
+                      <option key={entry.globalCatalogId} value={entry.globalCatalogId}>
+                        {entry.canonicalSku} — {isSw ? entry.fixedNameSw : entry.fixedNameEn}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!cloneSourceCatalogId}
+                    onClick={() => {
+                      const source = catalogEntries.find(
+                        (c) => c.globalCatalogId === cloneSourceCatalogId
+                      );
+                      if (source) applyStandardCatalogClone(source);
+                    }}
+                    className="min-h-[36px] px-3 rounded-lg border border-emerald-300 bg-white text-xs font-semibold text-emerald-800 hover:bg-emerald-100 cursor-pointer disabled:opacity-50"
+                  >
+                    {isSw ? 'Tumia Catalog Hiyo' : 'Use This Catalog'}
+                  </button>
+                </div>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
@@ -1313,24 +1599,13 @@ export function SuperAdminDashboardLayout({
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700">
-                  ImageKit Endpoint URL
-                </label>
-                <div className="flex items-center gap-3">
-                  <CatalogThumbnail
-                    srcUrl={newImagekitUrlOverride}
-                    alt={newProductNameEn || newSku}
-                    sizeClass="w-12 h-12"
-                  />
-                  <input
-                    type="url"
-                    value={newImagekitUrlOverride}
-                    onChange={(e) => setNewImagekitUrlOverride(e.target.value)}
-                    placeholder="https://ik.imagekit.io/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/..."
-                    className="flex-1 min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-900"
-                    required
-                  />
-                </div>
+                <ImageKitUpload
+                  locale={locale}
+                  label={isSw ? 'Picha ya Bidhaa (ImageKit)' : 'Product Image'}
+                  folder="/sokokuu/catalog"
+                  value={newImagekitUrlOverride}
+                  onChange={setNewImagekitUrlOverride}
+                />
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
@@ -1348,6 +1623,151 @@ export function SuperAdminDashboardLayout({
                 >
                   <PackagePlus className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>{isSw ? 'Sajili Bidhaa' : 'Add Item'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: ADMIN-ONLY EDIT OF AN EXISTING GLOBAL CATALOG ITEM */}
+      {showEditCatalogModal && editingCatalogEntry && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-lg w-full overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  {isSw ? 'Hariri Bidhaa Sanifu (Admin Pekee)' : 'Edit Canonical Item (Admin Only)'}
+                </h3>
+                <div className="text-[11px] font-mono text-slate-500">
+                  PATCH /api/v1/admin/marketplace/catalog/{editingCatalogEntry.globalCatalogId}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEditCatalogModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+                aria-label="Close modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateCatalogItem} className="p-5 space-y-4">
+              {modalError && (
+                <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-xs font-medium text-red-900">
+                  {modalError}
+                </div>
+              )}
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <div className="font-mono text-xs font-bold text-slate-900">
+                  {editingCatalogEntry.canonicalSku}
+                </div>
+                <div className="text-[11px] text-slate-600">
+                  {isSw
+                    ? 'Mabadiliko yote yanasasisha soko kuu la PostgreSQL.'
+                    : 'All changes update the canonical PostgreSQL catalog.'}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Jina (Kiswahili)' : 'Name (Swahili)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={editNameSw}
+                    onChange={(e) => setEditNameSw(e.target.value)}
+                    className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Jina (Kiingereza)' : 'Name (English)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={editNameEn}
+                    onChange={(e) => setEditNameEn(e.target.value)}
+                    className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Kategoria' : 'Category'}
+                  </label>
+                  <select
+                    value={editCategoryCode}
+                    onChange={(e) => setEditCategoryCode(e.target.value)}
+                    className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 bg-white text-xs text-slate-900"
+                  >
+                    {categories.map((cat) => (
+                      <option key={cat.categoryId} value={cat.categoryCode}>
+                        {isSw ? cat.nameSw : cat.nameEn}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Kipimo cha Msingi' : 'Base Quantum Unit'}
+                  </label>
+                  <input
+                    type="text"
+                    value={editBaseQuantumUnit}
+                    onChange={(e) => setEditBaseQuantumUnit(e.target.value)}
+                    placeholder="QUANTA 250G"
+                    className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <ImageKitUpload
+                  locale={locale}
+                  label={isSw ? 'Picha ya Bidhaa (ImageKit)' : 'Product Image'}
+                  folder="/sokokuu/catalog"
+                  value={editImagekitUrl}
+                  onChange={setEditImagekitUrl}
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={editIsActive}
+                  onChange={(e) => setEditIsActive(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-600"
+                />
+                {isSw ? 'Bidhaa iko hai kwenye soko' : 'Item is active in the marketplace'}
+              </label>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowEditCatalogModal(false)}
+                  className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  {isSw ? 'Ghairi' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingModal}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{isSw ? 'Hifadhi Mabadiliko' : 'Save Changes'}</span>
                 </button>
               </div>
             </form>

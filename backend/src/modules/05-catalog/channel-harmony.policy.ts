@@ -19,15 +19,15 @@ export function assertChannelHarmonyForTier(input: {
 }): void {
   const { merchantTier, unitType, isWholesaleTier } = input;
 
-  if (merchantTier === 'WHOLESALE_HUB') {
+  if (merchantTier === 'WHOLESALE') {
     if (WHOLESALE_BLOCKED_RETAIL_UNITS.has(unitType)) {
       throw new UnprocessableEntityException(
-        `CHANNEL_HARMONY_VIOLATION: WHOLESALE_HUB cannot list retail fraction unit (${unitType}). Use HYBRID_STORE for mixed channels.`,
+        `CHANNEL_HARMONY_VIOLATION: WHOLESALE cannot list retail fraction unit (${unitType}). Use HYBRID_STORE for mixed channels.`,
       );
     }
     if (!isWholesaleTier) {
       throw new UnprocessableEntityException(
-        'CHANNEL_HARMONY_VIOLATION: WHOLESALE_HUB cannot define retail pricing tiers (isWholesaleTier = false).',
+        'CHANNEL_HARMONY_VIOLATION: WHOLESALE cannot define retail pricing tiers (isWholesaleTier = false).',
       );
     }
   }
@@ -54,10 +54,10 @@ export function assertChannelHarmonyForCustomUnit(input: {
 }): void {
   const { merchantTier, unitCode, quarterQuantaPerUnit, isWholesaleTier } = input;
 
-  if (merchantTier === 'WHOLESALE_HUB') {
+  if (merchantTier === 'WHOLESALE') {
     if (!isWholesaleTier || quarterQuantaPerUnit < 4) {
       throw new UnprocessableEntityException(
-        `CHANNEL_HARMONY_VIOLATION: WHOLESALE_HUB custom unit (${unitCode}) must be a wholesale tier with >= 4 quarter-quanta (1KG/1L+).`,
+        `CHANNEL_HARMONY_VIOLATION: WHOLESALE custom unit (${unitCode}) must be a wholesale tier with >= 4 quarter-quanta (1KG/1L+).`,
       );
     }
   }

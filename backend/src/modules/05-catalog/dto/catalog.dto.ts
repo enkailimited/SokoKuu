@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsEnum,
   IsInt,
@@ -12,6 +14,7 @@ import {
   Matches,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export const IMAGEKIT_CDN_REGEX = /^https:\/\/ik\.imagekit\.io\/[a-zA-Z0-9_-]+\/.+$/;
@@ -81,7 +84,7 @@ export class AddGlobalCatalogItemDto {
   categoryCode!: string;
 
   @ApiProperty({
-    example: 'https://ik.imagekit.io/sokokuutz/catalog/azania-wheat-2kg.webp',
+    example: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/azania-wheat-2kg.webp',
     description: 'Absolute ImageKit.io CDN URL',
   })
   @IsString()
@@ -95,6 +98,52 @@ export class AddGlobalCatalogItemDto {
   @IsString()
   @MaxLength(32)
   baseQuantumUnit?: string;
+}
+
+export class UpdateGlobalCatalogItemDto {
+  @ApiPropertyOptional({ example: 'Azania Unga wa Ngano (2kg)' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  fixedNameSw?: string;
+
+  @ApiPropertyOptional({ example: 'Azania Wheat Flour (2kg)' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  fixedNameEn?: string;
+
+  @ApiPropertyOptional({ example: 'UNGA_NA_NAFAKA' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  categoryCode?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/azania-wheat-2kg.webp',
+    description: 'Absolute ImageKit.io CDN URL (browser-uploaded; only the URL is persisted)',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(IMAGEKIT_CDN_REGEX, {
+    message: 'imagekitCdnUrl must be an absolute ImageKit.io CDN URL (https://ik.imagekit.io/<id>/...)',
+  })
+  imagekitCdnUrl?: string;
+
+  @ApiPropertyOptional({ example: 'QUANTA_250G' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(32)
+  baseQuantumUnit?: string;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 export class CloneStandardCatalogDto {
@@ -242,4 +291,31 @@ export class UpsertCustomMerchantUnitDto {
   @ApiProperty({ example: false })
   @IsBoolean()
   isWholesaleTier!: boolean;
+}
+
+export class UpdateFreeDeliveryDto {
+  @ApiProperty({ example: true, description: 'Merchant advertises free delivery on the marketplace' })
+  @IsBoolean()
+  offersFreeDelivery!: boolean;
+}
+
+export class MarketStockItemDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  productId!: string;
+
+  @ApiProperty({ example: 24, description: 'Quarter-quanta quantity to publish to the market shelf' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quantityQuanta!: number;
+}
+
+export class PublishMarketStockDto {
+  @ApiProperty({ type: [MarketStockItemDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => MarketStockItemDto)
+  items!: MarketStockItemDto[];
 }

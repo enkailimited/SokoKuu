@@ -1,10 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PackagingUnit, Prisma } from '@prisma/client';
+import { randomBytes } from 'crypto';
 import { MerchantTier, TenantContext } from '@common/security/auth.types';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
@@ -18,6 +20,9 @@ import {
   CloneStandardCatalogDto,
   CreateCatalogCategoryDto,
   CreateMerchantProductDto,
+  PublishMarketStockDto,
+  UpdateFreeDeliveryDto,
+  UpdateGlobalCatalogItemDto,
   UpsertCustomMerchantUnitDto,
   UpsertProductPriceTierDto,
 } from './dto/catalog.dto';
@@ -37,7 +42,12 @@ export class CatalogService {
 
   async listMarketplaceMerchants(tier?: string) {
     const where: Prisma.BusinessProfileWhereInput = { isOpen: true };
-    if (tier && ['WHOLESALE_HUB', 'RETAIL_DUKA', 'HYBRID_STORE'].includes(tier.toUpperCase())) {
+    if (
+      tier &&
+      ['WHOLESALE', 'RETAIL_DUKA', 'HYBRID_STORE', 'MANUFACTURER_SUPPLIER'].includes(
+        tier.toUpperCase(),
+      )
+    ) {
       where.tier = tier.toUpperCase() as Prisma.EnumBusinessTierFilter['equals'];
     }
 
@@ -62,9 +72,10 @@ export class CatalogService {
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
       isPlatformManaged: row.isPlatformManaged,
+      offersFreeDelivery: row.offersFreeDelivery,
       activeSkusCount: row._count.products,
       logoUrl:
-        row.logoCdnUrl ?? 'https://ik.imagekit.io/sokokuutz/catalog/default-merchant.webp',
+        row.logoCdnUrl ?? 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/default-merchant.webp',
     }));
   }
 
@@ -192,6 +203,54 @@ export class CatalogService {
     });
   }
 
+  async updateGlobalCatalogItem(globalCatalogId: string, dto: UpdateGlobalCatalogItemDto) {
+    const existing = await this.prismaService.sokoGlobalCatalog.findUnique({
+      where: { id: globalCatalogId },
+      select: { id: true, canonicalSku: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(
+        `Global catalog item ${globalCatalogId} was not found.`,
+      );
+    }
+
+    if (dto.categoryCode) {
+      const category = await this.prismaService.sokoCatalogCategory.findUnique({
+        where: { categoryCode: dto.categoryCode.trim().toUpperCase() },
+        select: { categoryCode: true },
+      });
+      if (!category) {
+        throw new BadRequestException(
+          `Category ${dto.categoryCode.trim().toUpperCase()} does not exist.`,
+        );
+      }
+    }
+
+    const data: Prisma.SokoGlobalCatalogUpdateInput = {};
+    if (dto.fixedNameSw !== undefined) data.fixedNameSw = dto.fixedNameSw.trim();
+    if (dto.fixedNameEn !== undefined) data.fixedNameEn = dto.fixedNameEn.trim();
+    if (dto.categoryCode !== undefined) data.categoryCode = dto.categoryCode.trim().toUpperCase();
+    if (dto.imagekitCdnUrl !== undefined) {
+      const url = dto.imagekitCdnUrl.trim();
+      data.imagekitCdnUrl = url;
+      // Keep the legacy static column in sync so clones/thumbnails never regress.
+      data.staticImageUrl = url;
+    }
+    if (dto.baseQuantumUnit !== undefined) data.baseQuantumUnit = dto.baseQuantumUnit.trim();
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    const updated = await this.prismaService.sokoGlobalCatalog.update({
+      where: { id: globalCatalogId },
+      data,
+    });
+
+    return {
+      ...updated,
+      clonedByStoresCount: Number(updated.clonedByStoresCount),
+    };
+  }
+
   async listGlobalCatalog(categoryCode?: string, q?: string) {
     const where: Prisma.SokoGlobalCatalogWhereInput = { isActive: true };
     if (categoryCode) {
@@ -216,6 +275,33 @@ export class CatalogService {
       ...item,
       clonedByStoresCount: Number(item.clonedByStoresCount),
     }));
+  }
+
+  private async generateSupplierSmsItemCode(
+    tx: Prisma.TransactionClient,
+    sellerBusinessId: string,
+    canonicalSku: string,
+  ): Promise<string> {
+    const seed =
+      canonicalSku.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 4).padEnd(4, 'X') || 'SUPX';
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const candidate = `${seed}${randomBytes(2).toString('hex').toUpperCase()}`;
+      const existing = await tx.product.findUnique({
+        where: {
+          sellerBusinessId_smsItemCode: {
+            sellerBusinessId,
+            smsItemCode: candidate,
+          },
+        },
+        select: { id: true },
+      });
+      if (!existing) return candidate;
+    }
+
+    throw new ConflictException(
+      'Could not allocate a unique Supplier warehouse item code. Please retry.',
+    );
   }
 
   /**
@@ -256,6 +342,100 @@ export class CatalogService {
         throw new NotFoundException(
           `Global catalog SKU ${dto.globalCatalogId} was not found or is inactive.`,
         );
+      }
+
+      if (tenantContext?.tier === 'MANUFACTURER_SUPPLIER') {
+        const existingWarehouseProduct = await tx.product.findFirst({
+          where: {
+            sellerBusinessId: targetMerchantId,
+            globalCatalogId: masterItem.id,
+          },
+          select: {
+            id: true,
+            smsItemCode: true,
+            baseQuarterQuantaStock: true,
+            unitPriceTzs: true,
+          },
+        });
+
+        if (existingWarehouseProduct) {
+          return {
+            localInventoryId: existingWarehouseProduct.id,
+            productId: existingWarehouseProduct.id,
+            globalCatalogId: masterItem.id,
+            retailerBusinessId: targetMerchantId,
+            supplierBusinessId: targetMerchantId,
+            canonicalSku: masterItem.canonicalSku,
+            imagekitCdnUrl: masterItem.imagekitCdnUrl,
+            initializedStockQuanta: existingWarehouseProduct.baseQuarterQuantaStock,
+            initializedPriceTzs: Number(existingWarehouseProduct.unitPriceTzs),
+            updatedClonedByStoresCount: Number(masterItem.clonedByStoresCount),
+            idempotentReplay: true,
+            committedAtEat: new Date().toISOString(),
+          };
+        }
+
+        const smsItemCode = await this.generateSupplierSmsItemCode(
+          tx,
+          targetMerchantId,
+          masterItem.canonicalSku,
+        );
+        const createdWarehouseProduct = await tx.product.create({
+          data: {
+            sellerBusinessId: targetMerchantId,
+            globalCatalogId: masterItem.id,
+            smsItemCode,
+            nameEn: masterItem.fixedNameEn,
+            nameSw: masterItem.fixedNameSw,
+            cartonPriceTzs: 0n,
+            dozenPriceTzs: 0n,
+            packPriceTzs: 0n,
+            unitPriceTzs: 0n,
+            baseQuarterQuantaStock: 0,
+            sealedBulkPackagesStock: 0,
+            lowStockThresholdQuanta: 20,
+            isActive: true,
+          },
+          select: { id: true, createdAt: true },
+        });
+
+        const refreshedMaster = await tx.sokoGlobalCatalog.update({
+          where: { id: masterItem.id },
+          data: { clonedByStoresCount: { increment: 1 } },
+          select: { clonedByStoresCount: true },
+        });
+
+        await this.outboxService.enqueue(
+          {
+            aggregateType: 'SupplierWarehouseProduct',
+            aggregateId: createdWarehouseProduct.id,
+            eventType: 'GlobalCatalogClonedBaseZeroEvent',
+            routingKey: 'catalog.global.cloned.supplier',
+            payload: {
+              localInventoryId: createdWarehouseProduct.id,
+              productId: createdWarehouseProduct.id,
+              globalCatalogId: masterItem.id,
+              supplierBusinessId: targetMerchantId,
+              canonicalSku: masterItem.canonicalSku,
+            },
+          },
+          tx,
+        );
+
+        return {
+          localInventoryId: createdWarehouseProduct.id,
+          productId: createdWarehouseProduct.id,
+          globalCatalogId: masterItem.id,
+          retailerBusinessId: targetMerchantId,
+          supplierBusinessId: targetMerchantId,
+          canonicalSku: masterItem.canonicalSku,
+          imagekitCdnUrl: masterItem.imagekitCdnUrl,
+          initializedStockQuanta: 0,
+          initializedPriceTzs: 0,
+          updatedClonedByStoresCount: Number(refreshedMaster.clonedByStoresCount),
+          idempotentReplay: false,
+          committedAtEat: createdWarehouseProduct.createdAt.toISOString(),
+        };
       }
 
       const existingClone = await tx.merchantClonedProduct.findUnique({
@@ -416,6 +596,145 @@ export class CatalogService {
     }
   }
 
+  async getMerchantMarketSettings(
+    tenantContext?: TenantContext,
+    requestedBusinessId?: string,
+  ) {
+    const businessId = tenantContext?.isSuperAdmin
+      ? requestedBusinessId ?? tenantContext?.businessId
+      : tenantContext?.businessId;
+
+    if (!businessId) {
+      throw new ForbiddenException(
+        'Authenticated Merchant tenant context is required to read market delivery settings.',
+      );
+    }
+
+    const profile = await this.prismaService.businessProfile.findUnique({
+      where: { id: businessId },
+      select: {
+        id: true,
+        businessName: true,
+        tier: true,
+        offersFreeDelivery: true,
+      },
+    });
+
+    if (!profile) {
+      throw new NotFoundException(`Merchant ${businessId} was not found.`);
+    }
+
+    return {
+      businessId: profile.id,
+      businessName: profile.businessName,
+      tier: profile.tier,
+      offersFreeDelivery: profile.offersFreeDelivery,
+    };
+  }
+
+  async updateFreeDelivery(
+    dto: UpdateFreeDeliveryDto,
+    tenantContext?: TenantContext,
+  ) {
+    const businessId = tenantContext?.businessId;
+    if (!businessId) {
+      throw new ForbiddenException(
+        'Authenticated Merchant tenant context is required to update delivery settings.',
+      );
+    }
+
+    const updated = await this.prismaService.businessProfile.update({
+      where: { id: businessId },
+      data: {
+        offersFreeDelivery: dto.offersFreeDelivery,
+        version: { increment: 1 },
+      },
+      select: {
+        id: true,
+        businessName: true,
+        offersFreeDelivery: true,
+      },
+    });
+
+    return {
+      businessId: updated.id,
+      businessName: updated.businessName,
+      offersFreeDelivery: updated.offersFreeDelivery,
+    };
+  }
+
+  async publishMarketStock(
+    dto: PublishMarketStockDto,
+    tenantContext?: TenantContext,
+  ) {
+    const businessId = tenantContext?.businessId;
+    if (!businessId) {
+      throw new ForbiddenException(
+        'Authenticated Merchant tenant context is required to publish market stock.',
+      );
+    }
+
+    const quantityByProduct = new Map<string, number>();
+    for (const item of dto.items) {
+      quantityByProduct.set(
+        item.productId,
+        (quantityByProduct.get(item.productId) ?? 0) + item.quantityQuanta,
+      );
+    }
+
+    const productIds = Array.from(quantityByProduct.keys());
+    const ownedProducts = await this.prismaService.product.findMany({
+      where: { id: { in: productIds }, sellerBusinessId: businessId },
+      select: { id: true },
+    });
+
+    if (ownedProducts.length !== productIds.length) {
+      throw new ForbiddenException(
+        'One or more selected products do not belong to the authenticated Merchant.',
+      );
+    }
+
+    const updatedProducts = await this.prismaService.runInTransaction(
+      'Serializable',
+      async (tx) => {
+        for (const [productId, quantityQuanta] of quantityByProduct) {
+          await tx.product.update({
+            where: { id: productId },
+            data: {
+              baseQuarterQuantaStock: { increment: quantityQuanta },
+              isActive: true,
+              version: { increment: 1 },
+            },
+          });
+        }
+
+        return tx.product.findMany({
+          where: { id: { in: productIds }, sellerBusinessId: businessId },
+          select: {
+            id: true,
+            smsItemCode: true,
+            nameSw: true,
+            nameEn: true,
+            baseQuarterQuantaStock: true,
+          },
+          orderBy: { nameSw: 'asc' },
+        });
+      },
+    );
+
+    return {
+      businessId,
+      publishedCount: updatedProducts.length,
+      products: updatedProducts.map((product) => ({
+        productId: product.id,
+        sku: product.smsItemCode,
+        nameSw: product.nameSw,
+        nameEn: product.nameEn,
+        availableQuarterQuanta: product.baseQuarterQuantaStock,
+      })),
+    };
+  }
+
   async upsertProductPriceTier(
     productId: string,
     dto: UpsertProductPriceTierDto,
@@ -550,6 +869,9 @@ export class CatalogService {
         isActive: true,
       },
       include: {
+        globalCatalog: {
+          select: { imagekitCdnUrl: true, staticImageUrl: true },
+        },
         priceTiers: {
           where: { isActive: true },
           orderBy: { quarterQuantaPerUnit: 'asc' },
@@ -565,7 +887,10 @@ export class CatalogService {
     return products.map((product) => ({
       productId: product.id,
       sellerBusinessId: product.sellerBusinessId,
+      globalCatalogId: product.globalCatalogId,
       sku: product.smsItemCode,
+      imagekitCdnUrl:
+        product.globalCatalog?.imagekitCdnUrl || product.globalCatalog?.staticImageUrl || '',
       nameSw: product.nameSw,
       nameEn: product.nameEn,
       unitPriceTzs: Number(product.unitPriceTzs),
@@ -599,7 +924,7 @@ export class CatalogService {
     const buyerBusinessId = tenantContext?.businessId;
     if (!buyerBusinessId && !tenantContext?.isSuperAdmin) {
       throw new ForbiddenException(
-        'Authenticated Retailer Merchant tenant context is required.',
+        'Authenticated Merchant tenant context is required.',
       );
     }
 
@@ -610,6 +935,9 @@ export class CatalogService {
           isActive: true,
         },
         include: {
+          globalCatalog: {
+            select: { imagekitCdnUrl: true, staticImageUrl: true },
+          },
           priceTiers: {
             where: { isActive: true, isWholesaleTier: true },
             orderBy: { quarterQuantaPerUnit: 'asc' },
@@ -649,6 +977,10 @@ export class CatalogService {
           sku: product.smsItemCode,
           nameSw: product.nameSw,
           nameEn: product.nameEn,
+          imagekitCdnUrl:
+            product.globalCatalog?.imagekitCdnUrl ||
+            product.globalCatalog?.staticImageUrl ||
+            '',
           wholesalePriceTzs,
           moqLabel: `${product.wholesaleMinUnitsThreshold} Vifungashio`,
           wholesalerStockQuanta: product.baseQuarterQuantaStock,

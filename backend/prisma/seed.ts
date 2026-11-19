@@ -4,6 +4,7 @@ import {
   OrderStatus,
   PackagingUnit,
   PrismaClient,
+  SupplierStockMovementType,
   StandardPricingProfileType,
   SystemUnitCategory,
   UserRole,
@@ -21,11 +22,13 @@ const SEED_IDS = {
     retailer: '00000000-0000-4000-8000-000000000004',
     driver: '00000000-0000-4000-8000-000000000005',
     consumer: '00000000-0000-4000-8000-000000000006',
+    supplier: '00000000-0000-4000-8000-000000000007',
   },
   businesses: {
     kariakooHub: '11111111-1111-4111-8111-000000000001',
     ilalaHybrid: '11111111-1111-4111-8111-000000000002',
     kivuleDuka: '11111111-1111-4111-8111-000000000003',
+    pwaniSupplier: '11111111-1111-4111-8111-000000000004',
   },
   catalog: {
     sugar: '22222222-2222-4222-8222-000000000001',
@@ -115,6 +118,14 @@ async function main() {
       passwordHash: standardPasswordHash,
       preferredLocale: 'sw',
     },
+    {
+      id: SEED_IDS.users.supplier,
+      phoneE164: '+255717000001',
+      fullName: 'Pwani Agro & Millers (Supplier)',
+      role: UserRole.SUPPLIER,
+      passwordHash: standardPasswordHash,
+      preferredLocale: 'sw',
+    },
   ];
 
   for (const u of seedUsers) {
@@ -165,7 +176,7 @@ async function main() {
       ownerPhone: '+255712000001',
       smsShortCode: 'SK101',
       businessName: 'Kariakoo Bulk Hub',
-      tier: BusinessTier.WHOLESALE_HUB,
+      tier: BusinessTier.WHOLESALE,
       streetAddress: 'Msimbazi & Uhuru Street, Plot 14',
       ward: 'Kariakoo',
       district: 'Ilala',
@@ -202,6 +213,20 @@ async function main() {
       isPlatformManaged: true,
       geospatialMapEnabled: false,
     },
+    {
+      id: SEED_IDS.businesses.pwaniSupplier,
+      ownerPhone: '+255717000001',
+      smsShortCode: 'SK104',
+      businessName: 'Pwani Agro & Millers Supplier',
+      tier: BusinessTier.MANUFACTURER_SUPPLIER,
+      streetAddress: 'Kibaha Industrial Area, Plot 22',
+      ward: 'Kibaha',
+      district: 'Kibaha',
+      latitude: -6.7707,
+      longitude: 38.9115,
+      isPlatformManaged: true,
+      geospatialMapEnabled: false,
+    },
   ];
 
   for (const b of seedBusinesses) {
@@ -229,7 +254,7 @@ async function main() {
         district: b.district,
         latitude: b.latitude,
         longitude: b.longitude,
-        logoCdnUrl: 'https://ik.imagekit.io/sokokuutz/catalog/default-merchant.webp',
+        logoCdnUrl: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/default-merchant.webp',
         isOpen: true,
         isPlatformManaged: b.isPlatformManaged,
         geospatialMapEnabled: b.geospatialMapEnabled,
@@ -237,11 +262,8 @@ async function main() {
     });
   }
 
-  await prisma.$executeRaw`
-    UPDATE business_profiles
-       SET location = ST_SetSRID(ST_MakePoint(longitude::double precision, latitude::double precision), 4326)::geography
-     WHERE location IS NULL
-  `;
+  // business_profiles.location is a GENERATED ALWAYS column derived from
+  // latitude/longitude in the canonical migration; it must not be updated.
 
   const bizRows = await prisma.businessProfile.findMany({
     where: { smsShortCode: { in: seedBusinesses.map((b) => b.smsShortCode) } },
@@ -251,6 +273,18 @@ async function main() {
   const kariakooId = bizIdByCode.get('SK101')!;
   const ilalaHybridId = bizIdByCode.get('SK102')!;
   const kivuleDukaId = bizIdByCode.get('SK103')!;
+  const supplierId = bizIdByCode.get('SK104')!;
+
+  // Supplier B2B delivery policy (separate from merchant storefront free-delivery flag).
+  await prisma.businessProfile.update({
+    where: { id: supplierId },
+    data: {
+      isFreeDeliveryEnabled: true,
+      freeDeliveryMinOrderTzs: BigInt(100000),
+      standardDeliveryFeeTzs: BigInt(15000),
+      deliveryCoverageRegions: ['Dar es Salaam', 'Pwani'],
+    },
+  });
 
   // 3. Canonical System Units
   const seedUnits: Array<{
@@ -415,7 +449,7 @@ async function main() {
       fixedNameEn: 'Kilombero Brown Cane Sugar (Standard)',
       categoryCode: 'SUKARI_VINYWAJI',
       imagekitCdnUrl:
-        'https://ik.imagekit.io/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/sugar-beverages/kilombero_brown_sugar.webp',
+        'https://ik.imagekit.io/ochspoiwa/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/sugar-beverages/kilombero_brown_sugar.webp',
       baseQuantumUnit: 'QUANTA_250G',
     },
     {
@@ -425,7 +459,7 @@ async function main() {
       fixedNameEn: 'Korie Cooking Oil (Standard)',
       categoryCode: 'MAFUTA_KUPIKIA',
       imagekitCdnUrl:
-        'https://ik.imagekit.io/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/cooking-oils/korie_cooking_oil.webp',
+        'https://ik.imagekit.io/ochspoiwa/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/cooking-oils/korie_cooking_oil.webp',
       baseQuantumUnit: 'QUANTA_250ML',
     },
     {
@@ -435,7 +469,7 @@ async function main() {
       fixedNameEn: 'Azania Refined Wheat Flour (Standard)',
       categoryCode: 'NAFAKA_UNGA',
       imagekitCdnUrl:
-        'https://ik.imagekit.io/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/grains-flours/azania_wheat_flour.webp',
+        'https://ik.imagekit.io/ochspoiwa/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/grains-flours/azania_wheat_flour.webp',
       baseQuantumUnit: 'QUANTA_250G',
     },
     {
@@ -445,7 +479,7 @@ async function main() {
       fixedNameEn: 'Mbeya Grade A Aromatic Rice (Standard)',
       categoryCode: 'NAFAKA_UNGA',
       imagekitCdnUrl:
-        'https://ik.imagekit.io/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/grains-flours/mbeya_super_rice.webp',
+        'https://ik.imagekit.io/ochspoiwa/sokokuutz/tr:w-320,h-320,fo-auto,f-webp,q-80/catalog/grains-flours/mbeya_super_rice.webp',
       baseQuantumUnit: 'QUANTA_250G',
     },
   ];
@@ -745,8 +779,9 @@ async function main() {
       quantaPerSealedPackage: 80,
       wholesaleMinUnitsThreshold: 1,
       tiers: [
+        // A pure WHOLESALE merchant cannot price retail fractions; the database
+        // trigger rejects SINGLE_KILO_LITRE for this tier.
         { unitType: PackagingUnit.CARTON, quarterQuantaPerUnit: 80, priceTzs: 74000, isWholesaleTier: true },
-        { unitType: PackagingUnit.SINGLE_KILO_LITRE, quarterQuantaPerUnit: 4, priceTzs: 3900, isWholesaleTier: true },
       ],
     },
     {
@@ -871,9 +906,67 @@ async function main() {
         { unitType: PackagingUnit.HALF_KILO_LITRE, quarterQuantaPerUnit: 2, priceTzs: 1250, isWholesaleTier: false },
       ],
     },
+    {
+      sellerBusinessId: supplierId,
+      globalCatalogId: sugarCatalogId,
+      smsItemCode: 'SP01',
+      nameSw: 'Sukari ya Kilombero (Kiwanja cha Supplier)',
+      nameEn: 'Kilombero Brown Sugar (Factory Warehouse)',
+      cartonPriceTzs: 132000,
+      dozenPriceTzs: 34000,
+      packPriceTzs: 13500,
+      unitPriceTzs: 2900,
+      baseQuarterQuantaStock: 1200,
+      sealedBulkPackagesStock: 60,
+      sealedParentUnitType: PackagingUnit.SACK_50KG,
+      quantaPerSealedPackage: 200,
+      wholesaleMinUnitsThreshold: 1,
+      tiers: [
+        { unitType: PackagingUnit.SACK_50KG, quarterQuantaPerUnit: 200, priceTzs: 132000, isWholesaleTier: true },
+      ],
+    },
+    {
+      sellerBusinessId: supplierId,
+      globalCatalogId: oilCatalogId,
+      smsItemCode: 'SP02',
+      nameSw: 'Mafuta ya Korie (Kiwanja cha Supplier)',
+      nameEn: 'Korie Cooking Oil (Factory Warehouse)',
+      cartonPriceTzs: 66000,
+      dozenPriceTzs: 40000,
+      packPriceTzs: 13500,
+      unitPriceTzs: 3600,
+      baseQuarterQuantaStock: 800,
+      sealedBulkPackagesStock: 40,
+      sealedParentUnitType: PackagingUnit.CARTON,
+      quantaPerSealedPackage: 80,
+      wholesaleMinUnitsThreshold: 1,
+      tiers: [
+        { unitType: PackagingUnit.CARTON, quarterQuantaPerUnit: 80, priceTzs: 66000, isWholesaleTier: true },
+      ],
+    },
+    {
+      sellerBusinessId: supplierId,
+      globalCatalogId: flourCatalogId,
+      smsItemCode: 'SP03',
+      nameSw: 'Unga wa Azania (Kiwanja cha Supplier)',
+      nameEn: 'Azania Wheat Flour (Factory Warehouse)',
+      cartonPriceTzs: 45000,
+      dozenPriceTzs: 24000,
+      packPriceTzs: 10000,
+      unitPriceTzs: 2000,
+      baseQuarterQuantaStock: 900,
+      sealedBulkPackagesStock: 45,
+      sealedParentUnitType: PackagingUnit.SACK_25KG,
+      quantaPerSealedPackage: 100,
+      wholesaleMinUnitsThreshold: 1,
+      tiers: [
+        { unitType: PackagingUnit.SACK_25KG, quarterQuantaPerUnit: 100, priceTzs: 45000, isWholesaleTier: true },
+      ],
+    },
   ];
 
   let sampleKariakooSugarProductId = '';
+  const supplierWarehouse = new Map<string, { productId: string; quanta: number }>();
 
   for (const p of merchantProductDefs) {
     const product = await prisma.product.upsert({
@@ -912,6 +1005,12 @@ async function main() {
     if (p.sellerBusinessId === kariakooId && p.smsItemCode === 'P01') {
       sampleKariakooSugarProductId = product.id;
     }
+    if (p.sellerBusinessId === supplierId && p.globalCatalogId) {
+      supplierWarehouse.set(p.globalCatalogId, {
+        productId: product.id,
+        quanta: p.baseQuarterQuantaStock,
+      });
+    }
 
     for (const t of p.tiers) {
       await prisma.productPriceTier.upsert({
@@ -933,6 +1032,63 @@ async function main() {
           quarterQuantaPerUnit: t.quarterQuantaPerUnit,
           priceTzs: BigInt(t.priceTzs),
           isWholesaleTier: t.isWholesaleTier,
+        },
+      });
+    }
+  }
+
+  // 6b. Supplier B2B published listings + append-only warehouse stock ledger.
+  const supplierListingDefs = [
+    { catalogId: sugarCatalogId, unitCode: 'GUNIA', priceTzs: 132000, moq: 5 },
+    { catalogId: oilCatalogId, unitCode: 'DEBE', priceTzs: 66000, moq: 5 },
+    { catalogId: flourCatalogId, unitCode: 'GUNIA', priceTzs: 45000, moq: 5 },
+  ];
+
+  for (const def of supplierListingDefs) {
+    const systemUnitId = unitIdByCode.get(def.unitCode)!;
+    await prisma.supplierCatalogListing.upsert({
+      where: {
+        supplierBusinessId_globalCatalogId_systemUnitId: {
+          supplierBusinessId: supplierId,
+          globalCatalogId: def.catalogId,
+          systemUnitId,
+        },
+      },
+      update: {
+        supplierBulkPriceTzs: BigInt(def.priceTzs),
+        minOrderQuantity: def.moq,
+        isPublishedToMarket: true,
+      },
+      create: {
+        supplierBusinessId: supplierId,
+        globalCatalogId: def.catalogId,
+        systemUnitId,
+        supplierBulkPriceTzs: BigInt(def.priceTzs),
+        minOrderQuantity: def.moq,
+        isPublishedToMarket: true,
+        imagekitCdnUrl: catalogRows.find((c) => c.id === def.catalogId)?.imagekitCdnUrl ?? '',
+      },
+    });
+  }
+
+  for (const [globalCatalogId, warehouse] of supplierWarehouse.entries()) {
+    const referenceId = `SEED-SUPPLIER-STOCK-${globalCatalogId}`;
+    const existingMovement = await prisma.supplierStockMovement.findFirst({
+      where: { referenceId },
+      select: { id: true },
+    });
+    if (!existingMovement) {
+      await prisma.supplierStockMovement.create({
+        data: {
+          supplierBusinessId: supplierId,
+          productId: warehouse.productId,
+          globalCatalogId,
+          movementType: SupplierStockMovementType.WAREHOUSE_STOCK_IN,
+          quantityQuanta: warehouse.quanta,
+          referenceType: 'MANUAL_STOCK_IN',
+          referenceId,
+          recordedByUserId: userIdByPhone.get('+255717000001') ?? null,
+          note: 'Initial seeded factory warehouse stock',
         },
       });
     }
@@ -1014,7 +1170,7 @@ async function main() {
         'Hassan Mbwambo',
         '+255754889310',
         'Kariakoo, Ilala',
-        'WHOLESALE_HUB'::business_tier,
+        'WHOLESALE'::business_tier,
         -6.821100,
         39.274900,
         8,

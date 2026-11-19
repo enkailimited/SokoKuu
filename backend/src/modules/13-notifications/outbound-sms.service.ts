@@ -71,23 +71,29 @@ export class OutboundSmsService {
       'https://messaging-service.co.tz';
     const username = this.configService.get<string>('NEXTSMS_USERNAME');
     const password = this.configService.get<string>('NEXTSMS_PASSWORD');
+    const apiToken = this.configService.get<string>('NEXTSMS_API_TOKEN');
     const senderId = this.configService.get<string>('NEXTSMS_SENDER_ID') ?? 'SOKOKUU';
 
     const msisdn = log.recipientPhoneE164.replace(/^\+/, '');
     const endpoint = `${baseUrl.replace(/\/$/, '')}/api/sms/v1/text/single`;
 
     try {
-      if (!username || !password) {
+      const authorization = username && password
+        ? `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`
+        : apiToken
+          ? `Bearer ${apiToken}`
+          : null;
+
+      if (!authorization) {
         throw new Error('NEXTSMS_CREDENTIALS_NOT_CONFIGURED');
       }
 
-      const basicAuth = Buffer.from(`${username}:${password}`, 'utf8').toString('base64');
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          Authorization: `Basic ${basicAuth}`,
+          Authorization: authorization,
         },
         body: JSON.stringify({
           from: senderId,
@@ -191,8 +197,10 @@ export class OutboundSmsService {
   async processDueRetries(): Promise<{ processed: number; sent: number; deadLettered: number }> {
     const dueLogs = await this.prismaService.smsDeliveryLog.findMany({
       where: {
-        status: 'FAILED',
-        nextRetryAt: { lte: new Date() },
+        OR: [
+          { status: 'QUEUED' },
+          { status: 'FAILED', nextRetryAt: { lte: new Date() } },
+        ],
       },
       orderBy: { nextRetryAt: 'asc' },
       take: 25,

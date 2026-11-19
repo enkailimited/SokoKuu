@@ -1,4 +1,5 @@
 import type { Locale } from '../data/i18n';
+import type { FocusOrderTarget } from '../lib/sokoFocusOrder';
 import { SuperAdminDashboardLayout } from './SuperAdminDashboardLayout';
 
 export function SuperAdminDiagnosticsView({
@@ -6,11 +7,13 @@ export function SuperAdminDiagnosticsView({
   authority,
   mobileSidebarOpen,
   onMobileSidebarOpenChange,
+  focusOrder,
 }: {
   locale?: Locale;
   authority: string;
   mobileSidebarOpen?: boolean;
   onMobileSidebarOpenChange?: (open: boolean) => void;
+  focusOrder?: FocusOrderTarget | null;
 }) {
   return (
     <SuperAdminDashboardLayout
@@ -18,6 +21,7 @@ export function SuperAdminDiagnosticsView({
       authority={authority}
       mobileSidebarOpen={mobileSidebarOpen}
       onMobileSidebarOpenChange={onMobileSidebarOpenChange}
+      focusOrder={focusOrder}
     />
   );
 }

@@ -2,9 +2,10 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, loadEnv} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({mode}) => {
+  const env = loadEnv(mode, process.cwd(), '');
   return {
     plugins: [
       react(),
@@ -30,7 +31,11 @@ export default defineConfig(() => {
     ],
     define: {
       'import.meta.env.VITE_GOOGLE_MAPS_API_KEY': JSON.stringify(
-        process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || ''
+        env.VITE_GOOGLE_MAPS_API_KEY ||
+          env.GOOGLE_MAPS_API_KEY ||
+          process.env.VITE_GOOGLE_MAPS_API_KEY ||
+          process.env.GOOGLE_MAPS_API_KEY ||
+          ''
       ),
     },
     resolve: {
@@ -46,12 +51,12 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
         '/api/v1': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:3001',
+          target: process.env.VITE_BACKEND_URL || 'http://localhost:8080',
           changeOrigin: true,
           secure: false,
         },
         '/realtime': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:3001',
+          target: process.env.VITE_BACKEND_URL || 'http://localhost:8080',
           ws: true,
           changeOrigin: true,
         },
