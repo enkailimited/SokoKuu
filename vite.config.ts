@@ -6,6 +6,14 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, process.cwd(), '');
+  const rawBackendTarget = (
+    env.VITE_BACKEND_URL ||
+    process.env.VITE_BACKEND_URL ||
+    'http://localhost:8088'
+  ).trim();
+  const backendTarget = /^https?:\/\//i.test(rawBackendTarget)
+    ? rawBackendTarget
+    : 'http://localhost:8088';
   return {
     plugins: [
       react(),
@@ -51,12 +59,12 @@ export default defineConfig(({mode}) => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
         '/api/v1': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:8080',
+          target: backendTarget,
           changeOrigin: true,
           secure: false,
         },
         '/realtime': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:8080',
+          target: backendTarget,
           ws: true,
           changeOrigin: true,
         },

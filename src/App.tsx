@@ -25,6 +25,7 @@ import { SuperAdminDiagnosticsView } from './components/SuperAdminDiagnosticsVie
 import { ProfileEditView, SettingsView } from './components/AccountPages';
 import { BackendOfflineBanner } from './components/DatabaseStateBanner';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { SplashScreen } from './components/SplashScreen';
 import { SokoApiClient, isSokoNetworkError } from './services/sokoApiClient';
 
 type ActiveAccountPage = 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
@@ -170,6 +171,7 @@ function SinglePlatformShell() {
   const [retailerMapEnabled, setRetailerMapEnabled] = useState<boolean>(false);
   const [sessionBackendOffline, setSessionBackendOffline] = useState<boolean>(false);
   const [hydratingSession, setHydratingSession] = useState<boolean>(false);
+  const [showSplash, setShowSplash] = useState<boolean>(true);
   const [focusedOrder, setFocusedOrder] = useState<{
     orderRef: string | null;
     orderId: string | null;
@@ -401,27 +403,42 @@ function SinglePlatformShell() {
     };
   }, [handleOpenDeepLink]);
 
+  const splashOverlay = showSplash ? (
+    <SplashScreen
+      locale={locale}
+      isReady={!hydratingSession}
+      onFinish={() => setShowSplash(false)}
+    />
+  ) : null;
+
   if (!activeProfile) {
     if (!showAuthPortal) {
       return (
-        <PublicLandingView
-          locale={locale}
-          onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
-          onEnter={() => setShowAuthPortal(true)}
-        />
+        <>
+          {splashOverlay}
+          <PublicLandingView
+            locale={locale}
+            onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+            onEnter={() => setShowAuthPortal(true)}
+          />
+        </>
       );
     }
     return (
-      <AuthPortalView
-        locale={locale}
-        onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
-        onSignIn={handleSignIn}
-      />
+      <>
+        {splashOverlay}
+        <AuthPortalView
+          locale={locale}
+          onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+          onSignIn={handleSignIn}
+        />
+      </>
     );
   }
 
   return (
     <div className="min-h-dvh bg-white text-slate-900 flex flex-col sk-safe-x">
+      {splashOverlay}
       {mapsQuotaExceeded && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
           <span>

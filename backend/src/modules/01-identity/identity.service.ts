@@ -114,9 +114,24 @@ export class IdentityService {
       );
     }
 
-    // Fail closed: without Redis there is no way to enforce OTP rate limits.
     if (!redisAvailable) {
-      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      if (this.isProductionEnv()) {
+        throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      }
+      if (this.getFallbackValue(cooldownKey)) {
+        throw new HttpException(
+          'Verification code was sent recently. Please wait before requesting another.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      const rawCount = this.getFallbackValue(countKey);
+      const requested = rawCount ? Number.parseInt(rawCount, 10) : 0;
+      if (requested >= REGISTRATION_OTP_MAX_PER_HOUR) {
+        throw new HttpException(
+          'Too many verification requests for this number. Try again later.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
     }
 
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
@@ -136,17 +151,24 @@ export class IdentityService {
         );
       }
 
-      await redis.set(hashKey, codeHash, 'EX', REGISTRATION_OTP_TTL_SECONDS);
-      await redis.del(attemptsKey);
-      await redis.set(
-        cooldownKey,
-        '1',
-        'EX',
-        REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS,
-      );
-      const count = await redis.incr(countKey);
-      if (count === 1) {
-        await redis.expire(countKey, 60 * 60);
+      if (redisAvailable) {
+        await redis.set(hashKey, codeHash, 'EX', REGISTRATION_OTP_TTL_SECONDS);
+        await redis.del(attemptsKey);
+        await redis.set(
+          cooldownKey,
+          '1',
+          'EX',
+          REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS,
+        );
+        const count = await redis.incr(countKey);
+        if (count === 1) {
+          await redis.expire(countKey, 60 * 60);
+        }
+      } else {
+        this.setFallbackValue(hashKey, codeHash, REGISTRATION_OTP_TTL_SECONDS);
+        this.fallbackKv.delete(attemptsKey);
+        this.setFallbackValue(cooldownKey, '1', REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS);
+        this.incrFallbackValue(countKey, 60 * 60);
       }
 
       await this.prismaService.securityAuditLog.create({
@@ -701,6 +723,40 @@ export class IdentityService {
 
   private readonly revokedJtiCache = new Map<string, number>();
   private readonly revokedUserCache = new Map<string, number>();
+  private readonly fallbackKv = new Map<string, { value: string; expiresAt: number }>();
+
+  private isProductionEnv(): boolean {
+    return this.configService.get<string>('NODE_ENV') === 'production';
+  }
+
+  private getFallbackValue(key: string): string | null {
+    const entry = this.fallbackKv.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.fallbackKv.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  private setFallbackValue(key: string, value: string, ttlSeconds: number): void {
+    this.fallbackKv.set(key, {
+      value,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    });
+  }
+
+  private incrFallbackValue(key: string, defaultTtlSeconds: number): number {
+    const existing = this.getFallbackValue(key);
+    const next = (existing ? Number.parseInt(existing, 10) : 0) + 1;
+    const prevEntry = this.fallbackKv.get(key);
+    const expiresAt =
+      prevEntry && prevEntry.expiresAt > Date.now()
+        ? prevEntry.expiresAt
+        : Date.now() + defaultTtlSeconds * 1000;
+    this.fallbackKv.set(key, { value: String(next), expiresAt });
+    return next;
+  }
 
   private async redisSafeSet(key: string, value: string, ttlSeconds: number): Promise<void> {
     try {
@@ -718,7 +774,8 @@ export class IdentityService {
     const hashKey = `auth:register:otp:hash:${phoneE164}`;
     const attemptsKey = `auth:register:otp:attempts:${phoneE164}`;
 
-    let storedHash: string | null;
+    let redisAvailable = true;
+    let storedHash: string | null = null;
     let attempts = 0;
     try {
       storedHash = await redis.get(hashKey);
@@ -728,7 +785,13 @@ export class IdentityService {
       this.logger.warn(
         `Registration OTP verification unavailable: ${error instanceof Error ? error.message : 'unknown'}`,
       );
-      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      if (this.isProductionEnv()) {
+        throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      }
+      redisAvailable = false;
+      storedHash = this.getFallbackValue(hashKey);
+      const rawAttempts = this.getFallbackValue(attemptsKey);
+      attempts = rawAttempts ? Number.parseInt(rawAttempts, 10) : 0;
     }
 
     if (!storedHash) {
@@ -737,10 +800,15 @@ export class IdentityService {
       );
     }
     if (attempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
-      try {
-        await redis.del(hashKey, attemptsKey);
-      } catch {
-        // best-effort cleanup
+      if (redisAvailable) {
+        try {
+          await redis.del(hashKey, attemptsKey);
+        } catch {
+          // best-effort cleanup
+        }
+      } else {
+        this.fallbackKv.delete(hashKey);
+        this.fallbackKv.delete(attemptsKey);
       }
       throw new BadRequestException(
         'Too many incorrect verification codes. Please request a new code.',
@@ -753,21 +821,37 @@ export class IdentityService {
       timingSafeEqual(Buffer.from(presentedHash, 'utf8'), Buffer.from(storedHash, 'utf8'));
 
     if (!matches) {
-      try {
-        const next = await redis.incr(attemptsKey);
-        if (next === 1) {
-          await redis.expire(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
+      if (redisAvailable) {
+        try {
+          const next = await redis.incr(attemptsKey);
+          if (next === 1) {
+            await redis.expire(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
+          }
+        } catch {
+          if (this.isProductionEnv()) {
+            throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+          }
+          this.incrFallbackValue(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
         }
-      } catch {
-        throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      } else {
+        this.incrFallbackValue(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
       }
       throw new BadRequestException('Incorrect verification code.');
     }
 
-    try {
-      await redis.del(hashKey, attemptsKey);
-    } catch {
-      throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+    if (redisAvailable) {
+      try {
+        await redis.del(hashKey, attemptsKey);
+      } catch {
+        if (this.isProductionEnv()) {
+          throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+        }
+        this.fallbackKv.delete(hashKey);
+        this.fallbackKv.delete(attemptsKey);
+      }
+    } else {
+      this.fallbackKv.delete(hashKey);
+      this.fallbackKv.delete(attemptsKey);
     }
   }
 
@@ -792,16 +876,20 @@ export class IdentityService {
 
   private async assertLoginAttemptAllowed(phoneE164: string, ipAddress?: string): Promise<void> {
     const redis = this.redisService.getClient();
+    const key = this.loginFailureKey(phoneE164, ipAddress);
     let attempts = 0;
     try {
-      const raw = await redis.get(this.loginFailureKey(phoneE164, ipAddress));
+      const raw = await redis.get(key);
       attempts = raw ? Number.parseInt(raw, 10) : 0;
     } catch (error) {
-      // Fail closed: without the counter we cannot throttle guessing.
       this.logger.warn(
         `Login throttle store unavailable: ${error instanceof Error ? error.message : 'unknown'}`,
       );
-      throw new ServiceUnavailableException('Sign-in is temporarily unavailable. Please retry.');
+      if (this.isProductionEnv()) {
+        throw new ServiceUnavailableException('Sign-in is temporarily unavailable. Please retry.');
+      }
+      const raw = this.getFallbackValue(key);
+      attempts = raw ? Number.parseInt(raw, 10) : 0;
     }
 
     if (attempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
@@ -818,17 +906,21 @@ export class IdentityService {
     userId?: string | null,
   ): Promise<void> {
     const redis = this.redisService.getClient();
+    const key = this.loginFailureKey(phoneE164, ipAddress);
     let count = 0;
     try {
-      count = await redis.incr(this.loginFailureKey(phoneE164, ipAddress));
+      count = await redis.incr(key);
       if (count === 1) {
-        await redis.expire(this.loginFailureKey(phoneE164, ipAddress), LOGIN_THROTTLE_WINDOW_SECONDS);
+        await redis.expire(key, LOGIN_THROTTLE_WINDOW_SECONDS);
       }
     } catch (error) {
       this.logger.warn(
         `Failed to record login throttle counter: ${error instanceof Error ? error.message : 'unknown'}`,
       );
-      throw new ServiceUnavailableException('Sign-in is temporarily unavailable. Please retry.');
+      if (this.isProductionEnv()) {
+        throw new ServiceUnavailableException('Sign-in is temporarily unavailable. Please retry.');
+      }
+      count = this.incrFallbackValue(key, LOGIN_THROTTLE_WINDOW_SECONDS);
     }
 
     if (count >= MAX_FAILED_LOGIN_ATTEMPTS) {
@@ -845,8 +937,10 @@ export class IdentityService {
 
   private async clearFailedLoginAttempts(phoneE164: string, ipAddress?: string): Promise<void> {
     const redis = this.redisService.getClient();
+    const key = this.loginFailureKey(phoneE164, ipAddress);
+    this.fallbackKv.delete(key);
     try {
-      await redis.del(this.loginFailureKey(phoneE164, ipAddress));
+      await redis.del(key);
     } catch (error) {
       // A successful login must never fail because the counter could not be
       // cleared; the counter simply expires on its own.
