@@ -1070,7 +1070,7 @@ export function SupplierDashboardView({
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-lg">
+      <div className="sk-scroll-x items-center gap-1 bg-slate-100 p-1 rounded-lg max-w-full">
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -2062,13 +2062,13 @@ export function SupplierDashboardView({
 
       {purchaseOpen && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="sk-dialog-overlay"
           role="dialog"
           aria-modal="true"
           aria-label={isSw ? 'Risiti ya Ununuzi wa Supplier' : 'Supplier Manual Purchase Receipt'}
         >
-          <div className="w-full sm:max-w-2xl bg-white rounded-t-xl sm:rounded-xl shadow-xl max-h-[92vh] overflow-y-auto">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3">
+          <div className="sk-dialog-panel sk-dialog-panel-wide">
+            <div className="shrink-0 px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
                   <ReceiptText className="w-4 h-4 text-emerald-700" aria-hidden="true" />
@@ -2088,7 +2088,7 @@ export function SupplierDashboardView({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <form onSubmit={(e) => void handleRecordPurchase(e)} className="p-5 space-y-4">
+            <form onSubmit={(e) => void handleRecordPurchase(e)} className="sk-dialog-body p-5 space-y-4 sk-safe-bottom">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label className="space-y-1.5 sm:col-span-2">
                   <span className="text-xs font-semibold text-slate-700">

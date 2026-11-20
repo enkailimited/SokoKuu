@@ -728,7 +728,7 @@ export function WholesalerOperationsView({
 
       {/* Sub-navigation inside Wholesaler Workspace */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
-        <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-lg">
+        <div className="sk-scroll-x items-center gap-1 bg-slate-100 p-1 rounded-lg max-w-full">
           <button
             type="button"
             onClick={() => setSubTab('riders')}

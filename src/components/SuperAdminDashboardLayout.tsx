@@ -858,7 +858,7 @@ export function SuperAdminDashboardLayout({
   );
 
   return (
-    <div className="flex flex-1 min-h-screen bg-slate-50 w-full relative">
+    <div className="flex flex-1 min-h-dvh bg-slate-50 w-full relative min-w-0 overflow-x-hidden">
       {/* Truly Fixed Left Sidebar on Desktop (w-64 bg-white min-h-screen border-r border-slate-100) */}
       <aside className="hidden lg:flex lg:flex-col lg:fixed lg:left-0 lg:top-16 lg:bottom-0 w-64 bg-white min-h-screen border-r border-slate-100 z-30 overflow-y-auto">
         {renderSidebarContent()}
@@ -871,7 +871,7 @@ export function SuperAdminDashboardLayout({
             className="fixed inset-0 bg-slate-900/40"
             onClick={() => setMobileSidebarOpen(false)}
           />
-          <aside className="relative w-64 bg-white min-h-screen border-r border-slate-100 z-10 flex flex-col">
+          <aside className="relative w-64 max-w-[85vw] bg-white h-[100dvh] sk-safe-top sk-safe-bottom border-r border-slate-100 z-10 flex flex-col">
             <div className="flex items-center justify-end px-3 pt-3">
               <button
                 type="button"
@@ -888,7 +888,7 @@ export function SuperAdminDashboardLayout({
       )}
 
       {/* Main Content Workspace (Offset by fixed w-64 sidebar on lg+) */}
-      <div className="flex-1 min-w-0 lg:pl-64 p-4 sm:p-6 space-y-5">
+      <div className="flex-1 min-w-0 lg:pl-64 p-4 sm:p-6 space-y-5 sk-safe-bottom">
         {/* Compact Workspace Bar */}
         <div className="bg-white border border-slate-100 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
           <div className="flex items-center gap-3 min-w-0">
@@ -907,7 +907,7 @@ export function SuperAdminDashboardLayout({
             </h1>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="sk-scroll-x items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={() => {
@@ -1308,7 +1308,7 @@ export function SuperAdminDashboardLayout({
               )}
             </section>
 
-            <div className="border border-slate-200 bg-white rounded-lg p-3 flex flex-wrap gap-1.5">
+            <div className="border border-slate-200 bg-white rounded-lg p-3 sk-scroll-x gap-1.5 pb-2">
               {ADMIN_DOC_MODULES.map(({ key, icon: Icon }) => {
                 const isSelected = selectedDocModule === key;
                 return (
@@ -1359,12 +1359,12 @@ export function SuperAdminDashboardLayout({
       {/* MODAL 1: CREATE CATEGORY */}
       {showCategoryModal && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="sk-dialog-overlay backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-lg w-full overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-slate-900">
                 {isSw ? 'Ongeza Kategoria Mpya' : 'New System Category'}
               </h3>
@@ -1378,7 +1378,7 @@ export function SuperAdminDashboardLayout({
               </button>
             </div>
 
-            <form onSubmit={handleCreateCategory} className="p-5 space-y-4">
+            <form onSubmit={handleCreateCategory} className="sk-dialog-body p-5 space-y-4">
               {modalError && (
                 <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-xs font-medium text-red-900">
                   {modalError}
@@ -1441,7 +1441,7 @@ export function SuperAdminDashboardLayout({
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <div className="shrink-0 sk-safe-bottom flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowCategoryModal(false)}
@@ -1465,12 +1465,12 @@ export function SuperAdminDashboardLayout({
       {/* MODAL 2: REUSE / CLONE A STANDARD CATALOG OR ADD A CANONICAL ITEM */}
       {showProductModal && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="sk-dialog-overlay backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-lg w-full overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">
                   {isSw
@@ -1488,7 +1488,7 @@ export function SuperAdminDashboardLayout({
               </button>
             </div>
 
-            <form onSubmit={handleIngestCatalogProduct} className="p-5 space-y-4">
+            <form onSubmit={handleIngestCatalogProduct} className="sk-dialog-body p-5 space-y-4">
               {modalError && (
                 <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-xs font-medium text-red-900">
                   {modalError}
@@ -1608,7 +1608,7 @@ export function SuperAdminDashboardLayout({
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <div className="shrink-0 sk-safe-bottom flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowProductModal(false)}
@@ -1633,12 +1633,12 @@ export function SuperAdminDashboardLayout({
       {/* MODAL 3: ADMIN-ONLY EDIT OF AN EXISTING GLOBAL CATALOG ITEM */}
       {showEditCatalogModal && editingCatalogEntry && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="sk-dialog-overlay backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-lg w-full overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">
                   {isSw ? 'Hariri Bidhaa Sanifu (Admin Pekee)' : 'Edit Canonical Item (Admin Only)'}
@@ -1657,7 +1657,7 @@ export function SuperAdminDashboardLayout({
               </button>
             </div>
 
-            <form onSubmit={handleUpdateCatalogItem} className="p-5 space-y-4">
+            <form onSubmit={handleUpdateCatalogItem} className="sk-dialog-body p-5 space-y-4">
               {modalError && (
                 <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-xs font-medium text-red-900">
                   {modalError}
@@ -1753,7 +1753,7 @@ export function SuperAdminDashboardLayout({
                 {isSw ? 'Bidhaa iko hai kwenye soko' : 'Item is active in the marketplace'}
               </label>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <div className="shrink-0 sk-safe-bottom flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowEditCatalogModal(false)}

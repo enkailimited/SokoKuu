@@ -1685,8 +1685,8 @@ export function InventoryAndUnitManager({
 
       {/* DYNAMIC POS QUANTITY PROMPT MODAL OVERLAY */}
       {selectedItemForSale && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full max-h-[92vh] overflow-y-auto">
+        <div className="sk-dialog-overlay backdrop-blur-sm">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto sk-safe-bottom overscroll-contain">
             {/* Product header */}
             <div className="flex items-start gap-3 border-b border-slate-100 p-5">
               <div className="w-16 h-16 shrink-0 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center">
@@ -1905,8 +1905,8 @@ export function InventoryAndUnitManager({
 
       {/* STANDARD / AMENDED PRICE MODAL FOR CLONED GLOBAL SKU */}
       {pricingModalClone && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+        <div className="sk-dialog-overlay backdrop-blur-xs">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4 max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto sk-safe-bottom overscroll-contain">
             <div className="flex items-start justify-between border-b border-slate-100 pb-3">
               <div>
                 <div className="font-mono text-xs font-bold text-emerald-700">
@@ -2027,8 +2027,8 @@ export function InventoryAndUnitManager({
 
       {/* EXTERNAL PURCHASE RECEIPT MODAL */}
       {purchaseModalClone && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+        <div className="sk-dialog-overlay backdrop-blur-xs">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4 max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto sk-safe-bottom overscroll-contain">
             <div className="flex items-start justify-between border-b border-slate-100 pb-3">
               <div>
                 <div className="font-mono text-xs font-bold text-emerald-700">

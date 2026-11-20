@@ -527,7 +527,7 @@ export function AdminAlertTerminal({
 
       {/* Filter Tabs */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="sk-scroll-x items-center gap-1.5 pb-1 max-w-full">
           {(
             [
               { key: 'ALL', labelSw: `Zote (${liveOrders.length})`, labelEn: `All (${liveOrders.length})` },

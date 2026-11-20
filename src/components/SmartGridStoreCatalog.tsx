@@ -246,7 +246,7 @@ export function SmartGridStoreCatalog({
   };
 
   return (
-    <div className="max-w-md mx-auto p-4 space-y-4 bg-slate-50 min-h-screen font-sans antialiased pb-28">
+    <div className="max-w-md mx-auto p-4 space-y-4 bg-slate-50 min-h-dvh font-sans antialiased pb-28 sk-safe-bottom">
       {backendOffline && (
         <BackendOfflineBanner
           locale={locale}
@@ -341,7 +341,7 @@ export function SmartGridStoreCatalog({
             )}
           </div>
 
-          <div className="flex space-x-2 overflow-x-auto pb-1">
+          <div className="sk-scroll-x space-x-2 pb-1 max-w-full">
             {lowStockSuggestions.map((suggest) => {
               const isSelected = searchQuery.toLowerCase() === suggest.nameSw.toLowerCase();
               return (

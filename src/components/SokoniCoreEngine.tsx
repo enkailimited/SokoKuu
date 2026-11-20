@@ -1007,7 +1007,7 @@ export function SokoniCoreEngine({
           </button>
 
           <section className="bg-white border border-slate-100 rounded-lg shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div className="shrink-0 px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-900">
                 {isSw
                   ? 'Oda Zako & Mizigo Inayokuja (Doorstep PIN)'
@@ -1330,7 +1330,7 @@ export function SokoniCoreEngine({
                     )}
                   </div>
 
-                  <div className="flex gap-2.5 overflow-x-auto pb-1">
+                  <div className="sk-scroll-x gap-2.5 pb-1 max-w-full">
                     {lowStockCarouselItems.map((suggest) => {
                       const active =
                         catalogSearchQuery.toLowerCase() === suggest.sku.toLowerCase();
@@ -1503,12 +1503,12 @@ export function SokoniCoreEngine({
       {/* SCREEN 4: SLIDE-UP CHECKOUT SHEET */}
       {checkoutSheetOpen && selectedStore && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="sk-dialog-overlay"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white w-full max-w-lg rounded-t-2xl sm:rounded-lg border border-slate-100 shadow-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
                   {isSw ? 'Kikapu cha Oda' : 'Slide-Up Checkout Sheet'}
@@ -1525,7 +1525,7 @@ export function SokoniCoreEngine({
               </button>
             </div>
 
-            <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div className="sk-dialog-body p-5 space-y-4 sk-safe-bottom">
               <div className="divide-y divide-slate-100">
                 {cartBreakdown.lines.map(({ item, units, quanta, lineTotalTzs, wholesaleApplied }) => (
                   <div

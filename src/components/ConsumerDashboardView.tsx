@@ -543,7 +543,7 @@ export function ConsumerDashboardView({
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-slate-100 rounded-lg px-4 py-3">
-        <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-lg">
+        <div className="sk-scroll-x items-center gap-1 bg-slate-100 p-1 rounded-lg max-w-full">
           {(
             [
               { id: 'HOME', labelSw: 'Nyumbani & Oda', labelEn: 'Home & Cash Due' },
@@ -694,7 +694,7 @@ export function ConsumerDashboardView({
           </div>
 
           <section className="bg-white border border-slate-100 rounded-lg overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div className="shrink-0 px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-900">
                 {isSw
                   ? 'Oda Zako Zinazokuja Nyumbani (CoD & PIN)'
@@ -978,12 +978,12 @@ export function ConsumerDashboardView({
       {/* SCREEN 4: SLIDE-UP CONSUMER CHECKOUT SHEET */}
       {drawerOpen && selectedDuka && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="sk-dialog-overlay"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white w-full max-w-lg rounded-t-2xl sm:rounded-lg border border-slate-100 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
                   {isSw ? 'Kikapu cha Nyumbani' : 'Consumer CoD Checkout'}
@@ -999,7 +999,7 @@ export function ConsumerDashboardView({
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
+            <div className="sk-dialog-body p-5 space-y-4 sk-safe-bottom">
               <div className="divide-y divide-slate-100">
                 {cartSummary.lines.map(({ item, qty, lineTzs }) => (
                   <div

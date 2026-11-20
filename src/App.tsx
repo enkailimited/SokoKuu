@@ -421,7 +421,7 @@ function SinglePlatformShell() {
   }
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 flex flex-col">
+    <div className="min-h-dvh bg-white text-slate-900 flex flex-col overflow-x-hidden sk-safe-x">
       {mapsQuotaExceeded && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
           <span>
@@ -473,8 +473,8 @@ function SinglePlatformShell() {
       <main
         className={
           activeProfile.role === 'SUPER_ADMIN' && activePage === 'DASHBOARD'
-            ? 'flex-1 w-full flex flex-col'
-            : 'flex-1 p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto space-y-6'
+            ? 'flex-1 w-full flex flex-col min-w-0'
+            : 'flex-1 p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto space-y-6 min-w-0 sk-safe-bottom'
         }
       >
         {activePage === 'DASHBOARD' && (

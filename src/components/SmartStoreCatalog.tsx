@@ -247,7 +247,7 @@ export function SmartStoreCatalog({
   };
 
   return (
-    <div className="max-w-md mx-auto p-4 space-y-4 bg-slate-50 min-h-screen pb-32 font-sans antialiased">
+    <div className="max-w-md mx-auto p-4 space-y-4 bg-slate-50 min-h-dvh pb-32 font-sans antialiased sk-safe-bottom">
       {backendOffline && (
         <BackendOfflineBanner
           locale={locale}

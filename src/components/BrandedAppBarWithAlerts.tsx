@@ -661,9 +661,116 @@ export function BrandedAppBarWithAlerts({
     setBellOpen(false);
   };
 
+  // Single source of truth for the touch-scrolling tab strip shown on phones.
+  // Mirrors the desktop nav but is always visible, like a native app tab bar.
+  const mobileNavTabs: Array<{
+    key: string;
+    label: string;
+    active: boolean;
+    onSelect: () => void;
+  }> = [];
+
+  if (activeProfile.role === 'RETAILER') {
+    mobileNavTabs.push(
+      {
+        key: 'pos_register',
+        label: isSw ? 'POS Mauzo' : 'POS Sales',
+        active: activePage === 'DASHBOARD' && retailerTab === 'pos_register',
+        onSelect: () => {
+          onSelectRetailerTab('pos_register');
+          onSelectPage('DASHBOARD');
+        },
+      },
+      {
+        key: 'inventory_shelf',
+        label: isSw ? 'Hifadhi & Bidhaa' : 'Inventory & Catalogs',
+        active: activePage === 'DASHBOARD' && retailerTab === 'inventory_shelf',
+        onSelect: () => {
+          onSelectRetailerTab('inventory_shelf');
+          onSelectPage('DASHBOARD');
+        },
+      },
+      {
+        key: 'core_engine',
+        label: isSw ? 'Nenda Sokoni' : 'Sokoni Marketplace',
+        active: activePage === 'DASHBOARD' && retailerTab === 'core_engine',
+        onSelect: () => {
+          onSelectRetailerTab('core_engine');
+          onSelectPage('DASHBOARD');
+        },
+      }
+    );
+    if (retailerMapEnabled) {
+      mobileNavTabs.push({
+        key: 'proximity_map',
+        label: isSw ? 'Ramani (GIS)' : 'Proximity Map',
+        active: activePage === 'DASHBOARD' && retailerTab === 'proximity_map',
+        onSelect: () => {
+          onSelectRetailerTab('proximity_map');
+          onSelectPage('DASHBOARD');
+        },
+      });
+    }
+  } else if (activeProfile.role === 'WHOLESALER') {
+    mobileNavTabs.push(
+      {
+        key: 'operations',
+        label: isSw ? 'Shughuli za Jumla' : 'Wholesale Operations',
+        active: activePage === 'DASHBOARD' && wholesalerTab === 'operations',
+        onSelect: () => {
+          onSelectWholesalerTab?.('operations');
+          onSelectPage('DASHBOARD');
+        },
+      },
+      {
+        key: 'sokoni',
+        label: isSw ? 'Nenda Sokoni' : 'Sokoni Marketplace',
+        active: activePage === 'DASHBOARD' && wholesalerTab === 'sokoni',
+        onSelect: () => {
+          onSelectWholesalerTab?.('sokoni');
+          onSelectPage('DASHBOARD');
+        },
+      }
+    );
+  } else if (activeProfile.role === 'SUPPLIER') {
+    (['warehouse', 'publish', 'orders', 'reports'] as SupplierTab[]).forEach((tab) => {
+      mobileNavTabs.push({
+        key: tab,
+        label: SUPPLIER_TAB_LABELS[tab],
+        active: activePage === 'DASHBOARD' && supplierTab === tab,
+        onSelect: () => {
+          onSelectSupplierTab(tab);
+          onSelectPage('DASHBOARD');
+        },
+      });
+    });
+  } else {
+    mobileNavTabs.push({
+      key: 'dashboard',
+      label: isSw ? 'Dashibodi' : 'Dashboard',
+      active: activePage === 'DASHBOARD',
+      onSelect: () => onSelectPage('DASHBOARD'),
+    });
+  }
+
+  mobileNavTabs.push(
+    {
+      key: 'profile',
+      label: isSw ? 'Wasifu' : 'Profile',
+      active: activePage === 'PROFILE',
+      onSelect: () => onSelectPage('PROFILE'),
+    },
+    {
+      key: 'settings',
+      label: isSw ? 'Mipangilio' : 'Settings',
+      active: activePage === 'SETTINGS',
+      onSelect: () => onSelectPage('SETTINGS'),
+    }
+  );
+
   return (
     <header
-      className={`sticky top-0 z-40 border-b transition-all duration-300 ${
+      className={`sticky top-0 z-40 border-b transition-all duration-300 sk-safe-top ${
         isScrolled
           ? 'bg-white/90 backdrop-blur-md border-slate-200 shadow-sm'
           : 'bg-white border-slate-100'
@@ -926,7 +1033,7 @@ export function BrandedAppBarWithAlerts({
               <div
                 role="dialog"
                 aria-label={isSw ? 'Kituo cha Arifa za Wakati Halisi' : 'Real-Time STOMP Alerts'}
-                className="animate-scale-in fixed sm:absolute right-3 sm:right-0 top-[68px] sm:top-auto sm:mt-2 w-[calc(100vw-1.5rem)] sm:w-96 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden z-50"
+                className="animate-scale-in fixed sm:absolute right-3 sm:right-0 top-[calc(118px+env(safe-area-inset-top,0px))] sm:top-auto sm:mt-2 w-[calc(100vw-1.5rem)] sm:w-96 max-h-[calc(100dvh-140px)] sm:max-h-[min(70dvh,32rem)] overflow-y-auto overscroll-contain bg-white border border-slate-200 rounded-xl shadow-xl z-50"
               >
                 <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between gap-2">
                   <div className="min-w-0">
@@ -1228,7 +1335,7 @@ export function BrandedAppBarWithAlerts({
           />
           <aside
             aria-label={isSw ? 'Menyu ya Simu' : 'Mobile navigation'}
-            className="relative w-72 max-w-[85vw] bg-white min-h-screen border-r border-slate-200 z-10 flex flex-col shadow-xl"
+            className="relative w-72 max-w-[85vw] bg-white h-[100dvh] sk-safe-top sk-safe-bottom border-r border-slate-200 z-10 flex flex-col shadow-xl"
           >
             <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2">
               <div className="min-w-0 space-y-1">
@@ -1484,6 +1591,28 @@ export function BrandedAppBarWithAlerts({
           </div>
         </div>
       )}
+
+      {/* Mobile-first tab strip: finger-scrollable, no visible scrollbar. */}
+      <nav
+        aria-label={isSw ? 'Vichupo vya Uongozi' : 'Primary navigation'}
+        className="md:hidden sk-scroll-x items-center gap-1 border-t border-slate-100 bg-white px-2 py-1.5"
+      >
+        {mobileNavTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={tab.onSelect}
+            aria-current={tab.active ? 'page' : undefined}
+            className={`inline-flex min-h-[40px] items-center whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+              tab.active
+                ? 'bg-emerald-50 text-emerald-900 ring-1 ring-inset ring-emerald-200'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
     </header>
   );
 }

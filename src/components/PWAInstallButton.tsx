@@ -126,11 +126,11 @@ export function PWAInstallButton({ locale = 'sw' }: { locale?: Locale }) {
 
       {showGuide && (
         <div
-          className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          className="animate-fade-in sk-dialog-overlay"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 p-5 shadow-xl space-y-3">
+          <div className="w-full max-w-sm rounded-t-2xl sm:rounded-xl bg-white border border-slate-200 p-5 shadow-xl space-y-3 max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto sk-safe-bottom overscroll-contain">
             <div className="flex items-center justify-between gap-3">
               <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
                 <Smartphone className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />

@@ -32,7 +32,7 @@ export function DashboardOnlineBadge() {
       aria-live="polite"
       aria-label={statusLabel}
       title={statusLabel}
-      className={`fixed bottom-5 left-5 z-30 inline-flex h-11 w-11 items-center justify-center rounded-full border bg-white/95 shadow-lg backdrop-blur-sm ${
+      className={`fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom,0px))] left-5 z-30 inline-flex h-11 w-11 items-center justify-center rounded-full border bg-white/95 shadow-lg backdrop-blur-sm ${
         online === false
           ? 'border-amber-300 text-amber-600'
           : online === true

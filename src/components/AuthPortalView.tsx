@@ -250,7 +250,7 @@ export function AuthPortalView({
   };
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 flex flex-col">
+    <div className="min-h-dvh bg-white text-slate-900 flex flex-col overflow-x-hidden sk-safe-x">
       <header className="h-16 px-6 bg-white border-b border-slate-100 flex items-center justify-between gap-6">
         <BrandLogo size="md" />
         <div className="flex items-center gap-2 shrink-0">

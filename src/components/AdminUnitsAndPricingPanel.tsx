@@ -562,7 +562,7 @@ export function AdminUnitsAndPricingPanel({
               />
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="sk-scroll-x items-center gap-1 pb-1">
               {(
                 [
                   { key: 'ALL', sw: 'Zote', en: 'All' },
@@ -862,12 +862,12 @@ export function AdminUnitsAndPricingPanel({
       {/* MODAL: ADD CANONICAL UNIT */}
       {showAddUnitModal && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="sk-dialog-overlay backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-slate-900">
                 {isSw ? 'Sajili Kipimo Kipya cha Mfumo' : 'Register New System Unit'}
               </h3>
@@ -880,7 +880,7 @@ export function AdminUnitsAndPricingPanel({
               </button>
             </div>
 
-            <form onSubmit={handleCreateUnit} className="p-5 space-y-3.5">
+            <form onSubmit={handleCreateUnit} className="sk-dialog-body p-5 space-y-3.5">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-700">Unit Code</label>
@@ -980,7 +980,7 @@ export function AdminUnitsAndPricingPanel({
                 </label>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="shrink-0 sk-safe-bottom flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowAddUnitModal(false)}
@@ -1004,12 +1004,12 @@ export function AdminUnitsAndPricingPanel({
       {/* MODAL: DEFINE PRODUCT-SPECIFIC UNIT */}
       {showProductUnitModal && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="sk-dialog-overlay backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-slate-900">
                 {isSw ? 'Funga Kipimo Kwenye Bidhaa' : 'Define Product-Specific Unit'}
               </h3>
@@ -1022,7 +1022,7 @@ export function AdminUnitsAndPricingPanel({
               </button>
             </div>
 
-            <form onSubmit={handleDefineProductUnit} className="p-5 space-y-3.5">
+            <form onSubmit={handleDefineProductUnit} className="sk-dialog-body p-5 space-y-3.5">
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-slate-700">
                   {isSw ? 'Kipimo cha Mfumo' : 'Canonical System Unit'}
@@ -1096,7 +1096,7 @@ export function AdminUnitsAndPricingPanel({
                 <span>{isSw ? 'Kipimo cha Jumla (Wholesale Unit)' : 'Wholesale Packaging Unit'}</span>
               </label>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="shrink-0 sk-safe-bottom flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowProductUnitModal(false)}
