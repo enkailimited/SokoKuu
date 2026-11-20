@@ -3,9 +3,9 @@
 // Intercepts navigation shells, static bundles, and offline POS/Catalog mutations.
 // ============================================================================
 
-const SHELL_CACHE = 'sokokuu-shell-v10';
-const STATIC_CACHE = 'sokokuu-static-v10';
-const API_CACHE = 'sokokuu-api-v10';
+const SHELL_CACHE = 'sokokuu-shell-v11';
+const STATIC_CACHE = 'sokokuu-static-v11';
+const API_CACHE = 'sokokuu-api-v11';
 
 const PRECACHE_URLS = [
   '/',

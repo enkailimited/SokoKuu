@@ -104,7 +104,11 @@ describe('Phase 4 — Real-Time Gateway, Outbox Relay, Web Push, 3-Strike Fraud,
 
   const mockRedisService = {
     ping: jest.fn().mockResolvedValue({ connected: true, pingResponse: 'PONG' }),
-    getClient: jest.fn().mockReturnValue({ status: 'ready', get: jest.fn(), set: jest.fn() }),
+    getClient: jest.fn().mockReturnValue({
+      status: 'ready',
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue('OK'),
+    }),
     onModuleDestroy: jest.fn().mockResolvedValue(undefined),
   };
 

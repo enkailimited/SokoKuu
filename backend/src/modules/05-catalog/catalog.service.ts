@@ -23,6 +23,7 @@ import {
   PublishMarketStockDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
+  UpdateMerchantProductDto,
   UpsertCustomMerchantUnitDto,
   UpsertProductPriceTierDto,
 } from './dto/catalog.dto';
@@ -596,6 +597,72 @@ export class CatalogService {
     }
   }
 
+  /**
+   * Edit an existing Merchant product's vipimo (unit mapping), prices and stock.
+   * Scoped to the authenticated tenant so one Merchant cannot edit another's SKUs.
+   */
+  async updateMerchantProduct(
+    productId: string,
+    dto: UpdateMerchantProductDto,
+    tenantContext?: TenantContext,
+  ) {
+    const existing = await this.prismaService.product.findUnique({
+      where: { id: productId },
+      select: { id: true, sellerBusinessId: true, smsItemCode: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Product ${productId} was not found.`);
+    }
+
+    if (
+      !tenantContext?.isSuperAdmin &&
+      existing.sellerBusinessId !== tenantContext?.businessId
+    ) {
+      throw new ForbiddenException('You may only edit products belonging to your own business.');
+    }
+
+    const data: Prisma.ProductUncheckedUpdateInput = {};
+    if (dto.nameSw !== undefined) data.nameSw = dto.nameSw.trim();
+    if (dto.nameEn !== undefined) data.nameEn = dto.nameEn.trim();
+    if (dto.cartonPriceTzs !== undefined) data.cartonPriceTzs = BigInt(dto.cartonPriceTzs);
+    if (dto.dozenPriceTzs !== undefined) data.dozenPriceTzs = BigInt(dto.dozenPriceTzs);
+    if (dto.packPriceTzs !== undefined) data.packPriceTzs = BigInt(dto.packPriceTzs);
+    if (dto.unitPriceTzs !== undefined) data.unitPriceTzs = BigInt(dto.unitPriceTzs);
+    if (dto.cartonUnits !== undefined) data.cartonUnits = dto.cartonUnits;
+    if (dto.baseQuarterQuantaStock !== undefined) {
+      data.baseQuarterQuantaStock = dto.baseQuarterQuantaStock;
+    }
+    if (dto.sealedBulkPackagesStock !== undefined) {
+      data.sealedBulkPackagesStock = dto.sealedBulkPackagesStock;
+    }
+    if (dto.sealedParentUnitType !== undefined) {
+      data.sealedParentUnitType = dto.sealedParentUnitType as PackagingUnit;
+    }
+    if (dto.quantaPerSealedPackage !== undefined) {
+      data.quantaPerSealedPackage = dto.quantaPerSealedPackage;
+    }
+    if (dto.lowStockThresholdQuanta !== undefined) {
+      data.lowStockThresholdQuanta = dto.lowStockThresholdQuanta;
+    }
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    const updated = await this.prismaService.product.update({
+      where: { id: productId },
+      data,
+    });
+
+    return {
+      ...updated,
+      cartonPriceTzs: Number(updated.cartonPriceTzs),
+      dozenPriceTzs: Number(updated.dozenPriceTzs),
+      packPriceTzs: Number(updated.packPriceTzs),
+      unitPriceTzs: Number(updated.unitPriceTzs),
+      wholesaleMinWeightKg: Number(updated.wholesaleMinWeightKg),
+      version: Number(updated.version),
+    };
+  }
+
   async getMerchantMarketSettings(
     tenantContext?: TenantContext,
     requestedBusinessId?: string,
@@ -895,6 +962,12 @@ export class CatalogService {
       nameEn: product.nameEn,
       unitPriceTzs: Number(product.unitPriceTzs),
       cartonPriceTzs: Number(product.cartonPriceTzs),
+      dozenPriceTzs: Number(product.dozenPriceTzs),
+      packPriceTzs: Number(product.packPriceTzs),
+      cartonUnits: product.cartonUnits,
+      quantaPerSealedPackage: product.quantaPerSealedPackage,
+      sealedParentUnitType: product.sealedParentUnitType,
+      lowStockThresholdQuanta: product.lowStockThresholdQuanta,
       wholesaleThresholdUnits: product.wholesaleMinUnitsThreshold,
       availableQuarterQuanta: product.baseQuarterQuantaStock,
       sealedBulkPackagesStock: product.sealedBulkPackagesStock,

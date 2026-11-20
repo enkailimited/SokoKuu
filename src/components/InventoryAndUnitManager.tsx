@@ -1706,7 +1706,7 @@ export function InventoryAndUnitManager({
                   {isSw ? selectedItemForSale.productNameSw : selectedItemForSale.productNameEn}
                 </h3>
                 <div className="text-[11px] text-slate-500 mt-1">
-                  {formatUnitTypeLabel(selectedItemForSale.unitType, locale)} · 1 Quanta = 250g/mL
+                  {formatUnitTypeLabel(selectedItemForSale.unitType, locale)} · 1 Quanta = 250 g / 250 mL
                 </div>
               </div>
               <button

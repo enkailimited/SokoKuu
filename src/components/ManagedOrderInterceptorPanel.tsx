@@ -416,7 +416,7 @@ export function ManagedOrderInterceptorPanel({ locale = 'en' }: { locale?: Local
                 onChange={(e) => setSelectedUnitType(e.target.value)}
                 className="w-full min-h-[38px] px-2 rounded-md border border-slate-300 bg-white text-xs font-mono text-slate-900"
               >
-                <option value="SINGLE_KILO_LITRE">1 KG/L</option>
+                <option value="SINGLE_KILO_LITRE">1 Kipimo (4Q)</option>
                 <option value="CARTON">CARTON</option>
                 <option value="DOZEN">DOZEN</option>
                 <option value="PACK">PACK</option>

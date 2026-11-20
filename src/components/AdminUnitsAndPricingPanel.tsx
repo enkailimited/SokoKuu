@@ -20,6 +20,8 @@ import {
 } from '../services/sokoApiClient';
 import type { GlobalCatalogEntry } from '../lib/sokoManagedState';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { PricingTemplateAttachmentEditor } from './AdminPricingTemplatesPanel';
+import { formatQuantaMeasurement } from '../utils/formatProductUnit';
 
 export interface BackendSystemUnit {
   id: string;
@@ -107,8 +109,9 @@ export function AdminUnitsAndPricingPanel({
   const [newBaseRef, setNewBaseRef] = useState<string>('QUANTA_250G');
   const [newAllowsFractional, setNewAllowsFractional] = useState<boolean>(false);
 
-  // Define Product Unit State
+  // Define / Edit Product Unit State
   const [showProductUnitModal, setShowProductUnitModal] = useState<boolean>(false);
+  const [editingProductUnitId, setEditingProductUnitId] = useState<string | null>(null);
   const [puSystemUnitId, setPuSystemUnitId] = useState<string>('');
   const [puQuarterQuanta, setPuQuarterQuanta] = useState<number>(100);
   const [puLabelSw, setPuLabelSw] = useState<string>('');
@@ -149,8 +152,8 @@ export function AdminUnitsAndPricingPanel({
         categoryCode: c.categoryCode,
         imagekitCdnUrl: c.imagekitCdnUrl,
         staticImageUrl: c.staticImageUrl,
-        defaultBaseUnitSw: 'Quanta (Robo 250g/mL)',
-        defaultBaseUnitEn: 'Quanta (250g/mL Base)',
+        defaultBaseUnitSw: 'Quanta (Robo 250 g / 250 mL)',
+        defaultBaseUnitEn: 'Quanta (250 g / 250 mL Base)',
         clonedByStoresCount: Number(c.clonedByStoresCount ?? 0),
         updatedAtEat: c.updatedAt ? new Date(c.updatedAt).toLocaleDateString() : '',
       }));
@@ -313,20 +316,49 @@ export function AdminUnitsAndPricingPanel({
     }
   };
 
+  const openNewProductUnit = () => {
+    setEditingProductUnitId(null);
+    setPuSystemUnitId(units.find((u) => u.isActive)?.id ?? '');
+    setPuQuarterQuanta(100);
+    setPuLabelSw('');
+    setPuLabelEn('');
+    setPuIsWholesale(true);
+    setShowProductUnitModal(true);
+  };
+
+  const openEditProductUnit = (productUnit: BackendGlobalProductUnit) => {
+    setEditingProductUnitId(productUnit.id);
+    setPuSystemUnitId(productUnit.systemUnitId);
+    setPuQuarterQuanta(productUnit.quarterQuantaPerUnit);
+    setPuLabelSw(productUnit.displayLabelSw);
+    setPuLabelEn(productUnit.displayLabelEn);
+    setPuIsWholesale(productUnit.isWholesaleUnit);
+    setShowProductUnitModal(true);
+  };
+
   const handleDefineProductUnit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedCatalogId || !puSystemUnitId) return;
     setErrorBanner(null);
     setIsSaving(true);
     try {
-      await SokoApiClient.post(`/admin/marketplace/catalog/${selectedCatalogId}/units`, {
+      const body = {
         systemUnitId: puSystemUnitId,
         quarterQuantaPerUnit: Math.max(1, Number(puQuarterQuanta)),
         displayLabelSw: puLabelSw.trim() || undefined,
         displayLabelEn: puLabelEn.trim() || undefined,
         isWholesaleUnit: puIsWholesale,
-      });
+      };
+      if (editingProductUnitId) {
+        await SokoApiClient.patch(
+          `/admin/marketplace/catalog/${selectedCatalogId}/units/${editingProductUnitId}`,
+          body,
+        );
+      } else {
+        await SokoApiClient.post(`/admin/marketplace/catalog/${selectedCatalogId}/units`, body);
+      }
       setShowProductUnitModal(false);
+      setEditingProductUnitId(null);
       setPuLabelSw('');
       setPuLabelEn('');
       await loadProductPricingDetails(selectedCatalogId);
@@ -706,7 +738,7 @@ export function AdminUnitsAndPricingPanel({
             {selectedCatalogId && !backendOffline && (
               <button
                 type="button"
-                onClick={() => setShowProductUnitModal(true)}
+                onClick={openNewProductUnit}
                 className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-800 cursor-pointer"
               >
                 <Boxes className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
@@ -725,6 +757,16 @@ export function AdminUnitsAndPricingPanel({
             <span className="font-mono text-[11px] text-emerald-700">
               {productUnits.length} {isSw ? 'vipimo vilivyofungwa' : 'configured product units'}
             </span>
+          </div>
+        )}
+
+        {selectedCatalogItem && !backendOffline && (
+          <div className="border border-slate-200 rounded-lg p-3 bg-white">
+            <PricingTemplateAttachmentEditor
+              locale={locale}
+              globalCatalogId={selectedCatalogId}
+              compact
+            />
           </div>
         )}
 
@@ -778,9 +820,22 @@ export function AdminUnitsAndPricingPanel({
                             {u.systemUnit.unitCode} [{u.systemUnit.abbreviation}]
                             {u.isWholesaleUnit ? ' · Wholesale Unit' : ''}
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => openEditProductUnit(u)}
+                            className="mt-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline cursor-pointer"
+                          >
+                            {isSw ? 'Hariri kipimo' : 'Edit unit'}
+                          </button>
                         </td>
                         <td className="py-2.5 px-3 font-mono font-bold text-emerald-700 tabular-nums">
-                          {u.quarterQuantaPerUnit} Q ({(u.quarterQuantaPerUnit * 0.25).toFixed(2)} kg/L)
+                          {u.quarterQuantaPerUnit} Q (
+                          {formatQuantaMeasurement(
+                            u.quarterQuantaPerUnit,
+                            u.systemUnit.category,
+                            isSw ? 'sw' : 'en',
+                          )}
+                          )
                         </td>
                         <td className="py-2.5 px-3">
                           <input
@@ -1011,7 +1066,13 @@ export function AdminUnitsAndPricingPanel({
           <div className="sk-dialog-panel">
             <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-slate-900">
-                {isSw ? 'Funga Kipimo Kwenye Bidhaa' : 'Define Product-Specific Unit'}
+                {editingProductUnitId
+                  ? isSw
+                    ? 'Hariri Kipimo Kwenye Bidhaa'
+                    : 'Edit Product-Specific Unit'
+                  : isSw
+                    ? 'Funga Kipimo Kwenye Bidhaa'
+                    : 'Define Product-Specific Unit'}
               </h3>
               <button
                 type="button"
@@ -1046,8 +1107,8 @@ export function AdminUnitsAndPricingPanel({
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-slate-700">
                   {isSw
-                    ? 'Idadi ya Quarter-Quanta (1 Q = 250g/250mL; 50KG = 200 Q)'
-                    : 'Quarter-Quanta Factor (1 KG/L = 4 Q; 25 KG Sack = 100 Q)'}
+                    ? 'Idadi ya Quarter-Quanta (1 Q = 250g au 250mL; Gunia 50KG = 200 Q)'
+                    : 'Quarter-Quanta Factor (4 Q = 1 KG au 1 L; 25 KG Sack = 100 Q)'}
                 </label>
                 <input
                   type="number"

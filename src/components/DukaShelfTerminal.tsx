@@ -14,6 +14,10 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import {
+  categoryFromSystemUnitCode,
+  formatQuantaMeasurement,
+} from '../utils/formatProductUnit';
 
 interface DukaInventoryItem {
   itemId: string;
@@ -495,7 +499,7 @@ export function DukaShelfTerminal({
                           {isSw ? item.productNameSw : item.productNameEn}
                         </div>
                         <div className="text-xs font-mono text-slate-600">
-                          Akiba: <strong className={isLow ? 'text-red-600' : 'text-emerald-700'}>{item.availableQuanta} Quanta</strong> ({(item.availableQuanta * 0.25).toFixed(2)} KG/L) · Kiwango cha chini: {item.lowStockThresholdQuanta}Q
+                          Akiba: <strong className={isLow ? 'text-red-600' : 'text-emerald-700'}>{item.availableQuanta} Quanta</strong> ({formatQuantaMeasurement(item.availableQuanta, categoryFromSystemUnitCode(item.unitType), isSw ? 'sw' : 'en')}) · Kiwango cha chini: {item.lowStockThresholdQuanta}Q
                         </div>
                       </div>
                     </div>
@@ -538,7 +542,7 @@ export function DukaShelfTerminal({
               </label>
 
               <label className="block space-y-1">
-                <span className="text-xs font-semibold text-slate-700">{isSw ? 'Bei ya 1KG / Lita (TZS)' : 'Unit Price (TZS)'}</span>
+                <span className="text-xs font-semibold text-slate-700">{isSw ? 'Bei ya Kipimo Kimoja (TZS)' : 'Unit Price (TZS)'}</span>
                 <input
                   type="number"
                   min={1}

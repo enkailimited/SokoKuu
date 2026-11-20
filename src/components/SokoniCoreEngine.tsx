@@ -21,6 +21,11 @@ import { useDataSaver } from '../context/DataSaverContext';
 import { listQueuedOrders, putQueuedOrder } from '../lib/indexedDbDemo';
 import { formatOrderStatusLabel, formatRoutingLabel } from '../lib/sokoManagedState';
 import {
+  categoryFromSystemUnitCode,
+  formatQuantaMeasurement,
+  formatSystemUnitLabel,
+} from '../utils/formatProductUnit';
+import {
   SokoApiClient,
   SokoHttpError,
   isSokoNetworkError,
@@ -203,28 +208,7 @@ function supplierPackagingUnit(
 }
 
 function formatUnitShortLabel(unit: PackagingUnit, quanta: number, isSw: boolean): string {
-  switch (unit) {
-    case 'SACK_50KG':
-      return isSw ? `Gunia 50KG (${quanta}Q)` : `50KG Sack (${quanta}Q)`;
-    case 'SACK_25KG':
-      return isSw ? `Gunia 25KG (${quanta}Q)` : `25KG Sack (${quanta}Q)`;
-    case 'CARTON':
-      return isSw ? `Katoni (${quanta}Q)` : `Carton (${quanta}Q)`;
-    case 'DOZEN':
-      return isSw ? `Dazani (${quanta}Q)` : `Dozen (${quanta}Q)`;
-    case 'PACK':
-      return isSw ? `Pakiti (${quanta}Q)` : `Pack (${quanta}Q)`;
-    case 'SINGLE_KILO_LITRE':
-      return isSw ? `1KG/1L (${quanta}Q)` : `1KG/1L (${quanta}Q)`;
-    case 'HALF_KILO_LITRE':
-      return isSw ? `Nusu (${quanta}Q)` : `Half KG/L (${quanta}Q)`;
-    case 'THREE_QUARTER_KILO':
-      return isSw ? `Tatu-Robo (${quanta}Q)` : `3/4 KG (${quanta}Q)`;
-    case 'QUARTER_KILO_LITRE':
-      return isSw ? `Robo (${quanta}Q)` : `Robo (${quanta}Q)`;
-    default:
-      return `${unit} (${quanta}Q)`;
-  }
+  return formatSystemUnitLabel(unit, quanta, isSw ? 'sw' : 'en');
 }
 
 export function SokoniCoreEngine({
@@ -1444,7 +1428,13 @@ export function SokoniCoreEngine({
                               TZS {unitPriceTzs.toLocaleString('en-US')}
                             </div>
                             <div className="text-[11px] font-mono text-slate-500 tabular-nums">
-                              {units} × {item.orderUnitType} ({(quanta * 0.25).toFixed(2)} KG/L)
+                              {units} × {item.orderUnitType} (
+                              {formatQuantaMeasurement(
+                                quanta,
+                                categoryFromSystemUnitCode(item.orderUnitType),
+                                isSw ? 'sw' : 'en',
+                              )}
+                              )
                             </div>
                           </div>
 
@@ -1537,8 +1527,13 @@ export function SokoniCoreEngine({
                         {isSw ? item.nameSw : item.nameEn}
                       </div>
                       <div className="text-slate-500 font-mono">
-                        {units} × {item.orderUnitType} ({quanta} Quanta · {(quanta * 0.25).toFixed(2)}{' '}
-                        KG/L)
+                        {units} × {item.orderUnitType} ({quanta} Quanta ·{' '}
+                        {formatQuantaMeasurement(
+                          quanta,
+                          categoryFromSystemUnitCode(item.orderUnitType),
+                          isSw ? 'sw' : 'en',
+                        )}
+                        )
                         {wholesaleApplied && (
                           <span className="text-emerald-600 font-semibold"> · Bei ya Jumla 🎉</span>
                         )}

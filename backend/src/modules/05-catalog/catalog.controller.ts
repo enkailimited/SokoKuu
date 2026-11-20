@@ -23,6 +23,7 @@ import {
   PublishMarketStockDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
+  UpdateMerchantProductDto,
   UpsertCustomMerchantUnitDto,
   UpsertProductPriceTierDto,
 } from './dto/catalog.dto';
@@ -196,6 +197,20 @@ export class CatalogController {
     @CurrentTenant() tenantContext?: TenantContext,
   ) {
     return this.catalogService.createMerchantProduct(dto, tenantContext);
+  }
+
+  @Patch('products/:productId')
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({
+    summary: 'Edit an existing Merchant product vipimo, prices and stock (tenant-scoped)',
+  })
+  updateProduct(
+    @Param('productId', new ParseUUIDPipe()) productId: string,
+    @Body() dto: UpdateMerchantProductDto,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.updateMerchantProduct(productId, dto, tenantContext);
   }
 
   @Post('products/:productId/price-tiers')

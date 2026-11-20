@@ -102,8 +102,27 @@ interface MarketProductRow {
   nameSw: string;
   nameEn: string;
   unitPriceTzs: number;
+  cartonPriceTzs: number;
+  cartonUnits: number;
+  quantaPerSealedPackage: number;
+  sealedParentUnitType: string;
+  lowStockThresholdQuanta: number;
   availableQuarterQuanta: number;
   sealedBulkPackagesStock: number;
+}
+
+interface ProductVipimoDraft {
+  productId: string;
+  sku: string;
+  nameSw: string;
+  nameEn: string;
+  unitPriceTzs: string;
+  cartonPriceTzs: string;
+  cartonUnits: string;
+  quantaPerSealedPackage: string;
+  sealedBulkPackagesStock: string;
+  baseQuarterQuantaStock: string;
+  sealedParentUnitType: string;
 }
 
 interface ActiveRiderTrack {
@@ -226,6 +245,8 @@ export function WholesalerOperationsView({
   const [selectedMarketQty, setSelectedMarketQty] = useState<Record<string, number>>({});
   const [publishingMarket, setPublishingMarket] = useState<boolean>(false);
   const [marketNotice, setMarketNotice] = useState<string | null>(null);
+  const [editingVipimo, setEditingVipimo] = useState<ProductVipimoDraft | null>(null);
+  const [savingVipimo, setSavingVipimo] = useState<boolean>(false);
 
   const [supplierListings, setSupplierListings] = useState<SupplierListingRow[]>([]);
   const [supplierRestockQty, setSupplierRestockQty] = useState<Record<string, number>>({});
@@ -341,6 +362,11 @@ export function WholesalerOperationsView({
           nameSw: p.nameSw,
           nameEn: p.nameEn,
           unitPriceTzs: Number(p.unitPriceTzs ?? 0),
+          cartonPriceTzs: Number(p.cartonPriceTzs ?? 0),
+          cartonUnits: Number(p.cartonUnits ?? 24),
+          quantaPerSealedPackage: Number(p.quantaPerSealedPackage ?? 24),
+          sealedParentUnitType: p.sealedParentUnitType ?? 'CARTON',
+          lowStockThresholdQuanta: Number(p.lowStockThresholdQuanta ?? 20),
           availableQuarterQuanta: Number(p.availableQuarterQuanta ?? 0),
           sealedBulkPackagesStock: Number(p.sealedBulkPackagesStock ?? 0),
         })),
@@ -574,6 +600,70 @@ export function WholesalerOperationsView({
       }
       return next;
     });
+  };
+
+  const openVipimoEditor = (product: MarketProductRow) => {
+    setApiError(null);
+    setMarketNotice(null);
+    setEditingVipimo({
+      productId: product.productId,
+      sku: product.sku,
+      nameSw: product.nameSw,
+      nameEn: product.nameEn,
+      unitPriceTzs: String(product.unitPriceTzs),
+      cartonPriceTzs: String(product.cartonPriceTzs),
+      cartonUnits: String(product.cartonUnits),
+      quantaPerSealedPackage: String(product.quantaPerSealedPackage),
+      sealedBulkPackagesStock: String(product.sealedBulkPackagesStock),
+      baseQuarterQuantaStock: String(product.availableQuarterQuanta),
+      sealedParentUnitType: product.sealedParentUnitType,
+    });
+  };
+
+  const handleSaveVipimo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingVipimo) return;
+    setApiError(null);
+    setMarketNotice(null);
+    setSavingVipimo(true);
+    try {
+      await SokoApiClient.patch(`/products/${editingVipimo.productId}`, {
+        unitPriceTzs: Math.max(0, Math.trunc(Number(editingVipimo.unitPriceTzs))),
+        cartonPriceTzs: Math.max(0, Math.trunc(Number(editingVipimo.cartonPriceTzs))),
+        cartonUnits: Math.max(1, Math.trunc(Number(editingVipimo.cartonUnits))),
+        quantaPerSealedPackage: Math.max(1, Math.trunc(Number(editingVipimo.quantaPerSealedPackage))),
+        sealedBulkPackagesStock: Math.max(
+          0,
+          Math.trunc(Number(editingVipimo.sealedBulkPackagesStock)),
+        ),
+        baseQuarterQuantaStock: Math.max(
+          0,
+          Math.trunc(Number(editingVipimo.baseQuarterQuantaStock)),
+        ),
+        sealedParentUnitType: editingVipimo.sealedParentUnitType,
+      });
+      setMarketNotice(
+        isSw
+          ? `Vipimo, bei na stock vya ${editingVipimo.sku} vimehifadhiwa.`
+          : `Measurements, prices and stock for ${editingVipimo.sku} saved.`,
+      );
+      setEditingVipimo(null);
+      await loadMarketData();
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kuhifadhi vipimo vya bidhaa.'
+              : 'Failed to save product measurements.',
+        );
+      }
+    } finally {
+      setSavingVipimo(false);
+    }
   };
 
   const handlePublishMarketStock = async () => {
@@ -1239,9 +1329,21 @@ export function WholesalerOperationsView({
                             <span className="font-mono text-slate-500">({product.sku})</span>
                           </span>
                           <span className="block text-[11px] text-slate-500 font-mono">
-                            {isSw ? 'Rafuni' : 'On shelf'}: {product.availableQuarterQuanta} ·{' '}
-                            {isSw ? 'Magunia' : 'Sealed'}: {product.sealedBulkPackagesStock} · TZS{' '}
-                            {product.unitPriceTzs.toLocaleString('en-US')}
+                            {product.availableQuarterQuanta > 0 ? (
+                              <>
+                                {isSw ? 'Rafuni' : 'On shelf'}: {product.availableQuarterQuanta} ·{' '}
+                              </>
+                            ) : (
+                              <span className="text-emerald-700">
+                                {isSw ? 'Katoni pekee' : 'Carton only'} ·{' '}
+                              </span>
+                            )}
+                            {isSw ? 'Magunia/Katoni' : 'Sealed cartons'}:{' '}
+                            {product.sealedBulkPackagesStock} ·{' '}
+                            <strong className="text-slate-800">
+                              TZS {product.cartonPriceTzs.toLocaleString('en-US')} /{' '}
+                              {isSw ? 'Katoni' : 'Carton'}
+                            </strong>
                           </span>
                         </span>
                       </label>
@@ -1270,6 +1372,14 @@ export function WholesalerOperationsView({
                           }}
                           className="w-24 px-2.5 py-1.5 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded-md text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
                         />
+                        <button
+                          type="button"
+                          onClick={() => openVipimoEditor(product)}
+                          className="px-2.5 py-1.5 text-[11px] font-semibold rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                          aria-label={`${isSw ? 'Hariri vipimo' : 'Edit vipimo'} ${product.sku}`}
+                        >
+                          {isSw ? 'Hariri vipimo' : 'Edit vipimo'}
+                        </button>
                       </div>
                     </div>
                   );
@@ -1277,6 +1387,168 @@ export function WholesalerOperationsView({
               </div>
             )}
           </section>
+        </div>
+      )}
+
+      {editingVipimo && (
+        <div className="sk-dialog-overlay backdrop-blur-xs" role="dialog" aria-modal="true">
+          <div className="sk-dialog-panel max-w-2xl">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  {isSw ? 'Hariri Vipimo vya Bidhaa' : 'Edit Product Vipimo'}
+                </h3>
+                <p className="text-[11px] text-slate-500 font-mono">
+                  {editingVipimo.sku} · {editingVipimo.nameSw}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingVipimo(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-900 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveVipimo} className="p-5 space-y-4 overflow-y-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Bei ya Katoni (TZS)' : 'Carton price (TZS)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editingVipimo.cartonPriceTzs}
+                    onChange={(e) =>
+                      setEditingVipimo({ ...editingVipimo, cartonPriceTzs: e.target.value })
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono font-bold border border-slate-300 rounded-lg"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Bei ya Chupa/Kipimo (TZS)' : 'Unit/bottle price (TZS)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editingVipimo.unitPriceTzs}
+                    onChange={(e) =>
+                      setEditingVipimo({ ...editingVipimo, unitPriceTzs: e.target.value })
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono font-bold border border-slate-300 rounded-lg"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Aina ya kifungashio' : 'Sealed package type'}
+                  </span>
+                  <select
+                    value={editingVipimo.sealedParentUnitType}
+                    onChange={(e) =>
+                      setEditingVipimo({ ...editingVipimo, sealedParentUnitType: e.target.value })
+                    }
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  >
+                    <option value="CARTON">CARTON</option>
+                    <option value="CRATE">CRATE</option>
+                    <option value="SACK_25KG">SACK_25KG</option>
+                    <option value="SACK_50KG">SACK_50KG</option>
+                  </select>
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Chupa / Katoni' : 'Bottles / carton'}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={editingVipimo.cartonUnits}
+                    onChange={(e) =>
+                      setEditingVipimo({ ...editingVipimo, cartonUnits: e.target.value })
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Quanta / Katoni' : 'Quanta / carton'}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={editingVipimo.quantaPerSealedPackage}
+                    onChange={(e) =>
+                      setEditingVipimo({
+                        ...editingVipimo,
+                        quantaPerSealedPackage: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Magunia/Katoni' : 'Sealed stock'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editingVipimo.sealedBulkPackagesStock}
+                    onChange={(e) =>
+                      setEditingVipimo({
+                        ...editingVipimo,
+                        sealedBulkPackagesStock: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Rafuni (loose Q)' : 'On shelf (loose Q)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editingVipimo.baseQuarterQuantaStock}
+                    onChange={(e) =>
+                      setEditingVipimo({
+                        ...editingVipimo,
+                        baseQuarterQuantaStock: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                  />
+                </label>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingVipimo(null)}
+                  className="px-4 py-2 text-xs font-semibold border border-slate-300 rounded-lg"
+                >
+                  {isSw ? 'Ghairi' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingVipimo}
+                  className="px-4 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg disabled:opacity-50"
+                >
+                  {savingVipimo
+                    ? isSw
+                      ? 'Inahifadhi...'
+                      : 'Saving...'
+                    : isSw
+                      ? 'Hifadhi vipimo'
+                      : 'Save vipimo'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

@@ -9,6 +9,10 @@ import {
 import type { Locale } from '../data/i18n';
 import { formatUnitTypeLabel } from '../lib/sokoManagedState';
 import {
+  categoryFromSystemUnitCode,
+  formatQuantaMeasurement,
+} from '../utils/formatProductUnit';
+import {
   SokoApiClient,
   SokoHttpError,
   isSokoNetworkError,
@@ -421,8 +425,13 @@ export function HybridAnalyticsDashboard({
                       </div>
                       <div className="text-xs text-slate-600 font-mono tabular-nums">
                         Loose shelf: {item.looseQuantaStock} quanta (
-                        {(item.looseQuantaStock * 0.25).toFixed(2)} kg/L) · Sealed{' '}
-                        {formatUnitTypeLabel(item.parentUnit, locale)}: {item.sealedBulkStock}
+                        {formatQuantaMeasurement(
+                          item.looseQuantaStock,
+                          categoryFromSystemUnitCode(item.parentUnit),
+                          locale,
+                        )}
+                        ) · Sealed {formatUnitTypeLabel(item.parentUnit, locale)}:{' '}
+                        {item.sealedBulkStock}
                       </div>
                     </div>
 

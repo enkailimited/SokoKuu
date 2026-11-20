@@ -241,6 +241,99 @@ export class CreateMerchantProductDto {
   lowStockThresholdQuanta?: number;
 }
 
+/**
+ * Partial update of an existing Merchant product (vipimo, bei na stock).
+ * Every field is optional so callers can patch only what they are editing.
+ */
+export class UpdateMerchantProductDto {
+  @ApiPropertyOptional({ example: 'Sukari ya Kilombero' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  nameSw?: string;
+
+  @ApiPropertyOptional({ example: 'Kilombero Sugar' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  nameEn?: string;
+
+  @ApiPropertyOptional({ example: 150000 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  cartonPriceTzs?: number;
+
+  @ApiPropertyOptional({ example: 39600 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  dozenPriceTzs?: number;
+
+  @ApiPropertyOptional({ example: 12000 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  packPriceTzs?: number;
+
+  @ApiPropertyOptional({ example: 3200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  unitPriceTzs?: number;
+
+  @ApiPropertyOptional({ example: 12, description: 'Idadi ya chupa kwenye katoni' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  cartonUnits?: number;
+
+  @ApiPropertyOptional({ example: 0, description: 'Rafuni (loose quarter-quanta stock)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  baseQuarterQuantaStock?: number;
+
+  @ApiPropertyOptional({ example: 50, description: 'Magunia/Katoni yaliyofungwa' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sealedBulkPackagesStock?: number;
+
+  @ApiPropertyOptional({ enum: PackagingUnitDto, default: PackagingUnitDto.CARTON })
+  @IsOptional()
+  @IsEnum(PackagingUnitDto)
+  sealedParentUnitType?: PackagingUnitDto;
+
+  @ApiPropertyOptional({ example: 48, description: 'Quanta kwenye katoni/gunia moja lililofungwa' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quantaPerSealedPackage?: number;
+
+  @ApiPropertyOptional({ example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  lowStockThresholdQuanta?: number;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
 export class UpsertProductPriceTierDto {
   @ApiProperty({ enum: PackagingUnitDto })
   @IsEnum(PackagingUnitDto)

@@ -28,6 +28,7 @@ import {
   ShieldCheck,
   Smartphone,
   Store,
+  Tag,
   TrendingUp,
   X,
 } from 'lucide-react';
@@ -48,6 +49,7 @@ import {
 import type { FocusOrderTarget } from '../lib/sokoFocusOrder';
 import { AdminAlertTerminal } from './AdminAlertTerminal';
 import { AdminMerchantsDirectoryPanel } from './AdminMerchantsDirectoryPanel';
+import AdminPricingTemplatesPanel from './AdminPricingTemplatesPanel';
 import { AdminUnitsAndPricingPanel } from './AdminUnitsAndPricingPanel';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { BrandLogo } from './BrandLogo';
@@ -80,6 +82,7 @@ export type AdminSectionKey =
   | 'catalog'
   | 'categories'
   | 'units'
+  | 'pricing_templates'
   | 'vault';
 export type AdminModuleKey = CodeArtifact['section'];
 
@@ -319,8 +322,8 @@ export function SuperAdminDashboardLayout({
         categoryCode: item.categoryCode,
         imagekitCdnUrl: item.imagekitCdnUrl,
         staticImageUrl: item.staticImageUrl,
-        defaultBaseUnitSw: item.baseQuantumUnit || 'Quanta (Robo 250g/mL)',
-        defaultBaseUnitEn: item.baseQuantumUnit || 'Quanta (250g/mL Base)',
+        defaultBaseUnitSw: item.baseQuantumUnit || 'Quanta (Robo 250 g / 250 mL)',
+        defaultBaseUnitEn: item.baseQuantumUnit || 'Quanta (250 g / 250 mL Base)',
         baseQuantumUnit: item.baseQuantumUnit || '',
         isActive: item.isActive,
         clonedByStoresCount: Number(item.clonedByStoresCount ?? 0),
@@ -775,6 +778,14 @@ export function SuperAdminDashboardLayout({
       metaSw: 'Sajili ya Vipimo · Kanuni ya Bei',
       metaEn: 'Canonical Units · Pricing Guard',
       icon: Scale,
+    },
+    {
+      key: 'pricing_templates',
+      labelSw: 'Bei Elekezi',
+      labelEn: 'Pricing Templates',
+      metaSw: 'Violezo vya bei vinavyoweza kutumika tena',
+      metaEn: 'Reusable Standard Pricing Templates',
+      icon: Tag,
     },
     {
       key: 'vault',
@@ -1272,6 +1283,15 @@ export function SuperAdminDashboardLayout({
         {activeSection === 'units' && (
           <AdminUnitsAndPricingPanel
             locale={locale}
+            initialCatalogId={selectedPricingCatalogId}
+          />
+        )}
+
+        {/* VIEW 4B: STANDALONE REUSABLE PRICING TEMPLATES */}
+        {activeSection === 'pricing_templates' && (
+          <AdminPricingTemplatesPanel
+            locale={locale}
+            catalog={catalogEntries}
             initialCatalogId={selectedPricingCatalogId}
           />
         )}

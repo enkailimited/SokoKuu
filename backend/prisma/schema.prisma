@@ -134,6 +134,15 @@ enum StandardPricingProfileType {
   @@map("standard_pricing_profile_type")
 }
 
+enum PricingChannel {
+  RETAIL
+  WHOLESALE
+  REGIONAL
+  PROMOTIONAL
+
+  @@map("pricing_channel")
+}
+
 // ------------------------------------------------------------------------------
 // 1. Users & Rotating Refresh Sessions
 // ------------------------------------------------------------------------------
@@ -293,6 +302,7 @@ model SokoGlobalCatalog {
   sellerProducts Product[]
   productUnits   GlobalProductUnit[]
   standardPrices GlobalCatalogStandardPrice[]
+  pricingTemplateAttachments GlobalCatalogPricingTemplate[]
   supplierListings SupplierCatalogListing[]
   supplierStockMovements SupplierStockMovement[]
   supplierPurchaseReceipts SupplierPurchaseReceipt[]
@@ -804,6 +814,7 @@ model SystemUnit {
   updatedAt         DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   productUnits GlobalProductUnit[]
+  pricingTemplates StandardPricingTemplate[]
   supplierListings SupplierCatalogListing[]
 
   @@map("system_units")
@@ -878,6 +889,48 @@ model GlobalCatalogStandardPrice {
 
   @@index([globalCatalogId, globalProductUnitId, profileType, isActive, version], map: "idx_global_standard_prices_lookup")
   @@map("global_catalog_standard_prices")
+}
+
+/// Standalone, reusable Admin-controlled pricing object. It is NOT owned by a
+/// single product: Admin creates it once and attaches it to any Global Catalog
+/// SKU through GlobalCatalogPricingTemplate.
+model StandardPricingTemplate {
+  id                 String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  templateName       String         @map("template_name") @db.VarChar(120)
+  systemUnitId       String         @map("system_unit_id") @db.Uuid
+  packItemCount      Int            @default(1) @map("pack_item_count")
+  unitMeasureValue   String         @map("unit_measure_value") @db.VarChar(24)
+  quarterQuantaTotal Int            @map("quarter_quanta_total")
+  pricingChannel     PricingChannel @map("pricing_channel")
+  standardPriceTzs   BigInt         @map("standard_price_tzs")
+  version            Int            @default(1)
+  isActive           Boolean        @default(true) @map("is_active")
+  createdByAdminId   String?        @map("created_by_admin_id") @db.Uuid
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  systemUnit  SystemUnit                    @relation(fields: [systemUnitId], references: [id], onDelete: Restrict)
+  attachments GlobalCatalogPricingTemplate[]
+
+  @@index([pricingChannel, isActive], map: "idx_standard_pricing_templates_channel")
+  @@map("standard_pricing_templates")
+}
+
+/// Join table linking reusable Pricing Templates to Global Catalog products.
+/// The old global_catalog_standard_prices rows remain untouched for backwards
+/// compatibility with existing Merchant overrides and historical orders.
+model GlobalCatalogPricingTemplate {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  globalCatalogId String  @map("global_catalog_id") @db.Uuid
+  templateId     String   @map("template_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  globalCatalog SokoGlobalCatalog     @relation(fields: [globalCatalogId], references: [id], onDelete: Cascade)
+  template      StandardPricingTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([globalCatalogId, templateId], map: "uq_global_catalog_pricing_template")
+  @@index([globalCatalogId], map: "idx_gc_pricing_templates_catalog")
+  @@map("global_catalog_pricing_templates")
 }
 
 model MerchantUnitPricingOverride {

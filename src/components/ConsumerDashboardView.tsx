@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import { formatOrderStatusLabel } from '../lib/sokoManagedState';
+import { formatSystemUnitLabel } from '../utils/formatProductUnit';
 import { putQueuedOrder } from '../lib/indexedDbDemo';
 import { useDataSaver } from '../context/DataSaverContext';
 import {
@@ -127,20 +128,7 @@ function isUuid(val?: string | null): val is string {
 }
 
 function formatLooseMeasure(unit: PackagingUnit, quanta: number, isSw: boolean): string {
-  switch (unit) {
-    case 'QUARTER_KILO_LITRE':
-      return isSw ? `Robo 1/4 (${quanta}Q)` : `Robo 1/4 (${quanta}Q)`;
-    case 'HALF_KILO_LITRE':
-      return isSw ? `Nusu 1/2 (${quanta}Q)` : `Nusu 1/2 (${quanta}Q)`;
-    case 'THREE_QUARTER_KILO':
-      return isSw ? `Tatu-Robo 3/4 (${quanta}Q)` : `Tatu-Robo 3/4 (${quanta}Q)`;
-    case 'SINGLE_KILO_LITRE':
-      return isSw ? `1KG / 1L (${quanta}Q)` : `1KG / 1L (${quanta}Q)`;
-    case 'PACK':
-      return isSw ? `Pakiti (${quanta}Q)` : `Pack (${quanta}Q)`;
-    default:
-      return `${unit} (${quanta}Q)`;
-  }
+  return formatSystemUnitLabel(unit, quanta, isSw ? 'sw' : 'en');
 }
 
 export function ConsumerDashboardView({

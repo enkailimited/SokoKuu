@@ -1,3 +1,9 @@
+import {
+  formatFractionLabel,
+  formatPackagingUnit,
+  type UnitCategory,
+} from '../utils/formatProductUnit';
+
 export interface GlobalCatalogEntry {
   globalCatalogId: string;
   canonicalSku: string;
@@ -368,27 +374,52 @@ export function formatOrderStatusLabel(
   }
 }
 
+/**
+ * Category-aware unit label. Pass the product's category whenever available so
+ * liquids render mL/L and solids render g/KG — never a combined "KG/L".
+ */
 export function formatUnitTypeLabel(
   unitType: string,
-  locale: 'sw' | 'en' = 'sw'
+  locale: 'sw' | 'en' = 'sw',
+  category: UnitCategory = 'WEIGHT',
 ): string {
   switch (unitType) {
     case 'QUANTA_ZERO':
       return locale === 'sw' ? 'Kipimo cha Quanta' : 'Quanta Unit';
     case 'QUARTER_KILO_LITRE':
-      return locale === 'sw' ? 'Robo (1/4 KG/L)' : 'Quarter (1/4 KG/L)';
+      return formatFractionLabel('QUARTER', category, locale);
     case 'HALF_KILO_LITRE':
-      return locale === 'sw' ? 'Nusu (1/2 KG/L)' : 'Half (1/2 KG/L)';
+      return formatFractionLabel('HALF', category, locale);
     case 'THREE_QUARTER_KILO':
-      return locale === 'sw' ? 'Tatu-Robo (3/4 KG)' : 'Three-Quarter (3/4 KG)';
+      return formatFractionLabel('THREE_QUARTER', category, locale);
     case 'SINGLE_KILO_LITRE':
-      return locale === 'sw' ? 'Kilo / Lita 1' : '1 KG / Litre';
+      return formatFractionLabel('SINGLE', category, locale);
     case 'SACK_50KG':
-      return locale === 'sw' ? 'Gunia 50 KG' : '50 KG Sack';
+      return formatPackagingUnit({
+        labelSw: 'Gunia',
+        labelEn: 'Sack',
+        locale,
+        packageKg: 50,
+      });
     case 'SACK_25KG':
-      return locale === 'sw' ? 'Gunia 25 KG' : '25 KG Sack';
+      return formatPackagingUnit({
+        labelSw: 'Gunia',
+        labelEn: 'Sack',
+        locale,
+        packageKg: 25,
+      });
     case 'CARTON':
-      return locale === 'sw' ? 'Katoni' : 'Carton';
+      return formatPackagingUnit({
+        labelSw: 'Katoni',
+        labelEn: 'Carton',
+        locale,
+      });
+    case 'CRATE':
+      return formatPackagingUnit({
+        labelSw: 'Kreti',
+        labelEn: 'Crate',
+        locale,
+      });
     case 'DOZEN':
       return locale === 'sw' ? 'Dazeni' : 'Dozen';
     case 'PACK':

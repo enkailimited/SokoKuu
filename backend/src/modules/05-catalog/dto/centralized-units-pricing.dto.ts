@@ -116,6 +116,41 @@ export class DefineGlobalProductUnitDto {
   isWholesaleUnit?: boolean;
 }
 
+export class UpdateGlobalProductUnitDto {
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  systemUnitId?: string;
+
+  @ApiPropertyOptional({ minimum: 1, example: 12 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  quarterQuantaPerUnit?: number;
+
+  @ApiPropertyOptional({ example: 'Katoni (Chupa 12 × 300 mL)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  displayLabelSw?: string;
+
+  @ApiPropertyOptional({ example: 'Carton (12 × 300 mL bottles)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  displayLabelEn?: string;
+
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  isWholesaleUnit?: boolean;
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
 export class CreateStandardPricingProfileDto {
   @ApiProperty({ example: 'RETAIL_STD_DEFAULT' })
   @IsString()
@@ -201,9 +236,21 @@ export class SelectOrAmendMerchantPriceDto {
   @IsUUID()
   globalProductUnitId!: string;
 
-  @ApiProperty({ format: 'uuid' })
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Legacy versioned standard price. Use this OR pricingTemplateId.',
+  })
+  @IsOptional()
   @IsUUID()
-  standardPriceId!: string;
+  standardPriceId?: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Standalone Admin Pricing Template attached to this Global Catalog product.',
+  })
+  @IsOptional()
+  @IsUUID()
+  pricingTemplateId?: string;
 
   @ApiPropertyOptional({ minimum: 1, example: 1600 })
   @IsOptional()

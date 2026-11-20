@@ -23,6 +23,7 @@ import {
   RecordExternalPurchaseReceiptDto,
   ResetMerchantPriceDto,
   SelectOrAmendMerchantPriceDto,
+  UpdateGlobalProductUnitDto,
   UpdateSystemUnitDto,
 } from './dto/centralized-units-pricing.dto';
 
@@ -67,6 +68,17 @@ export class CentralizedUnitsPricingController {
     @Body() dto: DefineGlobalProductUnitDto,
   ) {
     return this.service.defineProductUnit(globalCatalogId, dto);
+  }
+
+  @Patch('admin/marketplace/catalog/:globalCatalogId/units/:productUnitId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Edit an existing product-specific unit conversion/label (SUPER_ADMIN)' })
+  updateProductUnit(
+    @Param('globalCatalogId', new ParseUUIDPipe()) globalCatalogId: string,
+    @Param('productUnitId', new ParseUUIDPipe()) productUnitId: string,
+    @Body() dto: UpdateGlobalProductUnitDto,
+  ) {
+    return this.service.updateProductUnit(globalCatalogId, productUnitId, dto);
   }
 
   @Get('admin/marketplace/catalog/:globalCatalogId/units')

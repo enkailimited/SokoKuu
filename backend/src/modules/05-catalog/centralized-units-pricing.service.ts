@@ -18,6 +18,7 @@ import {
   RecordExternalPurchaseReceiptDto,
   ResetMerchantPriceDto,
   SelectOrAmendMerchantPriceDto,
+  UpdateGlobalProductUnitDto,
   UpdateSystemUnitDto,
 } from './dto/centralized-units-pricing.dto';
 
@@ -135,6 +136,47 @@ export class CentralizedUnitsPricingService {
       where: { globalCatalogId, isActive: true },
       include: { systemUnit: true },
       orderBy: { quarterQuantaPerUnit: 'asc' },
+    });
+  }
+
+  /** Edit an existing product-specific unit (conversion, label, wholesale flag). */
+  async updateProductUnit(
+    globalCatalogId: string,
+    productUnitId: string,
+    dto: UpdateGlobalProductUnitDto,
+  ) {
+    const existing = await this.prismaService.globalProductUnit.findFirst({
+      where: { id: productUnitId, globalCatalogId },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `Product unit ${productUnitId} was not found on catalog ${globalCatalogId}.`,
+      );
+    }
+
+    if (dto.systemUnitId) {
+      const systemUnit = await this.prismaService.systemUnit.findUnique({
+        where: { id: dto.systemUnitId },
+        select: { id: true },
+      });
+      if (!systemUnit) {
+        throw new NotFoundException(`System unit ${dto.systemUnitId} was not found.`);
+      }
+    }
+
+    const data: Prisma.GlobalProductUnitUncheckedUpdateInput = {};
+    if (dto.systemUnitId !== undefined) data.systemUnitId = dto.systemUnitId;
+    if (dto.quarterQuantaPerUnit !== undefined) data.quarterQuantaPerUnit = dto.quarterQuantaPerUnit;
+    if (dto.displayLabelSw !== undefined) data.displayLabelSw = dto.displayLabelSw.trim();
+    if (dto.displayLabelEn !== undefined) data.displayLabelEn = dto.displayLabelEn.trim();
+    if (dto.isWholesaleUnit !== undefined) data.isWholesaleUnit = dto.isWholesaleUnit;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    return this.prismaService.globalProductUnit.update({
+      where: { id: productUnitId },
+      data,
+      include: { systemUnit: true },
     });
   }
 
@@ -380,18 +422,11 @@ export class CentralizedUnitsPricingService {
         );
       }
 
-      const stdPrice = await tx.globalCatalogStandardPrice.findUnique({
-        where: { id: dto.standardPriceId },
-      });
-      if (
-        !stdPrice ||
-        stdPrice.globalCatalogId !== cloned.globalCatalogId ||
-        stdPrice.globalProductUnitId !== dto.globalProductUnitId
-      ) {
-        throw new NotFoundException(
-          `Standard price ${dto.standardPriceId} was not found for this product unit.`,
-        );
-      }
+      const priceSource = await this.resolveMerchantPriceSource(
+        tx,
+        cloned,
+        dto,
+      );
 
       const existingOverride = await tx.merchantUnitPricingOverride.findUnique({
         where: {
@@ -408,10 +443,10 @@ export class CentralizedUnitsPricingService {
 
       const isOverridden =
         dto.amendedSellingPriceTzs !== undefined &&
-        BigInt(dto.amendedSellingPriceTzs) !== stdPrice.standardPriceTzs;
+        BigInt(dto.amendedSellingPriceTzs) !== priceSource.priceTzs;
 
       const amendedBigInt = isOverridden ? BigInt(dto.amendedSellingPriceTzs!) : null;
-      const effectiveBigInt = isOverridden ? amendedBigInt! : stdPrice.standardPriceTzs;
+      const effectiveBigInt = isOverridden ? amendedBigInt! : priceSource.priceTzs;
 
       const savedOverride = await tx.merchantUnitPricingOverride.upsert({
         where: {
@@ -421,9 +456,9 @@ export class CentralizedUnitsPricingService {
           },
         },
         update: {
-          standardPriceId: stdPrice.id,
-          standardPriceVersion: stdPrice.version,
-          selectedStandardPriceTzs: stdPrice.standardPriceTzs,
+          standardPriceId: priceSource.standardPriceId,
+          standardPriceVersion: priceSource.version,
+          selectedStandardPriceTzs: priceSource.priceTzs,
           amendedSellingPriceTzs: amendedBigInt,
           effectiveSellingPriceTzs: effectiveBigInt,
           isOverridden,
@@ -433,9 +468,9 @@ export class CentralizedUnitsPricingService {
           clonedProductId,
           businessId: cloned.retailerBusinessId,
           globalProductUnitId: dto.globalProductUnitId,
-          standardPriceId: stdPrice.id,
-          standardPriceVersion: stdPrice.version,
-          selectedStandardPriceTzs: stdPrice.standardPriceTzs,
+          standardPriceId: priceSource.standardPriceId,
+          standardPriceVersion: priceSource.version,
+          selectedStandardPriceTzs: priceSource.priceTzs,
           amendedSellingPriceTzs: amendedBigInt,
           effectiveSellingPriceTzs: effectiveBigInt,
           isOverridden,
@@ -459,8 +494,8 @@ export class CentralizedUnitsPricingService {
           action,
           previousPriceTzs,
           newPriceTzs: effectiveBigInt,
-          standardPriceId: stdPrice.id,
-          standardPriceVersion: stdPrice.version,
+          standardPriceId: priceSource.standardPriceId,
+          standardPriceVersion: priceSource.version,
         },
       });
 
@@ -475,7 +510,9 @@ export class CentralizedUnitsPricingService {
               globalProductUnitId: dto.globalProductUnitId,
               previousPriceTzs: previousPriceTzs !== null ? Number(previousPriceTzs) : null,
               newPriceTzs: Number(effectiveBigInt),
-              standardPriceVersion: stdPrice.version,
+              standardPriceVersion: priceSource.version,
+              pricingTemplateId: priceSource.pricingTemplateId ?? null,
+              pricingChannel: priceSource.channel,
             },
           },
         });
@@ -486,14 +523,98 @@ export class CentralizedUnitsPricingService {
         clonedProductId,
         businessId: cloned.retailerBusinessId,
         globalProductUnitId: dto.globalProductUnitId,
-        standardPriceId: stdPrice.id,
-        standardPriceVersion: stdPrice.version,
-        selectedStandardPriceTzs: Number(stdPrice.standardPriceTzs),
+        standardPriceId: priceSource.standardPriceId,
+        standardPriceVersion: priceSource.version,
+        pricingTemplateId: priceSource.pricingTemplateId ?? null,
+        pricingChannel: priceSource.channel,
+        selectedStandardPriceTzs: Number(priceSource.priceTzs),
         amendedSellingPriceTzs: amendedBigInt !== null ? Number(amendedBigInt) : null,
         effectiveSellingPriceTzs: Number(effectiveBigInt),
         isOverridden,
       };
     });
+  }
+
+  /**
+   * Resolve the Admin-controlled price a Merchant is selecting: either a
+   * standalone attached Pricing Template or a legacy versioned standard price.
+   * Merchant amendments are still stored per tenant in the existing override
+   * table — template updates never rewrite them.
+   */
+  private async resolveMerchantPriceSource(
+    tx: any,
+    cloned: { id: string; globalCatalogId: string },
+    dto: SelectOrAmendMerchantPriceDto,
+  ): Promise<{
+    priceTzs: bigint;
+    version: number;
+    standardPriceId: string | null;
+    pricingTemplateId: string | null;
+    channel: string;
+  }> {
+    if (dto.pricingTemplateId) {
+      const attachment = await tx.globalCatalogPricingTemplate.findFirst({
+        where: {
+          globalCatalogId: cloned.globalCatalogId,
+          templateId: dto.pricingTemplateId,
+          template: { isActive: true },
+        },
+        include: { template: { include: { systemUnit: true } } },
+      });
+      if (!attachment) {
+        throw new NotFoundException(
+          `Pricing template ${dto.pricingTemplateId} is not attached to this product.`,
+        );
+      }
+
+      const productUnit = await tx.globalProductUnit.findUnique({
+        where: { id: dto.globalProductUnitId },
+        select: { id: true, globalCatalogId: true, systemUnitId: true },
+      });
+      if (!productUnit || productUnit.globalCatalogId !== cloned.globalCatalogId) {
+        throw new NotFoundException(
+          `Product unit ${dto.globalProductUnitId} was not found for this product.`,
+        );
+      }
+      if (productUnit.systemUnitId !== attachment.template.systemUnitId) {
+        throw new BadRequestException(
+          'Pricing template system unit does not match the selected product unit.',
+        );
+      }
+
+      return {
+        priceTzs: attachment.template.standardPriceTzs,
+        version: attachment.template.version,
+        standardPriceId: null,
+        pricingTemplateId: attachment.template.id,
+        channel: attachment.template.pricingChannel,
+      };
+    }
+
+    if (!dto.standardPriceId) {
+      throw new BadRequestException('Either pricingTemplateId or standardPriceId is required.');
+    }
+
+    const stdPrice = await tx.globalCatalogStandardPrice.findUnique({
+      where: { id: dto.standardPriceId },
+    });
+    if (
+      !stdPrice ||
+      stdPrice.globalCatalogId !== cloned.globalCatalogId ||
+      stdPrice.globalProductUnitId !== dto.globalProductUnitId
+    ) {
+      throw new NotFoundException(
+        `Standard price ${dto.standardPriceId} was not found for this product unit.`,
+      );
+    }
+
+    return {
+      priceTzs: stdPrice.standardPriceTzs,
+      version: stdPrice.version,
+      standardPriceId: stdPrice.id,
+      pricingTemplateId: null,
+      channel: stdPrice.profileType,
+    };
   }
 
   async resetMerchantPriceToStandard(
