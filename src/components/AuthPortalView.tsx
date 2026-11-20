@@ -250,8 +250,8 @@ export function AuthPortalView({
   };
 
   return (
-    <div className="min-h-dvh bg-white text-slate-900 flex flex-col overflow-x-hidden sk-safe-x">
-      <header className="h-16 px-6 bg-white border-b border-slate-100 flex items-center justify-between gap-6">
+    <div className="min-h-dvh bg-white text-slate-900 flex flex-col sk-safe-x">
+      <header className="sticky top-0 z-40 sk-safe-top h-16 px-5 sm:px-8 bg-white/90 backdrop-blur-md border-b border-slate-100 flex items-center justify-between gap-4">
         <BrandLogo size="md" />
         <div className="flex items-center gap-2 shrink-0">
           <PWAInstallButton locale={locale} />

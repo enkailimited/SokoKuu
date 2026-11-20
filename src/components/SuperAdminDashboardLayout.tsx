@@ -858,7 +858,7 @@ export function SuperAdminDashboardLayout({
   );
 
   return (
-    <div className="flex flex-1 min-h-dvh bg-slate-50 w-full relative min-w-0 overflow-x-hidden">
+    <div className="flex flex-1 min-h-dvh bg-slate-50 w-full relative min-w-0">
       {/* Truly Fixed Left Sidebar on Desktop (w-64 bg-white min-h-screen border-r border-slate-100) */}
       <aside className="hidden lg:flex lg:flex-col lg:fixed lg:left-0 lg:top-16 lg:bottom-0 w-64 bg-white min-h-screen border-r border-slate-100 z-30 overflow-y-auto">
         {renderSidebarContent()}
