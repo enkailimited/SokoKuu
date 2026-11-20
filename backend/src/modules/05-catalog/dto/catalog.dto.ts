@@ -392,6 +392,32 @@ export class UpdateFreeDeliveryDto {
   offersFreeDelivery!: boolean;
 }
 
+export class UpdateMerchantCloneDto {
+  @ApiPropertyOptional({ example: 120, description: 'Available Quarter-Quanta stock on the Merchant shelf' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  availableQuantaStock?: number;
+
+  @ApiPropertyOptional({ example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  lowStockThresholdQuanta?: number;
+
+  @ApiPropertyOptional({
+    example: 'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/azania-wheat-2kg.webp',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(IMAGEKIT_CDN_REGEX, {
+    message: 'imagekitCdnUrl must be an absolute ImageKit.io CDN URL',
+  })
+  imagekitCdnUrl?: string;
+}
+
 export class MarketStockItemDto {
   @ApiProperty({ format: 'uuid' })
   @IsUUID()

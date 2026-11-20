@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -129,6 +130,33 @@ export class CentralizedUnitsPricingController {
     @Query('includeHistory') includeHistory?: string,
   ) {
     return this.service.getStandardPricesForCatalogItem(globalCatalogId, includeHistory === 'true');
+  }
+
+  @Delete('admin/units/:unitId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Soft-delete a canonical system unit (reversible)' })
+  deleteSystemUnit(@Param('unitId', new ParseUUIDPipe()) unitId: string) {
+    return this.service.deleteSystemUnit(unitId);
+  }
+
+  @Delete('admin/marketplace/catalog/:globalCatalogId/units/:productUnitId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Soft-delete a global product unit (reversible)' })
+  deleteProductUnit(
+    @Param('globalCatalogId', new ParseUUIDPipe()) globalCatalogId: string,
+    @Param('productUnitId', new ParseUUIDPipe()) productUnitId: string,
+  ) {
+    return this.service.deleteProductUnit(globalCatalogId, productUnitId);
+  }
+
+  @Delete('admin/marketplace/catalog/:globalCatalogId/standard-prices/:priceId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Soft-delete a standard selling price row (history preserved)' })
+  deleteStandardPrice(
+    @Param('globalCatalogId', new ParseUUIDPipe()) globalCatalogId: string,
+    @Param('priceId', new ParseUUIDPipe()) priceId: string,
+  ) {
+    return this.service.deleteStandardPrice(globalCatalogId, priceId);
   }
 
   @Post('merchant/catalog/:clonedProductId/select-or-amend-price')

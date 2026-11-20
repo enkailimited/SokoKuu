@@ -16,12 +16,16 @@ import { Request, Response } from 'express';
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { CurrentTenant, CurrentUser, Public } from '@common/security/decorators';
 import {
+  ChangePasswordDto,
   LoginDto,
   LogoutDto,
+  PasswordResetChallengeDto,
+  PasswordResetConfirmDto,
   RefreshTokenDto,
   RegisterDto,
   RegistrationChallengeDto,
   UpdateMerchantShopImageDto,
+  UpdateProfileDto,
 } from './dto/auth.dto';
 import { AuthTokenResponse, IdentityService } from './identity.service';
 
@@ -139,6 +143,18 @@ export class IdentityController {
     return this.identityService.getMe(user.sub, tenantContext);
   }
 
+  @Patch('me')
+  @ApiBearerAuth('bearer')
+  @ApiOperation({ summary: 'Update authenticated profile and merchant business details' })
+  @ApiResponse({ status: 200, description: 'Profile updated' })
+  updateMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext: TenantContext | undefined,
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.identityService.updateProfile(user.sub, dto, tenantContext);
+  }
+
   @Patch('me/merchant-image')
   @ApiBearerAuth('bearer')
   @ApiOperation({ summary: 'Persist the merchant shop image ImageKit CDN URL' })
@@ -148,7 +164,39 @@ export class IdentityController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateMerchantShopImageDto,
   ) {
-    return this.identityService.updateMerchantShopImage(user.sub, dto.logoCdnUrl);
+    return this.identityService.updateMerchantShopImage(user.sub, dto.logoCdnUrl.trim());
+  }
+
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('bearer')
+  @ApiOperation({ summary: 'Change password for authenticated user (revokes active sessions)' })
+  @ApiResponse({ status: 200, description: 'Password changed' })
+  changePassword(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.identityService.changePassword(user.sub, dto.currentPassword, dto.newPassword);
+  }
+
+  @Public()
+  @Post('password-reset/challenge')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Request SMS OTP to reset password' })
+  @ApiResponse({ status: 200, description: 'Password reset challenge issued when eligible' })
+  passwordResetChallenge(@Body() dto: PasswordResetChallengeDto) {
+    return this.identityService.requestPasswordResetChallenge(dto);
+  }
+
+  @Public()
+  @Post('password-reset/confirm')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Confirm SMS OTP and set a new password' })
+  @ApiResponse({ status: 200, description: 'Password reset completed' })
+  passwordResetConfirm(@Body() dto: PasswordResetConfirmDto) {
+    return this.identityService.confirmPasswordReset(dto);
   }
 
   private async issueSession(

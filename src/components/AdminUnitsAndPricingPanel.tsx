@@ -10,6 +10,7 @@ import {
   Search,
   ToggleLeft,
   ToggleRight,
+  Trash2,
   TrendingUp,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
@@ -20,6 +21,7 @@ import {
 } from '../services/sokoApiClient';
 import type { GlobalCatalogEntry } from '../lib/sokoManagedState';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
 import { PricingTemplateAttachmentEditor } from './AdminPricingTemplatesPanel';
 import { formatQuantaMeasurement } from '../utils/formatProductUnit';
 
@@ -68,6 +70,11 @@ export interface BackendStandardPrice {
   isActive: boolean;
 }
 
+type UnitDeleteTarget =
+  | { kind: 'systemUnit'; id: string; label: string }
+  | { kind: 'productUnit'; id: string; globalCatalogId: string; label: string }
+  | { kind: 'standardPrice'; id: string; globalCatalogId: string; label: string };
+
 
 export function AdminUnitsAndPricingPanel({
   locale = 'sw',
@@ -98,6 +105,8 @@ export function AdminUnitsAndPricingPanel({
   );
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<UnitDeleteTarget | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   // New System Unit Modal State
   const [showAddUnitModal, setShowAddUnitModal] = useState<boolean>(false);
@@ -459,6 +468,57 @@ export function AdminUnitsAndPricingPanel({
     }
   };
 
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    setErrorBanner(null);
+    try {
+      if (deleteTarget.kind === 'systemUnit') {
+        await SokoApiClient.delete(`/admin/units/${deleteTarget.id}`);
+        setUnits((prev) =>
+          prev.map((u) => (u.id === deleteTarget.id ? { ...u, isActive: false } : u))
+        );
+        setStatusMessage(
+          isSw
+            ? `Kipimo "${deleteTarget.label}" kimefutwa kutoka sajili ya mfumo.`
+            : `System unit "${deleteTarget.label}" was deleted from the registry.`
+        );
+      } else if (deleteTarget.kind === 'productUnit') {
+        await SokoApiClient.delete(
+          `/admin/marketplace/catalog/${deleteTarget.globalCatalogId}/units/${deleteTarget.id}`
+        );
+        await loadProductPricingDetails(deleteTarget.globalCatalogId);
+        setStatusMessage(
+          isSw
+            ? `Kipimo cha bidhaa "${deleteTarget.label}" kimefutwa.`
+            : `Product unit "${deleteTarget.label}" was deleted.`
+        );
+      } else {
+        await SokoApiClient.delete(
+          `/admin/marketplace/catalog/${deleteTarget.globalCatalogId}/standard-prices/${deleteTarget.id}`
+        );
+        await loadProductPricingDetails(deleteTarget.globalCatalogId);
+        setStatusMessage(
+          isSw
+            ? `Bei sanifu "${deleteTarget.label}" imefutwa.`
+            : `Standard price "${deleteTarget.label}" was deleted.`
+        );
+      }
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+      setDeleteTarget(null);
+    } catch (err) {
+      setErrorBanner(
+        err instanceof SokoHttpError
+          ? `HTTP ${err.status}: ${err.message}`
+          : isSw
+            ? 'Imeshindikana kufuta rekodi hiyo. Jaribu tena.'
+            : 'Failed to delete the record. Please try again.'
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const filteredUnits = units.filter((u) => {
     const matchesCat = categoryFilter === 'ALL' || u.category === categoryFilter;
     const q = searchUnit.trim().toLowerCase();
@@ -647,6 +707,7 @@ export function AdminUnitsAndPricingPanel({
                   <th className="py-2.5 px-3">{isSw ? 'Kifupi & Msingi' : 'Abbr & Base Ref'}</th>
                   <th className="py-2.5 px-3">{isSw ? 'Vipande vya Sehemu' : 'Fractional'}</th>
                   <th className="py-2.5 px-3 text-right">{isSw ? 'Hali' : 'Status'}</th>
+                  <th className="py-2.5 px-3 text-right">{isSw ? 'Vitendo' : 'Actions'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -691,6 +752,22 @@ export function AdminUnitsAndPricingPanel({
                         ) : (
                           <ToggleLeft className="w-4 h-4 text-slate-400" />
                         )}
+                      </button>
+                    </td>
+                    <td className="py-2.5 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDeleteTarget({
+                            kind: 'systemUnit',
+                            id: u.id,
+                            label: isSw ? u.nameSw : u.nameEn,
+                          })
+                        }
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-white hover:bg-red-50 text-red-700 text-xs font-semibold cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{isSw ? 'Futa' : 'Delete'}</span>
                       </button>
                     </td>
                   </tr>
@@ -820,13 +897,30 @@ export function AdminUnitsAndPricingPanel({
                             {u.systemUnit.unitCode} [{u.systemUnit.abbreviation}]
                             {u.isWholesaleUnit ? ' · Wholesale Unit' : ''}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => openEditProductUnit(u)}
-                            className="mt-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline cursor-pointer"
-                          >
-                            {isSw ? 'Hariri kipimo' : 'Edit unit'}
-                          </button>
+                          <div className="mt-1 flex flex-wrap items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => openEditProductUnit(u)}
+                              className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline cursor-pointer"
+                            >
+                              {isSw ? 'Hariri kipimo' : 'Edit unit'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDeleteTarget({
+                                  kind: 'productUnit',
+                                  id: u.id,
+                                  globalCatalogId: u.globalCatalogId || selectedCatalogId,
+                                  label: isSw ? u.displayLabelSw : u.displayLabelEn,
+                                })
+                              }
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:text-red-900 cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" aria-hidden="true" />
+                              <span>{isSw ? 'Futa kipimo' : 'Delete unit'}</span>
+                            </button>
+                          </div>
                         </td>
                         <td className="py-2.5 px-3 font-mono font-bold text-emerald-700 tabular-nums">
                           {u.quarterQuantaPerUnit} Q (
@@ -882,8 +976,48 @@ export function AdminUnitsAndPricingPanel({
                           />
                         </td>
                         <td className="py-2.5 px-3 text-right font-mono text-[11px] text-slate-600">
-                          {activeRet ? `R:v${activeRet.version}` : 'R:-'} ·{' '}
-                          {activeWh ? `W:v${activeWh.version}` : 'W:-'}
+                          <div className="flex flex-col items-end gap-1">
+                            <div>
+                              {activeRet ? `R:v${activeRet.version}` : 'R:-'} ·{' '}
+                              {activeWh ? `W:v${activeWh.version}` : 'W:-'}
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-1">
+                              {activeRet && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDeleteTarget({
+                                      kind: 'standardPrice',
+                                      id: activeRet.id,
+                                      globalCatalogId: selectedCatalogId,
+                                      label: `${isSw ? u.displayLabelSw : u.displayLabelEn} · R:v${activeRet.version}`,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-red-200 bg-white hover:bg-red-50 text-red-700 text-[10px] font-semibold cursor-pointer"
+                                >
+                                  <Trash2 className="w-3 h-3" aria-hidden="true" />
+                                  <span>{isSw ? 'Futa R' : 'Del R'}</span>
+                                </button>
+                              )}
+                              {activeWh && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDeleteTarget({
+                                      kind: 'standardPrice',
+                                      id: activeWh.id,
+                                      globalCatalogId: selectedCatalogId,
+                                      label: `${isSw ? u.displayLabelSw : u.displayLabelEn} · W:v${activeWh.version}`,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-red-200 bg-white hover:bg-red-50 text-red-700 text-[10px] font-semibold cursor-pointer"
+                                >
+                                  <Trash2 className="w-3 h-3" aria-hidden="true" />
+                                  <span>{isSw ? 'Futa W' : 'Del W'}</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1176,6 +1310,31 @@ export function AdminUnitsAndPricingPanel({
             </form>
           </div>
         </div>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw={
+            deleteTarget.kind === 'systemUnit'
+              ? 'Futa Kipimo cha Mfumo'
+              : deleteTarget.kind === 'productUnit'
+                ? 'Futa Kipimo cha Bidhaa'
+                : 'Futa Bei Sanifu'
+          }
+          titleEn={
+            deleteTarget.kind === 'systemUnit'
+              ? 'Delete System Unit'
+              : deleteTarget.kind === 'productUnit'
+                ? 'Delete Product Unit'
+                : 'Delete Standard Price'
+          }
+          descriptionSw={`"${deleteTarget.label}" itaondolewa. Hatua hii haiwezi kutenduliwa.`}
+          descriptionEn={`"${deleteTarget.label}" will be removed. This cannot be undone.`}
+          isBusy={isDeleting}
+          onConfirm={() => void handleConfirmDelete()}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Languages,
   LoaderCircle,
+  Lock,
   LogOut,
   MapPin,
   Phone,
@@ -20,6 +21,7 @@ import { useDataSaver } from '../context/DataSaverContext';
 import {
   MODE_LABELS,
   ROLE_LABELS,
+  mapTierToAccountMode,
   type AccountMode,
   type UserProfile,
 } from '../types/auth';
@@ -62,15 +64,38 @@ export function ProfileEditView({
   onLogout?: () => void;
 }) {
   const isSw = locale === 'sw';
-  const [form, setForm] = useState<UserProfile>(profile);
-  const [savedNotice, setSavedNotice] = useState(false);
+  const [form, setForm] = useState<UserProfile>({
+    ...profile,
+    district: profile.district ?? '',
+    preferredLocale: profile.preferredLocale ?? locale,
+  });
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileNotice, setProfileNotice] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
   const [savingShopImage, setSavingShopImage] = useState(false);
   const [shopImageNotice, setShopImageNotice] = useState<string | null>(null);
   const [shopImageError, setShopImageError] = useState<string | null>(null);
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordNotice, setPasswordNotice] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
   const canManageShopImage =
     profile.role === 'RETAILER' ||
     profile.role === 'WHOLESALER' ||
     profile.role === 'SUPPLIER';
+
+  useEffect(() => {
+    setForm({
+      ...profile,
+      district: profile.district ?? '',
+      preferredLocale: profile.preferredLocale ?? locale,
+    });
+  }, [profile, locale]);
 
   const handleSaveShopImage = async () => {
     setShopImageNotice(null);
@@ -78,7 +103,7 @@ export function ProfileEditView({
     const logoCdnUrl = (form.shopImageUrl ?? '').trim();
     if (!logoCdnUrl) {
       setShopImageError(
-        isSw ? 'Chagua picha ya duka kwanza.' : 'Choose a shop image first.',
+        isSw ? 'Chagua picha ya duka kwanza.' : 'Choose a merchant image first.',
       );
       return;
     }
@@ -92,7 +117,7 @@ export function ProfileEditView({
       setForm(updated);
       onSaveProfile(updated);
       setShopImageNotice(
-        isSw ? 'Picha ya duka imehifadhiwa.' : 'Shop image saved.',
+        isSw ? 'Picha ya Mfanyabiashara imehifadhiwa.' : 'Merchant image saved.',
       );
     } catch (err) {
       if (err instanceof SokoHttpError) {
@@ -130,10 +155,161 @@ export function ProfileEditView({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSaveProfile(form);
-    setSavedNotice(true);
+    setProfileNotice(null);
+    setProfileError(null);
+    setSavingProfile(true);
+    try {
+      const payload = {
+        fullName: form.fullName.trim(),
+        businessName: form.businessLabel.trim(),
+        ward: form.ward.trim(),
+        district: (form.district ?? '').trim(),
+        streetAddress: form.streetAddress.trim(),
+        preferredLocale: form.preferredLocale ?? locale,
+      };
+      const res = await SokoApiClient.patch<{
+        user?: {
+          id?: string;
+          phoneE164?: string;
+          fullName?: string;
+          role?: UserProfile['role'];
+          preferredLocale?: string;
+        };
+        businessProfile?: {
+          id?: string;
+          smsShortCode?: string;
+          businessName?: string;
+          tier?: string | null;
+          ward?: string;
+          district?: string;
+          streetAddress?: string;
+          geospatialMapEnabled?: boolean;
+          isPlatformManaged?: boolean;
+          logoCdnUrl?: string | null;
+        } | null;
+        tenantContext?: {
+          businessId?: string | null;
+          tier?: string | null;
+        } | null;
+      }>('/auth/me', payload);
+
+      const bp = res.businessProfile;
+      const role = res.user?.role ?? form.role;
+      const tier = bp?.tier ?? res.tenantContext?.tier ?? form.tier ?? null;
+      const updated: UserProfile = {
+        ...form,
+        userId: res.user?.id ?? form.userId,
+        businessId: bp?.id ?? res.tenantContext?.businessId ?? form.businessId ?? null,
+        smsShortCode: bp?.smsShortCode ?? form.smsShortCode ?? null,
+        tier,
+        geospatialMapEnabled:
+          typeof bp?.geospatialMapEnabled === 'boolean'
+            ? bp.geospatialMapEnabled
+            : form.geospatialMapEnabled,
+        isPlatformManaged:
+          typeof bp?.isPlatformManaged === 'boolean'
+            ? bp.isPlatformManaged
+            : form.isPlatformManaged,
+        fullName: res.user?.fullName ?? form.fullName,
+        phone: res.user?.phoneE164 ?? form.phone,
+        businessLabel: bp?.businessName ?? form.businessLabel,
+        ward: bp?.ward ?? form.ward,
+        district: bp?.district ?? form.district ?? '',
+        streetAddress: bp?.streetAddress ?? form.streetAddress,
+        shopImageUrl: bp?.logoCdnUrl ?? form.shopImageUrl ?? null,
+        role,
+        mode: mapTierToAccountMode(role, tier),
+        preferredLocale:
+          (res.user?.preferredLocale as Locale | undefined) ??
+          (form.preferredLocale as Locale | undefined) ??
+          locale,
+      };
+      setForm(updated);
+      onSaveProfile(updated);
+      setProfileNotice(
+        isSw
+          ? 'Wasifu wako umehifadhiwa kikamilifu.'
+          : 'Your profile has been saved successfully.',
+      );
+    } catch (err) {
+      if (err instanceof SokoHttpError) {
+        setProfileError(err.message);
+      } else if (isSokoNetworkError(err)) {
+        setProfileError(
+          isSw
+            ? 'Hakuna muunganisho na SokoKuu API. Jaribu tena.'
+            : 'SokoKuu API is unreachable. Try again.',
+        );
+      } else {
+        setProfileError(
+          err instanceof Error ? err.message : isSw ? 'Imeshindikana kuhifadhi.' : 'Save failed.',
+        );
+      }
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordNotice(null);
+    setPasswordError(null);
+
+    if (newPassword.length < 8) {
+      setPasswordError(
+        isSw
+          ? 'Nywila mpya lazima iwe na angalau herufi 8.'
+          : 'New password must be at least 8 characters long.',
+      );
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError(
+        isSw ? 'Nywila mpya hazifanani.' : 'New passwords do not match.',
+      );
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      await SokoApiClient.post('/auth/change-password', {
+        currentPassword,
+        newPassword,
+      });
+      setPasswordNotice(
+        isSw
+          ? 'Nywila imebadilishwa. Tafadhali ingia tena.'
+          : 'Password changed. Please sign in again.',
+      );
+      SokoApiClient.clearTokens();
+      if (onLogout) {
+        void onLogout();
+      } else {
+        window.dispatchEvent(new CustomEvent('sokokuu:auth-required'));
+      }
+    } catch (err) {
+      if (err instanceof SokoHttpError) {
+        setPasswordError(err.message);
+      } else if (isSokoNetworkError(err)) {
+        setPasswordError(
+          isSw
+            ? 'Hakuna muunganisho na SokoKuu API. Jaribu tena.'
+            : 'SokoKuu API is unreachable. Try again.',
+        );
+      } else {
+        setPasswordError(
+          err instanceof Error
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kubadilisha nywila.'
+              : 'Failed to change password.',
+        );
+      }
+    } finally {
+      setChangingPassword(false);
+    }
   };
 
   return (
@@ -158,17 +334,22 @@ export function ProfileEditView({
         </div>
       </div>
 
-      {savedNotice && (
+      {profileNotice && (
         <div
           role="status"
           className="border border-emerald-200 bg-emerald-50 rounded-lg p-4 flex items-center gap-2.5 text-xs font-semibold text-emerald-900"
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
-          <span>
-            {isSw
-              ? 'Mapendeleo ya kikao chako yamehifadhiwa.'
-              : 'Your session display preferences have been updated.'}
-          </span>
+          <span>{profileNotice}</span>
+        </div>
+      )}
+      {profileError && (
+        <div
+          role="alert"
+          className="border border-red-200 bg-red-50 rounded-lg p-4 flex items-center gap-2.5 text-xs font-semibold text-red-900"
+        >
+          <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" aria-hidden="true" />
+          <span>{profileError}</span>
         </div>
       )}
 
@@ -184,9 +365,14 @@ export function ProfileEditView({
             </span>
             <input
               type="text"
-              readOnly
+              required
               value={form.fullName}
-              className="w-full min-h-[44px] px-3.5 text-sm bg-slate-50 border border-slate-200 rounded-md text-slate-700"
+              onChange={(e) => {
+                setForm((p) => ({ ...p, fullName: e.target.value }));
+                setProfileNotice(null);
+                setProfileError(null);
+              }}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
             />
           </label>
 
@@ -205,31 +391,88 @@ export function ProfileEditView({
 
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold text-slate-700">
-              {isSw ? 'Jina la Biashara / Kitambulisho' : 'Merchant / Account Label'}
+              {isSw ? 'Jina la Biashara (Mfanyabiashara)' : 'Merchant Business Name'}
             </span>
             <input
               type="text"
-              readOnly
               value={form.businessLabel}
-              className="w-full min-h-[44px] px-3.5 text-sm bg-slate-50 border border-slate-200 rounded-md text-slate-700"
+              onChange={(e) => {
+                setForm((p) => ({ ...p, businessLabel: e.target.value }));
+                setProfileNotice(null);
+                setProfileError(null);
+              }}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
             />
           </label>
 
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-              <span>{isSw ? 'Kata / Mtaa (PostgreSQL)' : 'Ward / Address'}</span>
+              <span>{isSw ? 'Kata' : 'Ward'}</span>
             </span>
             <input
               type="text"
               value={form.ward}
               onChange={(e) => {
                 setForm((p) => ({ ...p, ward: e.target.value }));
-                setSavedNotice(false);
+                setProfileNotice(null);
+                setProfileError(null);
               }}
               placeholder={isSw ? 'Weka kata yako...' : 'Enter ward...'}
               className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
             />
+          </label>
+
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Wilaya' : 'District'}
+            </span>
+            <input
+              type="text"
+              value={form.district ?? ''}
+              onChange={(e) => {
+                setForm((p) => ({ ...p, district: e.target.value }));
+                setProfileNotice(null);
+                setProfileError(null);
+              }}
+              placeholder={isSw ? 'Weka wilaya...' : 'Enter district...'}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+            />
+          </label>
+
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Anwani ya Mtaa' : 'Street Address'}
+            </span>
+            <input
+              type="text"
+              value={form.streetAddress}
+              onChange={(e) => {
+                setForm((p) => ({ ...p, streetAddress: e.target.value }));
+                setProfileNotice(null);
+                setProfileError(null);
+              }}
+              placeholder={isSw ? 'Weka anwani ya mtaa...' : 'Enter street address...'}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+            />
+          </label>
+
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Lugha Unayopendelea' : 'Preferred Locale'}
+            </span>
+            <select
+              value={form.preferredLocale ?? locale}
+              onChange={(e) => {
+                setForm((p) => ({ ...p, preferredLocale: e.target.value as Locale }));
+                setProfileNotice(null);
+                setProfileError(null);
+              }}
+              className="w-full min-h-[44px] px-3 text-xs bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+            >
+              <option value="sw">{isSw ? 'Kiswahili' : 'Swahili'}</option>
+              <option value="en">{isSw ? 'Kiingereza' : 'English'}</option>
+            </select>
           </label>
         </div>
 
@@ -244,7 +487,8 @@ export function ProfileEditView({
               disabled={allowedModesForRole().length <= 1}
               onChange={(e) => {
                 setForm((p) => ({ ...p, mode: e.target.value as AccountMode }));
-                setSavedNotice(false);
+                setProfileNotice(null);
+                setProfileError(null);
               }}
               className="w-full min-h-[44px] px-3 text-xs bg-white border border-slate-300 rounded-md text-slate-900 disabled:bg-slate-50 disabled:text-slate-600"
             >
@@ -270,7 +514,9 @@ export function ProfileEditView({
         {canManageShopImage && (
           <div className="border border-slate-200 bg-slate-50/70 rounded-lg p-4 space-y-3">
             <div className="text-xs font-semibold text-slate-800">
-              {isSw ? 'Picha ya Duka (SokoKuu / ImageKit)' : 'Shop Image (SokoKuu / ImageKit)'}
+              {isSw
+                ? 'Picha ya Mfanyabiashara (SokoKuu / ImageKit)'
+                : 'Merchant Image (SokoKuu / ImageKit)'}
             </div>
             <div className="flex flex-wrap items-start gap-4">
               <ImageKitUpload
@@ -282,13 +528,13 @@ export function ProfileEditView({
                   setShopImageError(null);
                 }}
                 folder="/merchants"
-                label={isSw ? 'Picha ya duka' : 'Shop image'}
+                label={isSw ? 'Picha ya Mfanyabiashara' : 'Merchant image'}
               />
               <div className="flex-1 min-w-[200px] space-y-2">
                 <p className="text-[11px] text-slate-600">
                   {isSw
-                    ? 'Pakia picha ya duka lako. Picha inaonyeshwa kwenye orodha ya wauzaji wa sokoni.'
-                    : 'Upload your shop image. It appears on marketplace merchant cards and hubs.'}
+                    ? 'Pakia picha ya Mfanyabiashara wako. Picha inaonyeshwa kwenye orodha ya Wafanyabiashara sokoni.'
+                    : 'Upload your merchant image. It appears on marketplace merchant cards and hubs.'}
                 </p>
                 {shopImageNotice && (
                   <div className="text-[11px] font-semibold text-emerald-700">
@@ -311,7 +557,7 @@ export function ProfileEditView({
                   ) : (
                     <Save className="w-4 h-4" aria-hidden="true" />
                   )}
-                  <span>{isSw ? 'Hifadhi Picha ya Duka' : 'Save Shop Image'}</span>
+                  <span>{isSw ? 'Hifadhi Picha ya Mfanyabiashara' : 'Save Merchant Image'}</span>
                 </button>
               </div>
             </div>
@@ -341,12 +587,118 @@ export function ProfileEditView({
             </button>
             <button
               type="submit"
-              className="min-h-[44px] px-5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-2 cursor-pointer"
+              disabled={savingProfile}
+              className="min-h-[44px] px-5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-2 cursor-pointer disabled:opacity-60"
             >
-              <Save className="w-4 h-4" aria-hidden="true" />
-              <span>{isSw ? 'Hifadhi Mapendeleo' : 'Save Preferences'}</span>
+              {savingProfile ? (
+                <LoaderCircle className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Save className="w-4 h-4" aria-hidden="true" />
+              )}
+              <span>{isSw ? 'Hifadhi Wasifu' : 'Save Profile'}</span>
             </button>
           </div>
+        </div>
+      </form>
+
+      <form
+        onSubmit={handleChangePassword}
+        className="bg-white border border-slate-200 rounded-lg p-6 space-y-4"
+      >
+        <div className="space-y-1">
+          <h2 className="text-sm font-bold text-slate-900">
+            {isSw ? 'Badilisha Nywila' : 'Change Password'}
+          </h2>
+          <p className="text-xs text-slate-500">
+            {isSw
+              ? 'Baada ya kubadilisha nywila utaombwa kuingia tena.'
+              : 'After changing your password you will be asked to sign in again.'}
+          </p>
+        </div>
+
+        {passwordNotice && (
+          <div
+            role="status"
+            className="border border-emerald-200 bg-emerald-50 rounded-lg p-3 text-xs font-semibold text-emerald-900"
+          >
+            {passwordNotice}
+          </div>
+        )}
+        {passwordError && (
+          <div
+            role="alert"
+            className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs font-semibold text-red-900"
+          >
+            {passwordError}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Nywila ya Sasa' : 'Current Password'}
+            </span>
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={(e) => {
+                setCurrentPassword(e.target.value);
+                setPasswordError(null);
+                setPasswordNotice(null);
+              }}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+              required
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Nywila Mpya' : 'New Password'}
+            </span>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                setPasswordError(null);
+                setPasswordNotice(null);
+              }}
+              minLength={8}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+              required
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Thibitisha Nywila Mpya' : 'Confirm New Password'}
+            </span>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+                setPasswordError(null);
+                setPasswordNotice(null);
+              }}
+              minLength={8}
+              className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+              required
+            />
+          </label>
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={changingPassword}
+            className="min-h-[44px] px-5 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-md inline-flex items-center gap-2 cursor-pointer disabled:opacity-60"
+          >
+            {changingPassword ? (
+              <LoaderCircle className="w-4 h-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Lock className="w-4 h-4" aria-hidden="true" />
+            )}
+            <span>{isSw ? 'Badilisha Nywila' : 'Change Password'}</span>
+          </button>
         </div>
       </form>
     </div>

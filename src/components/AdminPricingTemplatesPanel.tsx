@@ -6,6 +6,7 @@ import {
   Plus,
   RefreshCw,
   Tag,
+  Trash2,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../services/sokoApiClient';
 import type { GlobalCatalogEntry } from '../lib/sokoManagedState';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
 
 export interface PricingTemplateSystemUnit {
   id: string;
@@ -289,6 +291,8 @@ export default function AdminPricingTemplatesPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedCatalogId, setSelectedCatalogId] = useState<string>('');
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [templateName, setTemplateName] = useState<string>('');
   const [systemUnitId, setSystemUnitId] = useState<string>('');
@@ -379,6 +383,37 @@ export default function AdminPricingTemplatesPanel({
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleConfirmDeleteTemplate = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await SokoApiClient.delete(`/admin/pricing-templates/${deleteTarget.id}`);
+      setTemplates((prev) => prev.filter((t) => t.id !== deleteTarget.id));
+      setNotice(
+        isSw
+          ? `Kiolezo cha bei "${deleteTarget.label}" kimefutwa.`
+          : `Pricing template "${deleteTarget.label}" was deleted.`,
+      );
+      setDeleteTarget(null);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setOffline(true);
+      } else {
+        setError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kufuta kiolezo cha bei.'
+              : 'Failed to delete pricing template.',
+        );
+      }
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -576,10 +611,23 @@ export default function AdminPricingTemplatesPanel({
                 key={template.id}
                 className="border border-slate-200 rounded-lg p-3 bg-slate-50/60 space-y-1.5"
               >
-                <div className="text-sm font-bold text-slate-900">{template.templateName}</div>
-                <div className="text-[11px] font-mono text-slate-500">
-                  {template.systemUnit.unitCode} · {channelLabel(template.pricingChannel, isSw)} · v
-                  {template.version}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-slate-900 truncate">{template.templateName}</div>
+                    <div className="text-[11px] font-mono text-slate-500">
+                      {template.systemUnit.unitCode} · {channelLabel(template.pricingChannel, isSw)} · v
+                      {template.version}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTarget({ id: template.id, label: template.templateName })}
+                    className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-lg border border-red-200 bg-white hover:bg-red-50 text-red-700 cursor-pointer"
+                    aria-label={isSw ? 'Futa kiolezo cha bei' : 'Delete pricing template'}
+                    title={isSw ? 'Futa kiolezo cha bei' : 'Delete pricing template'}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
                 </div>
                 <div className="text-lg font-bold font-mono tabular-nums text-emerald-700">
                   TZS {formatTzs(template.standardPriceTzs)}
@@ -617,6 +665,19 @@ export default function AdminPricingTemplatesPanel({
           globalCatalogId={selectedCatalogId}
         />
       </section>
+
+      {deleteTarget && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw="Futa Kiolezo cha Bei"
+          titleEn="Delete Pricing Template"
+          descriptionSw={`Kiolezo "${deleteTarget.label}" kitaondolewa. Hatua hii haiwezi kutenduliwa.`}
+          descriptionEn={`Pricing template "${deleteTarget.label}" will be removed. This cannot be undone.`}
+          isBusy={isDeleting}
+          onConfirm={() => void handleConfirmDeleteTemplate()}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

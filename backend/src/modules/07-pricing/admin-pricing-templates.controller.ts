@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -57,6 +58,13 @@ export class AdminPricingTemplatesController {
     @Body() dto: UpdatePricingTemplateDto,
   ) {
     return this.service.updateTemplate(templateId, dto);
+  }
+
+  @Delete('admin/pricing-templates/:templateId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Soft-delete a Pricing Template (attachments preserved for audit)' })
+  deleteTemplate(@Param('templateId', new ParseUUIDPipe()) templateId: string) {
+    return this.service.deleteTemplate(templateId);
   }
 
   @Post('admin/marketplace/catalog/:globalCatalogId/attach-pricing-templates')

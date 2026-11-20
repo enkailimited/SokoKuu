@@ -962,4 +962,87 @@ export class CentralizedUnitsPricingService {
       };
     });
   }
+
+  // ===========================================================================
+  // F. Governance — reversible soft deletes for units and standard prices
+  // ===========================================================================
+
+  async deleteSystemUnit(unitId: string) {
+    const existing = await this.prismaService.systemUnit.findUnique({
+      where: { id: unitId },
+      select: { id: true, unitCode: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`System unit ${unitId} was not found.`);
+    }
+
+    if (existing.isActive) {
+      await this.prismaService.systemUnit.update({
+        where: { id: unitId },
+        data: { isActive: false },
+      });
+    }
+
+    return {
+      unitId: existing.id,
+      unitCode: existing.unitCode,
+      isActive: false,
+      deleted: true,
+      idempotentReplay: !existing.isActive,
+    };
+  }
+
+  async deleteProductUnit(globalCatalogId: string, productUnitId: string) {
+    const existing = await this.prismaService.globalProductUnit.findFirst({
+      where: { id: productUnitId, globalCatalogId },
+      select: { id: true, globalCatalogId: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `Product unit ${productUnitId} was not found for global catalog item ${globalCatalogId}.`,
+      );
+    }
+
+    if (existing.isActive) {
+      await this.prismaService.globalProductUnit.update({
+        where: { id: productUnitId },
+        data: { isActive: false },
+      });
+    }
+
+    return {
+      productUnitId: existing.id,
+      globalCatalogId: existing.globalCatalogId,
+      isActive: false,
+      deleted: true,
+      idempotentReplay: !existing.isActive,
+    };
+  }
+
+  async deleteStandardPrice(globalCatalogId: string, priceId: string) {
+    const existing = await this.prismaService.globalCatalogStandardPrice.findFirst({
+      where: { id: priceId, globalCatalogId },
+      select: { id: true, globalCatalogId: true, isActive: true, effectiveTo: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `Standard price ${priceId} was not found for global catalog item ${globalCatalogId}.`,
+      );
+    }
+
+    if (existing.isActive) {
+      await this.prismaService.globalCatalogStandardPrice.update({
+        where: { id: priceId },
+        data: { isActive: false, effectiveTo: new Date() },
+      });
+    }
+
+    return {
+      priceId: existing.id,
+      globalCatalogId: existing.globalCatalogId,
+      isActive: false,
+      deleted: true,
+      idempotentReplay: !existing.isActive,
+    };
+  }
 }

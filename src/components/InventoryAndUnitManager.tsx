@@ -10,11 +10,13 @@ import {
   X,
   Tag,
   PackagePlus,
+  Pencil,
   RotateCcw,
   Search,
   Minus,
   Plus,
   Boxes,
+  Trash2,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
@@ -31,6 +33,8 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
+import { ImageKitUpload } from './ImageKitUpload';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -170,7 +174,24 @@ export function InventoryAndUnitManager({
   const [shelfItems, setShelfItems] = useState<DukaInventoryItem[]>([]);
   const [receiptLedger, setReceiptLedger] = useState<PosReceiptRecord[]>([]);
   const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const [toastAction, setToastAction] = useState<{ label: string; onClick: () => void } | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
+
+  // Clone self-service (edit / delete)
+  const [editClone, setEditClone] = useState<ClonedCatalogItemRecord | null>(null);
+  const [editCloneStock, setEditCloneStock] = useState<string>('0');
+  const [editCloneLowStock, setEditCloneLowStock] = useState<string>('20');
+  const [editCloneImageUrl, setEditCloneImageUrl] = useState<string>('');
+  const [savingCloneEdit, setSavingCloneEdit] = useState<boolean>(false);
+  const [deleteCloneTarget, setDeleteCloneTarget] = useState<ClonedCatalogItemRecord | null>(null);
+  const [deletingClone, setDeletingClone] = useState<boolean>(false);
+  const [restoringCloneId, setRestoringCloneId] = useState<string | null>(null);
+
+  // Merchant-owned product / custom-unit delete
+  const [deleteProductTarget, setDeleteProductTarget] = useState<{ id: string; label: string } | null>(null);
+  const [deletingProduct, setDeletingProduct] = useState<boolean>(false);
+  const [deleteUnitTarget, setDeleteUnitTarget] = useState<{ productId: string; unitId: string; label: string } | null>(null);
+  const [deletingUnit, setDeletingUnit] = useState<boolean>(false);
 
   // Dynamic POS Modal State
   const [posSearch, setPosSearch] = useState<string>('');
@@ -885,6 +906,199 @@ export function InventoryAndUnitManager({
     }
   };
 
+  const openEditClone = (clone: ClonedCatalogItemRecord) => {
+    setErrorNotice(null);
+    setEditClone(clone);
+    setEditCloneStock(String(clone.availableQuantaStock ?? 0));
+    setEditCloneLowStock(String(clone.lowStockThresholdQuanta ?? 0));
+    setEditCloneImageUrl(clone.imagekitCdnUrl ?? '');
+  };
+
+  const handleSaveCloneEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editClone) return;
+    setSavingCloneEdit(true);
+    setErrorNotice(null);
+    setToastAction(null);
+    try {
+      const updated = await SokoApiClient.patch<ClonedCatalogItemRecord>(
+        `/merchant/catalog/${editClone.clonedProductId}`,
+        {
+          availableQuantaStock: Math.max(0, Math.trunc(Number(editCloneStock) || 0)),
+          lowStockThresholdQuanta: Math.max(0, Math.trunc(Number(editCloneLowStock) || 0)),
+          ...(editCloneImageUrl.trim()
+            ? { imagekitCdnUrl: editCloneImageUrl.trim() }
+            : {}),
+        }
+      );
+      setClonedItems((prev) =>
+        prev.map((c) =>
+          c.clonedProductId === editClone.clonedProductId ? { ...c, ...updated } : c
+        )
+      );
+      setToastNotice(
+        isSw
+          ? `Bidhaa "${isSw ? editClone.fixedNameSw : editClone.fixedNameEn}" imesasishwa.`
+          : `Cloned item "${isSw ? editClone.fixedNameSw : editClone.fixedNameEn}" updated.`
+      );
+      setEditClone(null);
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorNotice(
+          err instanceof SokoHttpError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kusasisha bidhaa iliyochaguliwa.'
+                : 'Failed to update the cloned item.'
+        );
+      }
+    } finally {
+      setSavingCloneEdit(false);
+    }
+  };
+
+  const handleConfirmDeleteClone = async () => {
+    if (!deleteCloneTarget) return;
+    const target = deleteCloneTarget;
+    setDeletingClone(true);
+    setErrorNotice(null);
+    try {
+      await SokoApiClient.delete(`/merchant/catalog/${target.clonedProductId}`);
+      setClonedItems((prev) =>
+        prev.filter((c) => c.clonedProductId !== target.clonedProductId)
+      );
+      setToastNotice(
+        isSw
+          ? `Bidhaa "${isSw ? target.fixedNameSw : target.fixedNameEn}" imefutwa.`
+          : `Cloned item "${isSw ? target.fixedNameSw : target.fixedNameEn}" deleted.`
+      );
+      setToastAction(null);
+      setDeleteCloneTarget(null);
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorNotice(
+          err instanceof SokoHttpError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kufuta bidhaa iliyochaguliwa.'
+                : 'Failed to delete the cloned item.'
+        );
+      }
+    } finally {
+      setDeletingClone(false);
+    }
+  };
+
+  const handleRestoreClone = async (clonedProductId: string) => {
+    setRestoringCloneId(clonedProductId);
+    setErrorNotice(null);
+    try {
+      await SokoApiClient.post(`/merchant/catalog/${clonedProductId}/restore`);
+      setToastNotice(isSw ? 'Bidhaa imerejeshwa.' : 'Item restored.');
+      setToastAction(null);
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorNotice(
+          err instanceof SokoHttpError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kurejesha bidhaa.'
+                : 'Failed to restore item.'
+        );
+      }
+    } finally {
+      setRestoringCloneId(null);
+    }
+  };
+
+  const handleConfirmDeleteProduct = async () => {
+    if (!deleteProductTarget) return;
+    setDeletingProduct(true);
+    setErrorNotice(null);
+    setToastAction(null);
+    try {
+      await SokoApiClient.delete(`/products/${deleteProductTarget.id}`);
+      setShelfItems((prev) => prev.filter((s) => s.itemId !== deleteProductTarget.id));
+      setToastNotice(
+        isSw
+          ? `Bidhaa "${deleteProductTarget.label}" imefutwa.`
+          : `Product "${deleteProductTarget.label}" deleted.`
+      );
+      setDeleteProductTarget(null);
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorNotice(
+          err instanceof SokoHttpError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kufuta bidhaa.'
+                : 'Failed to delete product.'
+        );
+      }
+    } finally {
+      setDeletingProduct(false);
+    }
+  };
+
+  const handleConfirmDeleteCustomUnit = async () => {
+    if (!deleteUnitTarget) return;
+    setDeletingUnit(true);
+    setErrorNotice(null);
+    setToastAction(null);
+    try {
+      await SokoApiClient.delete(
+        `/products/${deleteUnitTarget.productId}/custom-units/${deleteUnitTarget.unitId}`
+      );
+      setCustomUnits((prev) => prev.filter((u) => u.unitId !== deleteUnitTarget.unitId));
+      setToastNotice(
+        isSw
+          ? `Kipimo maalum "${deleteUnitTarget.label}" kimefutwa.`
+          : `Custom unit "${deleteUnitTarget.label}" deleted.`
+      );
+      setDeleteUnitTarget(null);
+      await loadLiveWorkspaceData();
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorNotice(
+          err instanceof SokoHttpError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kufuta kipimo maalum.'
+                : 'Failed to delete custom unit.'
+        );
+      }
+    } finally {
+      setDeletingUnit(false);
+    }
+  };
+
   const maxPosQuanta = selectedItemForSale
     ? Math.max(
         1,
@@ -926,17 +1140,37 @@ export function InventoryAndUnitManager({
           role="status"
           className="border border-emerald-200 bg-emerald-50 rounded-lg p-4 shadow-sm flex items-center justify-between gap-3 text-xs font-semibold text-emerald-950"
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
-            <span>{toastNotice}</span>
+            <span className="truncate">{toastNotice}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setToastNotice(null)}
-            className="text-slate-500 hover:text-slate-900 cursor-pointer"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {toastAction && (
+              <button
+                type="button"
+                onClick={() => {
+                  const action = toastAction;
+                  setToastNotice(null);
+                  setToastAction(null);
+                  action.onClick();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{toastAction.label}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setToastNotice(null);
+                setToastAction(null);
+              }}
+              className="text-slate-500 hover:text-slate-900 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
 
@@ -1329,6 +1563,14 @@ export function InventoryAndUnitManager({
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
+                        onClick={() => openEditClone(clone)}
+                        className="flex-1 min-h-[36px] px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-md text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                        <span>{isSw ? 'Hariri' : 'Edit'}</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void openPricingModal(clone)}
                         className="flex-1 min-h-[36px] px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-md text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
                       >
@@ -1342,6 +1584,14 @@ export function InventoryAndUnitManager({
                       >
                         <PackagePlus className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>{isSw ? 'Ingiza Manunuzi (Stock-In)' : 'Record Stock-In Receipt'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteCloneTarget(clone)}
+                        className="min-h-[36px] px-3 py-1.5 bg-white border border-red-200 hover:bg-red-50 text-red-700 rounded-md text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{isSw ? 'Futa' : 'Delete'}</span>
                       </button>
                     </div>
                   </div>
@@ -1497,16 +1747,32 @@ export function InventoryAndUnitManager({
                           {isSw ? item.productNameSw : item.productNameEn}
                         </div>
                       </div>
-                      <div className="text-right font-mono shrink-0">
-                        <div className="font-bold text-slate-950">
-                          {item.availableQuanta}Q{' '}
-                          {typeof item.sealedBulkPackagesStock === 'number'
-                            ? `(+${item.sealedBulkPackagesStock} sealed)`
-                            : ''}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="text-right font-mono">
+                          <div className="font-bold text-slate-950">
+                            {item.availableQuanta}Q{' '}
+                            {typeof item.sealedBulkPackagesStock === 'number'
+                              ? `(+${item.sealedBulkPackagesStock} sealed)`
+                              : ''}
+                          </div>
+                          <div className="text-[11px] text-emerald-700">
+                            TZS {item.unitPriceTzs.toLocaleString('en-US')} / unit
+                          </div>
                         </div>
-                        <div className="text-[11px] text-emerald-700">
-                          TZS {item.unitPriceTzs.toLocaleString('en-US')} / unit
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDeleteProductTarget({
+                              id: item.itemId,
+                              label: isSw ? item.productNameSw : item.productNameEn,
+                            })
+                          }
+                          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-red-200 bg-white hover:bg-red-50 text-red-700 cursor-pointer"
+                          aria-label={isSw ? 'Futa bidhaa' : 'Delete product'}
+                          title={isSw ? 'Futa bidhaa' : 'Delete product'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1663,11 +1929,30 @@ export function InventoryAndUnitManager({
                       key={u.unitId}
                       className="bg-white border border-slate-200 rounded-lg p-3 space-y-1 shadow-sm"
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-xs text-slate-950">{u.unitName}</span>
-                        <span className="font-mono text-xs text-emerald-700 font-semibold">
-                          {u.quantaEquivalent}Q
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-emerald-700 font-semibold">
+                            {u.quantaEquivalent}Q
+                          </span>
+                          {u.productId && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDeleteUnitTarget({
+                                  productId: u.productId as string,
+                                  unitId: u.unitId,
+                                  label: u.unitName,
+                                })
+                              }
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-red-200 bg-white hover:bg-red-50 text-red-700 cursor-pointer"
+                              aria-label={isSw ? 'Futa kipimo maalum' : 'Delete custom unit'}
+                              title={isSw ? 'Futa kipimo maalum' : 'Delete custom unit'}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <p className="text-[11px] text-slate-600">{u.descriptionSw}</p>
                       <div className="text-[10px] font-mono text-slate-400">
@@ -2183,6 +2468,142 @@ export function InventoryAndUnitManager({
             </form>
           </div>
         </div>
+      )}
+
+      {editClone && (
+        <div
+          className="sk-dialog-overlay backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setEditClone(null);
+          }}
+        >
+          <div className="sk-dialog-panel">
+            <div className="shrink-0 px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  {isSw ? 'Hariri Bidhaa ya Mfanyabiashara' : 'Edit Merchant Item'}
+                </h3>
+                <div className="text-[11px] font-mono text-slate-500">
+                  {editClone.canonicalSku}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditClone(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+                aria-label={isSw ? 'Funga' : 'Close'}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveCloneEdit} className="sk-dialog-body p-5 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Hisa Inayopatikana (Quanta)' : 'Available Stock (Quanta)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editCloneStock}
+                    onChange={(e) => setEditCloneStock(e.target.value)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900"
+                    required
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold text-slate-700">
+                    {isSw ? 'Kiwango cha Tahadhari (Quanta)' : 'Low Stock Threshold (Quanta)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editCloneLowStock}
+                    onChange={(e) => setEditCloneLowStock(e.target.value)}
+                    className="w-full min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900"
+                    required
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-1.5">
+                <ImageKitUpload
+                  locale={locale}
+                  label={isSw ? 'Picha ya Bidhaa (ImageKit)' : 'Item Image (ImageKit)'}
+                  folder="/merchants/catalog"
+                  value={editCloneImageUrl}
+                  onChange={setEditCloneImageUrl}
+                />
+              </div>
+
+              <div className="shrink-0 sk-safe-bottom flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditClone(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  {isSw ? 'Ghairi' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingCloneEdit}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  {savingCloneEdit ? (
+                    <span>{isSw ? 'Inahifadhi...' : 'Saving...'}</span>
+                  ) : (
+                    <>
+                      <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>{isSw ? 'Hifadhi Mabadiliko' : 'Save Changes'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {deleteCloneTarget && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw="Futa Bidhaa ya Mfanyabiashara"
+          titleEn="Delete Merchant Item"
+          descriptionSw={`Bidhaa "${isSw ? deleteCloneTarget.fixedNameSw : deleteCloneTarget.fixedNameEn}" itaondolewa kwenye orodha yako.`}
+          descriptionEn={`"${isSw ? deleteCloneTarget.fixedNameSw : deleteCloneTarget.fixedNameEn}" will be removed from your list.`}
+          isBusy={deletingClone}
+          onConfirm={() => void handleConfirmDeleteClone()}
+          onCancel={() => setDeleteCloneTarget(null)}
+        />
+      )}
+
+      {deleteProductTarget && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw="Futa Bidhaa"
+          titleEn="Delete Product"
+          descriptionSw={`Bidhaa "${deleteProductTarget.label}" itafutwa kabisa kutoka kwenye rekodi za Mfanyabiashara.`}
+          descriptionEn={`Product "${deleteProductTarget.label}" will be permanently deleted from merchant records.`}
+          isBusy={deletingProduct}
+          onConfirm={() => void handleConfirmDeleteProduct()}
+          onCancel={() => setDeleteProductTarget(null)}
+        />
+      )}
+
+      {deleteUnitTarget && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw="Futa Kipimo Maalum"
+          titleEn="Delete Custom Unit"
+          descriptionSw={`Kipimo maalum "${deleteUnitTarget.label}" kitafutwa.`}
+          descriptionEn={`Custom unit "${deleteUnitTarget.label}" will be deleted.`}
+          isBusy={deletingUnit}
+          onConfirm={() => void handleConfirmDeleteCustomUnit()}
+          onCancel={() => setDeleteUnitTarget(null)}
+        />
       )}
     </div>
   );

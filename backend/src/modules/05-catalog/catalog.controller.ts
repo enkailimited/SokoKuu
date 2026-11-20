@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -23,6 +24,7 @@ import {
   PublishMarketStockDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
+  UpdateMerchantCloneDto,
   UpdateMerchantProductDto,
   UpsertCustomMerchantUnitDto,
   UpsertProductPriceTierDto,
@@ -36,9 +38,10 @@ export class CatalogController {
 
   @Get('admin/marketplace/catalog/categories')
   @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.CONSUMER, Role.SUPPLIER)
-  @ApiOperation({ summary: 'List all SokoKuu catalog categories' })
-  listCategories() {
-    return this.catalogService.listCategories();
+  @ApiOperation({ summary: 'List all active SokoKuu catalog categories' })
+  @ApiQuery({ name: 'includeInactive', required: false, type: Boolean })
+  listCategories(@Query('includeInactive') includeInactive?: string) {
+    return this.catalogService.listCategories(includeInactive === 'true');
   }
 
   @Post('admin/marketplace/catalog/categories')
@@ -48,6 +51,13 @@ export class CatalogController {
   @ApiResponse({ status: 409, description: 'Category code already exists' })
   createCategory(@Body() dto: CreateCatalogCategoryDto) {
     return this.catalogService.createCategory(dto);
+  }
+
+  @Delete('admin/marketplace/catalog/categories/:categoryId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Soft-delete a catalog category without orphaning SKU category codes' })
+  deleteCategory(@Param('categoryId', ParseUUIDPipe) categoryId: string) {
+    return this.catalogService.deleteCategory(categoryId);
   }
 
   @Post('admin/marketplace/catalog/add-item')
@@ -75,6 +85,15 @@ export class CatalogController {
     @Body() dto: UpdateGlobalCatalogItemDto,
   ) {
     return this.catalogService.updateGlobalCatalogItem(globalCatalogId, dto);
+  }
+
+  @Delete('admin/marketplace/catalog/:globalCatalogId')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Soft-delete a canonical catalog SKU (hidden from clone/browse; history preserved)',
+  })
+  deleteGlobalItem(@Param('globalCatalogId', ParseUUIDPipe) globalCatalogId: string) {
+    return this.catalogService.deleteGlobalCatalogItem(globalCatalogId);
   }
 
   @Get('marketplace/catalog')
@@ -239,5 +258,75 @@ export class CatalogController {
     @CurrentTenant() tenantContext?: TenantContext,
   ) {
     return this.catalogService.upsertCustomMerchantUnit(productId, dto, tenantContext);
+  }
+
+  @Patch('merchant/catalog/:clonedProductId')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN, Role.SUPPLIER)
+  @TenantScoped()
+  @ApiOperation({ summary: 'Update a Merchant-cloned catalog shelf item (stock, threshold, image)' })
+  updateMerchantClone(
+    @Param('clonedProductId', ParseUUIDPipe) clonedProductId: string,
+    @Body() dto: UpdateMerchantCloneDto,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.updateMerchantClone(clonedProductId, dto, tenantContext);
+  }
+
+  @Delete('merchant/catalog/:clonedProductId')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN, Role.SUPPLIER)
+  @TenantScoped()
+  @ApiOperation({ summary: 'Soft-delete a Merchant-cloned catalog shelf item (reversible)' })
+  deleteMerchantClone(
+    @Param('clonedProductId', ParseUUIDPipe) clonedProductId: string,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.deleteMerchantClone(clonedProductId, tenantContext);
+  }
+
+  @Post('merchant/catalog/:clonedProductId/restore')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN, Role.SUPPLIER)
+  @TenantScoped()
+  @ApiOperation({ summary: 'Restore a previously removed Merchant-cloned catalog shelf item' })
+  restoreMerchantClone(
+    @Param('clonedProductId', ParseUUIDPipe) clonedProductId: string,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.restoreMerchantClone(clonedProductId, tenantContext);
+  }
+
+  @Delete('products/:productId')
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({ summary: 'Soft-delete a Merchant product (history preserved)' })
+  deleteProduct(
+    @Param('productId', new ParseUUIDPipe()) productId: string,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.deleteMerchantProduct(productId, tenantContext);
+  }
+
+  @Delete('products/:productId/price-tiers/:tierId')
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({ summary: 'Soft-delete a product price tier' })
+  deletePriceTier(
+    @Param('productId', new ParseUUIDPipe()) productId: string,
+    @Param('tierId', ParseUUIDPipe) tierId: string,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.deletePriceTier(productId, tierId, tenantContext);
+  }
+
+  @Delete('products/:productId/custom-units/:unitId')
+  @Roles(Role.WHOLESALER, Role.RETAILER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({ summary: 'Soft-delete a merchant custom unit' })
+  deleteCustomUnit(
+    @Param('productId', new ParseUUIDPipe()) productId: string,
+    @Param('unitId', ParseUUIDPipe) unitId: string,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.deleteCustomUnit(productId, unitId, tenantContext);
   }
 }

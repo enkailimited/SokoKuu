@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { IdentityModule } from '@modules/01-identity/identity.module';
 import {
   AdminMerchantsController,
   AdminMetricsController,
@@ -10,6 +11,7 @@ import { SalesLeadsService } from './sales-leads.service';
 import { AdminSystemDocsController } from './admin-docs.controller';
 
 @Module({
+  imports: [IdentityModule],
   controllers: [
     AdminMerchantsController,
     AdminMetricsController,

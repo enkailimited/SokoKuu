@@ -640,6 +640,322 @@ export class IdentityService {
     };
   }
 
+  async updateProfile(
+    userId: string,
+    dto: {
+      fullName?: string;
+      preferredLocale?: 'sw' | 'en';
+      businessName?: string;
+      ward?: string;
+      district?: string;
+      streetAddress?: string;
+    },
+    tenantContext?: TenantContext,
+  ) {
+    await this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
+      const userData: { fullName?: string; preferredLocale?: string } = {};
+      if (dto.fullName?.trim()) userData.fullName = dto.fullName.trim();
+      if (dto.preferredLocale) userData.preferredLocale = dto.preferredLocale;
+
+      if (Object.keys(userData).length > 0) {
+        await tx.user.update({ where: { id: userId }, data: userData });
+      }
+
+      const businessData: {
+        businessName?: string;
+        ward?: string;
+        district?: string;
+        streetAddress?: string;
+      } = {};
+      if (dto.businessName?.trim()) businessData.businessName = dto.businessName.trim();
+      if (dto.ward?.trim()) businessData.ward = dto.ward.trim();
+      if (dto.district?.trim()) businessData.district = dto.district.trim();
+      if (dto.streetAddress?.trim()) businessData.streetAddress = dto.streetAddress.trim();
+
+      if (Object.keys(businessData).length > 0) {
+        let businessId = tenantContext?.businessId ?? null;
+        if (!businessId) {
+          const owned = await tx.businessProfile.findFirst({
+            where: { ownerUserId: userId },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true },
+          });
+          businessId = owned?.id ?? null;
+        }
+        if (businessId) {
+          await tx.businessProfile.update({
+            where: { id: businessId },
+            data: businessData,
+          });
+        }
+      }
+    });
+
+    return this.getMe(userId, tenantContext);
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      select: { id: true, passwordHash: true, isActive: true },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Authenticated user profile no longer exists.');
+    }
+
+    const passwordValid = await argon2.verify(user.passwordHash, currentPassword);
+    if (!passwordValid) {
+      throw new UnauthorizedException('Current password is incorrect.');
+    }
+
+    const passwordHash = await argon2.hash(newPassword, {
+      type: argon2.argon2id,
+      memoryCost: 65536,
+      timeCost: 3,
+      parallelism: 1,
+    });
+
+    await this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { passwordHash },
+      });
+      await tx.refreshSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      if (tx.securityAuditLog && typeof tx.securityAuditLog.create === 'function') {
+        await tx.securityAuditLog.create({
+          data: {
+            userId,
+            eventType: 'USER_PASSWORD_CHANGED',
+            details: { requiresRelogin: true },
+          },
+        });
+      }
+    });
+
+    return { changed: true, requiresRelogin: true };
+  }
+
+  async requestPasswordResetChallenge(dto: { phoneE164: string }) {
+    const redis = this.redisService.getClient();
+    const cooldownKey = `auth:reset:otp:cooldown:${dto.phoneE164}`;
+    const countKey = `auth:reset:otp:count:${dto.phoneE164}`;
+    const hashKey = `auth:reset:otp:hash:${dto.phoneE164}`;
+    const attemptsKey = `auth:reset:otp:attempts:${dto.phoneE164}`;
+
+    // Avoid account enumeration: always respond with the same envelope.
+    const user = await this.prismaService.user.findUnique({
+      where: { phoneE164: dto.phoneE164 },
+      select: { id: true, isActive: true },
+    });
+
+    const code = String(randomInt(100000, 1000000));
+    const codeHash = this.hashToken(code);
+    const isDevLike = !this.isProductionEnv();
+
+    if (user && user.isActive) {
+      let redisAvailable = true;
+      try {
+        const cooldown = await redis.ttl(cooldownKey);
+        if (cooldown > 0) {
+          throw new HttpException(
+            `Please wait ${cooldown}s before requesting another code.`,
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+        const requested = Number.parseInt((await redis.get(countKey)) ?? '0', 10);
+        if (requested >= REGISTRATION_OTP_MAX_PER_HOUR) {
+          throw new HttpException(
+            'Too many reset codes requested. Please try again later.',
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+      } catch (error) {
+        if (error instanceof HttpException) throw error;
+        if (this.isProductionEnv()) {
+          throw new ServiceUnavailableException('Password reset is temporarily unavailable.');
+        }
+        redisAvailable = false;
+      }
+
+      try {
+        await this.outboundSmsService.queueAndDispatchSms({
+          recipientPhoneE164: dto.phoneE164,
+          messageBody: `SokoKuu: Nambari yako ya kubadilisha nywila ni ${code}. Itakwisha baada ya dakika 5.`,
+          maxAttempts: 3,
+        });
+      } catch (error) {
+        if (this.isProductionEnv()) {
+          this.logger.error(
+            `Failed to send password reset OTP: ${error instanceof Error ? error.message : 'unknown'}`,
+          );
+        }
+      }
+
+      try {
+        if (redisAvailable) {
+          await redis.set(hashKey, codeHash, 'EX', REGISTRATION_OTP_TTL_SECONDS);
+          await redis.set(attemptsKey, '0', 'EX', REGISTRATION_OTP_TTL_SECONDS);
+          await redis.set(cooldownKey, '1', 'EX', REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS);
+          const count = await redis.incr(countKey);
+          if (count === 1) {
+            await redis.expire(countKey, 3600);
+          }
+        } else {
+          this.setFallbackValue(hashKey, codeHash, REGISTRATION_OTP_TTL_SECONDS);
+          this.setFallbackValue(attemptsKey, '0', REGISTRATION_OTP_TTL_SECONDS);
+          this.setFallbackValue(cooldownKey, '1', REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS);
+          this.incrFallbackValue(countKey, 3600);
+        }
+      } catch (error) {
+        if (this.isProductionEnv()) {
+          throw new ServiceUnavailableException('Password reset is temporarily unavailable.');
+        }
+      }
+    }
+
+    return {
+      phoneE164: dto.phoneE164,
+      expiresInSeconds: REGISTRATION_OTP_TTL_SECONDS,
+      ...(isDevLike && user && user.isActive ? { devCode: code } : {}),
+    };
+  }
+
+  async confirmPasswordReset(dto: {
+    phoneE164: string;
+    verificationCode: string;
+    newPassword: string;
+  }) {
+    await this.consumePasswordResetChallenge(dto.phoneE164, dto.verificationCode);
+
+    const user = await this.prismaService.user.findUnique({
+      where: { phoneE164: dto.phoneE164 },
+      select: { id: true, isActive: true },
+    });
+
+    if (!user || !user.isActive) {
+      throw new BadRequestException('Password reset could not be completed for this account.');
+    }
+
+    const passwordHash = await argon2.hash(dto.newPassword, {
+      type: argon2.argon2id,
+      memoryCost: 65536,
+      timeCost: 3,
+      parallelism: 1,
+    });
+
+    await this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      });
+      await tx.refreshSession.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      if (tx.securityAuditLog && typeof tx.securityAuditLog.create === 'function') {
+        await tx.securityAuditLog.create({
+          data: {
+            userId: user.id,
+            eventType: 'USER_PASSWORD_RESET',
+            details: { via: 'sms_otp' },
+          },
+        });
+      }
+    });
+
+    return { reset: true };
+  }
+
+  private async consumePasswordResetChallenge(phoneE164: string, code: string): Promise<void> {
+    const redis = this.redisService.getClient();
+    const hashKey = `auth:reset:otp:hash:${phoneE164}`;
+    const attemptsKey = `auth:reset:otp:attempts:${phoneE164}`;
+
+    let redisAvailable = true;
+    let storedHash: string | null = null;
+    let attempts = 0;
+    try {
+      storedHash = await redis.get(hashKey);
+      const rawAttempts = await redis.get(attemptsKey);
+      attempts = rawAttempts ? Number.parseInt(rawAttempts, 10) : 0;
+    } catch (error) {
+      this.logger.warn(
+        `Password reset OTP verification unavailable: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      if (this.isProductionEnv()) {
+        throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+      }
+      redisAvailable = false;
+      storedHash = this.getFallbackValue(hashKey);
+      const rawAttempts = this.getFallbackValue(attemptsKey);
+      attempts = rawAttempts ? Number.parseInt(rawAttempts, 10) : 0;
+    }
+
+    if (!storedHash) {
+      throw new BadRequestException(
+        'Verification code expired or was never requested. Please request a new code.',
+      );
+    }
+    if (attempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
+      if (redisAvailable) {
+        try {
+          await redis.del(hashKey, attemptsKey);
+        } catch {
+          // best-effort cleanup
+        }
+      } else {
+        this.fallbackKv.delete(hashKey);
+        this.fallbackKv.delete(attemptsKey);
+      }
+      throw new BadRequestException(
+        'Too many incorrect verification codes. Please request a new code.',
+      );
+    }
+
+    const presentedHash = this.hashToken(code);
+    const matches =
+      presentedHash.length === storedHash.length &&
+      timingSafeEqual(Buffer.from(presentedHash, 'utf8'), Buffer.from(storedHash, 'utf8'));
+
+    if (!matches) {
+      if (redisAvailable) {
+        try {
+          const next = await redis.incr(attemptsKey);
+          if (next === 1) {
+            await redis.expire(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
+          }
+        } catch {
+          if (this.isProductionEnv()) {
+            throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+          }
+          this.incrFallbackValue(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
+        }
+      } else {
+        this.incrFallbackValue(attemptsKey, REGISTRATION_OTP_TTL_SECONDS);
+      }
+      throw new BadRequestException('Incorrect verification code.');
+    }
+
+    if (redisAvailable) {
+      try {
+        await redis.del(hashKey, attemptsKey);
+      } catch {
+        if (this.isProductionEnv()) {
+          throw new ServiceUnavailableException('Verification service is temporarily unavailable.');
+        }
+        this.fallbackKv.delete(hashKey);
+        this.fallbackKv.delete(attemptsKey);
+      }
+    } else {
+      this.fallbackKv.delete(hashKey);
+      this.fallbackKv.delete(attemptsKey);
+    }
+  }
+
   private async generateUniqueSmsShortCode(tx: any): Promise<string> {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const code = `SK${Math.floor(1000 + Math.random() * 9000)}`;

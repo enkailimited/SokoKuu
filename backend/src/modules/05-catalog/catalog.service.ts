@@ -23,6 +23,7 @@ import {
   PublishMarketStockDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
+  UpdateMerchantCloneDto,
   UpdateMerchantProductDto,
   UpsertCustomMerchantUnitDto,
   UpsertProductPriceTierDto,
@@ -35,8 +36,9 @@ export class CatalogService {
     private readonly outboxService: OutboxService,
   ) {}
 
-  async listCategories() {
+  async listCategories(includeInactive = false) {
     return this.prismaService.sokoCatalogCategory.findMany({
+      where: includeInactive ? undefined : { isActive: true },
       orderBy: { nameSw: 'asc' },
     });
   }
@@ -99,7 +101,7 @@ export class CatalogService {
     }
 
     const clones = await this.prismaService.merchantClonedProduct.findMany({
-      where: { retailerBusinessId: targetMerchantId },
+      where: { retailerBusinessId: targetMerchantId, isActive: true },
       include: {
         globalCatalog: true,
         unitPricingOverrides: {
@@ -1071,5 +1073,223 @@ export class CatalogService {
 
       return enriched;
     });
+  }
+
+  // ===========================================================================
+  // Governance — reversible deletes owned by Admin or by the tenant itself
+  // ===========================================================================
+
+  private assertTenantOwnership(
+    ownerBusinessId: string,
+    tenantContext: TenantContext | undefined,
+    action: string,
+  ): void {
+    if (!tenantContext?.isSuperAdmin && ownerBusinessId !== tenantContext?.businessId) {
+      throw new ForbiddenException(`You may only ${action} data belonging to your own business.`);
+    }
+  }
+
+  async deleteCategory(categoryId: string) {
+    const existing = await this.prismaService.sokoCatalogCategory.findUnique({
+      where: { id: categoryId },
+      select: { id: true, categoryCode: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Catalog category ${categoryId} was not found.`);
+    }
+
+    if (existing.isActive) {
+      await this.prismaService.sokoCatalogCategory.update({
+        where: { id: categoryId },
+        data: { isActive: false },
+      });
+    }
+
+    return {
+      categoryId: existing.id,
+      categoryCode: existing.categoryCode,
+      isActive: false,
+      deleted: true,
+      idempotentReplay: !existing.isActive,
+    };
+  }
+
+  async deleteGlobalCatalogItem(globalCatalogId: string) {
+    const existing = await this.prismaService.sokoGlobalCatalog.findUnique({
+      where: { id: globalCatalogId },
+      select: { id: true, canonicalSku: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Global catalog item ${globalCatalogId} was not found.`);
+    }
+
+    if (existing.isActive) {
+      await this.prismaService.sokoGlobalCatalog.update({
+        where: { id: globalCatalogId },
+        data: { isActive: false },
+      });
+    }
+
+    return {
+      globalCatalogId: existing.id,
+      canonicalSku: existing.canonicalSku,
+      isActive: false,
+      deleted: true,
+      idempotentReplay: !existing.isActive,
+    };
+  }
+
+  async updateMerchantClone(
+    clonedProductId: string,
+    dto: UpdateMerchantCloneDto,
+    tenantContext?: TenantContext,
+  ) {
+    const existing = await this.prismaService.merchantClonedProduct.findUnique({
+      where: { id: clonedProductId },
+      select: { id: true, retailerBusinessId: true, isActive: true },
+    });
+    if (!existing || !existing.isActive) {
+      throw new NotFoundException(`Cloned catalog item ${clonedProductId} was not found.`);
+    }
+    this.assertTenantOwnership(existing.retailerBusinessId, tenantContext, 'edit');
+
+    const updated = await this.prismaService.merchantClonedProduct.update({
+      where: { id: clonedProductId },
+      data: {
+        availableQuantaStock: dto.availableQuantaStock,
+        lowStockThresholdQuanta: dto.lowStockThresholdQuanta,
+        imagekitCdnUrl: dto.imagekitCdnUrl?.trim(),
+      },
+    });
+
+    return {
+      clonedProductId: updated.id,
+      retailerBusinessId: updated.retailerBusinessId,
+      availableQuantaStock: updated.availableQuantaStock,
+      lowStockThresholdQuanta: updated.lowStockThresholdQuanta,
+      imagekitCdnUrl: updated.imagekitCdnUrl,
+      updatedAtEat: updated.updatedAt.toISOString(),
+    };
+  }
+
+  async deleteMerchantClone(clonedProductId: string, tenantContext?: TenantContext) {
+    const existing = await this.prismaService.merchantClonedProduct.findUnique({
+      where: { id: clonedProductId },
+      select: { id: true, retailerBusinessId: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Cloned catalog item ${clonedProductId} was not found.`);
+    }
+    this.assertTenantOwnership(existing.retailerBusinessId, tenantContext, 'delete');
+
+    const updated = await this.prismaService.merchantClonedProduct.update({
+      where: { id: clonedProductId },
+      data: { isActive: false, deletedAt: new Date() },
+      select: { id: true, deletedAt: true },
+    });
+
+    return {
+      clonedProductId: updated.id,
+      deleted: true,
+      deletedAtEat: updated.deletedAt?.toISOString() ?? new Date().toISOString(),
+    };
+  }
+
+  async restoreMerchantClone(clonedProductId: string, tenantContext?: TenantContext) {
+    const existing = await this.prismaService.merchantClonedProduct.findUnique({
+      where: { id: clonedProductId },
+      select: { id: true, retailerBusinessId: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Cloned catalog item ${clonedProductId} was not found.`);
+    }
+    this.assertTenantOwnership(existing.retailerBusinessId, tenantContext, 'restore');
+
+    await this.prismaService.merchantClonedProduct.update({
+      where: { id: clonedProductId },
+      data: { isActive: true, deletedAt: null },
+    });
+
+    return { clonedProductId: existing.id, restored: true };
+  }
+
+  async deleteMerchantProduct(productId: string, tenantContext?: TenantContext) {
+    const existing = await this.prismaService.product.findUnique({
+      where: { id: productId },
+      select: { id: true, sellerBusinessId: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Product ${productId} was not found.`);
+    }
+    this.assertTenantOwnership(existing.sellerBusinessId, tenantContext, 'delete');
+
+    if (existing.isActive) {
+      await this.prismaService.product.update({
+        where: { id: productId },
+        data: { isActive: false },
+      });
+    }
+
+    return { productId: existing.id, deleted: true, isActive: false };
+  }
+
+  async deletePriceTier(
+    productId: string,
+    tierId: string,
+    tenantContext?: TenantContext,
+  ) {
+    const product = await this.prismaService.product.findUnique({
+      where: { id: productId },
+      select: { id: true, sellerBusinessId: true },
+    });
+    if (!product) {
+      throw new NotFoundException(`Product ${productId} was not found.`);
+    }
+    this.assertTenantOwnership(product.sellerBusinessId, tenantContext, 'delete');
+
+    const tier = await this.prismaService.productPriceTier.findFirst({
+      where: { id: tierId, productId },
+      select: { id: true },
+    });
+    if (!tier) {
+      throw new NotFoundException(`Price tier ${tierId} was not found on this product.`);
+    }
+
+    await this.prismaService.productPriceTier.update({
+      where: { id: tierId },
+      data: { isActive: false },
+    });
+
+    return { productId, tierId, deleted: true, isActive: false };
+  }
+
+  async deleteCustomUnit(
+    productId: string,
+    unitId: string,
+    tenantContext?: TenantContext,
+  ) {
+    const product = await this.prismaService.product.findUnique({
+      where: { id: productId },
+      select: { id: true, sellerBusinessId: true },
+    });
+    if (!product) {
+      throw new NotFoundException(`Product ${productId} was not found.`);
+    }
+    this.assertTenantOwnership(product.sellerBusinessId, tenantContext, 'delete');
+
+    const unit = await this.prismaService.merchantCustomUnit.findFirst({
+      where: { id: unitId, productId },
+      select: { id: true },
+    });
+    if (!unit) {
+      throw new NotFoundException(`Custom unit ${unitId} was not found on this product.`);
+    }
+
+    await this.prismaService.merchantCustomUnit.update({
+      where: { id: unitId },
+      data: { isActive: false },
+    });
+
+    return { productId, unitId, deleted: true, isActive: false };
   }
 }

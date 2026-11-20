@@ -2,7 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { BusinessTier, Prisma } from '@prisma/client';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
-import { ListMerchantsQueryDto } from './dto/platform-admin.dto';
+import { ListMerchantsQueryDto, SetMerchantSuspensionDto } from './dto/platform-admin.dto';
 
 export interface MerchantDirectoryRecord {
   merchantId: string;
@@ -210,6 +210,103 @@ export class AdminMerchantsService {
         merchantName: updated.businessName,
         isOpen: updated.isOpen,
         updatedAtEat: updated.updatedAt.toISOString(),
+      };
+    });
+  }
+
+  async setMerchantSuspension(
+    businessId: string,
+    dto: SetMerchantSuspensionDto,
+    adminUserId: string,
+  ) {
+    return this.prismaService.runInTransaction('Serializable', async (tx) => {
+      const existing = await tx.businessProfile.findUnique({
+        where: { id: businessId },
+        select: {
+          id: true,
+          businessName: true,
+          isOpen: true,
+          ownerUserId: true,
+          owner: { select: { id: true, isActive: true } },
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException(`Merchant profile ${businessId} was not found.`);
+      }
+
+      const suspended = dto.suspended;
+      const now = new Date();
+
+      const updatedBusiness = await tx.businessProfile.update({
+        where: { id: businessId },
+        data: {
+          isOpen: !suspended,
+          version: { increment: 1 },
+        },
+        select: {
+          id: true,
+          businessName: true,
+          isOpen: true,
+          updatedAt: true,
+        },
+      });
+
+      await tx.user.update({
+        where: { id: existing.ownerUserId },
+        data: { isActive: !suspended },
+      });
+
+      if (suspended) {
+        await tx.refreshSession.updateMany({
+          where: { userId: existing.ownerUserId, revokedAt: null },
+          data: { revokedAt: now },
+        });
+      }
+
+      await this.outboxService.enqueue(
+        {
+          aggregateType: 'BusinessProfile',
+          aggregateId: updatedBusiness.id,
+          eventType: 'MerchantSuspensionToggledEvent',
+          routingKey: 'admin.merchant.suspension_toggled',
+          payload: {
+            merchantId: updatedBusiness.id,
+            merchantName: updatedBusiness.businessName,
+            ownerUserId: existing.ownerUserId,
+            suspended,
+            reason: dto.reason ?? null,
+            updatedByAdminId: adminUserId,
+          },
+        },
+        tx,
+      );
+
+      if (tx.securityAuditLog && typeof tx.securityAuditLog.create === 'function') {
+        await tx.securityAuditLog.create({
+          data: {
+            userId: adminUserId,
+            eventType: suspended ? 'MERCHANT_SUSPENDED' : 'MERCHANT_UNSUSPENDED',
+            details: {
+              merchantId: updatedBusiness.id,
+              ownerUserId: existing.ownerUserId,
+              reason: dto.reason ?? null,
+            },
+          },
+        });
+      }
+
+      this.logger.warn(
+        `[ADMIN-MERCHANT-SUSPENSION] merchantId=${updatedBusiness.id} suspended=${suspended} by=${adminUserId}`,
+      );
+
+      return {
+        businessId: updatedBusiness.id,
+        businessName: updatedBusiness.businessName,
+        isOpen: updatedBusiness.isOpen,
+        isActive: !suspended,
+        suspended,
+        updatedAtEat: updatedBusiness.updatedAt.toISOString(),
       };
     });
   }

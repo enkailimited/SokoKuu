@@ -76,6 +76,22 @@ export class SetMerchantVerifiedDto {
   isOpen!: boolean;
 }
 
+export class SetMerchantSuspensionDto {
+  @ApiProperty({
+    description:
+      'true suspends the Merchant: storefront closed, sign-in blocked and all active sessions revoked. false restores access.',
+    example: true,
+  })
+  @IsBoolean()
+  suspended!: boolean;
+
+  @ApiPropertyOptional({ example: 'Kagosi la akaunti - tuhuma ya udanganyifu' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 export class ToggleTenantMapRequestDto {
   @ApiProperty({ description: 'Target Merchant profile UUID' })
   @IsUUID()

@@ -172,6 +172,30 @@ export class PricingTemplateService {
     };
   }
 
+  async deleteTemplate(templateId: string) {
+    const existing = await this.prismaService.standardPricingTemplate.findUnique({
+      where: { id: templateId },
+      select: { id: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Pricing template ${templateId} was not found.`);
+    }
+
+    if (existing.isActive) {
+      await this.prismaService.standardPricingTemplate.update({
+        where: { id: templateId },
+        data: { isActive: false },
+      });
+    }
+
+    return {
+      templateId: existing.id,
+      isActive: false,
+      deleted: true,
+      idempotentReplay: !existing.isActive,
+    };
+  }
+
   private serialize(template: {
     id: string;
     templateName: string;

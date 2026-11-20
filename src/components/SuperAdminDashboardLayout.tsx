@@ -29,6 +29,7 @@ import {
   Smartphone,
   Store,
   Tag,
+  Trash2,
   TrendingUp,
   X,
 } from 'lucide-react';
@@ -54,6 +55,7 @@ import { AdminUnitsAndPricingPanel } from './AdminUnitsAndPricingPanel';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { BrandLogo } from './BrandLogo';
 import { CodeViewer } from './CodeViewer';
+import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
 import { ConcurrencySmsCsvPanel } from './ConcurrencySmsCsvPanel';
 import { DevOpsRetentionPanel } from './DevOpsRetentionPanel';
 import { DynamicPricingRouterPanel } from './DynamicPricingRouterPanel';
@@ -103,6 +105,10 @@ const ADMIN_DOC_MODULES: Array<{ key: AdminModuleKey; icon: typeof ShieldCheck }
 ];
 
 const IMAGEKIT_CDN_REGEX = /^https:\/\/ik\.imagekit\.io\/[a-zA-Z0-9_-]+\/.+$/;
+
+type AdminDeleteTarget =
+  | { kind: 'catalog'; id: string; label: string }
+  | { kind: 'category'; id: string; label: string };
 
 const FALLBACK_SVG_PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
@@ -217,6 +223,8 @@ export function SuperAdminDashboardLayout({
   const [catalogSearch, setCatalogSearch] = useState<string>('');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [adminToast, setAdminToast] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AdminDeleteTarget | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   // Action Modals
   const [showCategoryModal, setShowCategoryModal] = useState<boolean>(false);
@@ -503,6 +511,50 @@ export function SuperAdminDashboardLayout({
     );
     setNewSku(`${entry.canonicalSku}-${Date.now().toString().slice(-5)}`);
     setShowProductModal(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    setAdminApiError(null);
+    try {
+      if (deleteTarget.kind === 'catalog') {
+        await SokoApiClient.delete(`/admin/marketplace/catalog/${deleteTarget.id}`);
+        setCatalogEntries((prev) =>
+          prev.filter((entry) => entry.globalCatalogId !== deleteTarget.id)
+        );
+        if (selectedPricingCatalogId === deleteTarget.id) {
+          setSelectedPricingCatalogId(undefined);
+        }
+        setAdminToast(
+          isSw
+            ? `Bidhaa kuu "${deleteTarget.label}" imefutwa kutoka Katalogi Kuu.`
+            : `Global catalog item "${deleteTarget.label}" was deleted.`
+        );
+      } else {
+        await SokoApiClient.delete(
+          `/admin/marketplace/catalog/categories/${deleteTarget.id}`
+        );
+        setCategories((prev) => prev.filter((cat) => cat.categoryId !== deleteTarget.id));
+        setAdminToast(
+          isSw
+            ? `Kategoria "${deleteTarget.label}" imefutwa kutoka sajili.`
+            : `Category "${deleteTarget.label}" was deleted from the registry.`
+        );
+      }
+      window.dispatchEvent(new CustomEvent('sokokuu:catalog-updated'));
+      setDeleteTarget(null);
+    } catch (err) {
+      setAdminApiError(
+        err instanceof SokoHttpError
+          ? err.message
+          : isSw
+            ? 'Imeshindikana kufuta rekodi hiyo. Jaribu tena.'
+            : 'Failed to delete the record. Please try again.'
+      );
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const openEditCatalogModal = (entry: GlobalCatalogEntry) => {
@@ -1200,6 +1252,21 @@ export function SuperAdminDashboardLayout({
                               <Scale className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
                               <span>{isSw ? 'Vipimo & Bei' : 'Units & Pricing'}</span>
                             </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDeleteTarget({
+                                  kind: 'catalog',
+                                  id: entry.globalCatalogId,
+                                  label: isSw ? entry.fixedNameSw : entry.fixedNameEn,
+                                })
+                              }
+                              title={isSw ? 'Futa bidhaa kuu' : 'Delete global catalog item'}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 bg-white hover:bg-red-50 hover:border-red-300 text-slate-700 hover:text-red-800 text-xs font-semibold transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-red-600" aria-hidden="true" />
+                              <span>{isSw ? 'Futa' : 'Delete'}</span>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1249,6 +1316,7 @@ export function SuperAdminDashboardLayout({
                       <th className="py-2.5 px-3">{isSw ? 'Jina (EN)' : 'English Name'}</th>
                       <th className="py-2.5 px-3">ImageKit Folder</th>
                       <th className="py-2.5 px-3 text-right">{isSw ? 'Bidhaa' : 'SKUs'}</th>
+                      <th className="py-2.5 px-3 text-right">{isSw ? 'Vitendo' : 'Actions'}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -1268,6 +1336,22 @@ export function SuperAdminDashboardLayout({
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 tabular-nums">
                             {skuCount}
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDeleteTarget({
+                                  kind: 'category',
+                                  id: cat.categoryId,
+                                  label: isSw ? cat.nameSw : cat.nameEn,
+                                })
+                              }
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-red-200 bg-white hover:bg-red-50 text-red-700 text-xs font-semibold cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>{isSw ? 'Futa' : 'Delete'}</span>
+                            </button>
                           </td>
                         </tr>
                       );
@@ -1793,6 +1877,35 @@ export function SuperAdminDashboardLayout({
             </form>
           </div>
         </div>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw={
+            deleteTarget.kind === 'catalog'
+              ? 'Futa Bidhaa Kuu'
+              : 'Futa Kategoria'
+          }
+          titleEn={
+            deleteTarget.kind === 'catalog'
+              ? 'Delete Global Catalog Item'
+              : 'Delete Category'
+          }
+          descriptionSw={
+            deleteTarget.kind === 'catalog'
+              ? `Bidhaa "${deleteTarget.label}" itaondolewa kwenye Katalogi Kuu. Hatua hii haiwezi kutenduliwa.`
+              : `Kategoria "${deleteTarget.label}" itaondolewa kwenye sajili. Hatua hii haiwezi kutenduliwa.`
+          }
+          descriptionEn={
+            deleteTarget.kind === 'catalog'
+              ? `"${deleteTarget.label}" will be removed from the Global Catalog. This cannot be undone.`
+              : `"${deleteTarget.label}" will be removed from the category registry. This cannot be undone.`
+          }
+          isBusy={isDeleting}
+          onConfirm={() => void handleConfirmDelete()}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );

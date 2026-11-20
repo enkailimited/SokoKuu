@@ -1,3 +1,5 @@
+import type { Locale } from '../data/i18n';
+
 export type PlatformRole =
   | 'CONSUMER'
   | 'RETAILER'
@@ -27,10 +29,12 @@ export interface UserProfile {
   email: string;
   businessLabel: string;
   ward: string;
+  district?: string;
   streetAddress: string;
   shopImageUrl?: string | null;
   role: PlatformRole;
   mode: AccountMode;
+  preferredLocale?: Locale;
   smsAlertsEnabled: boolean;
   offlineSmsFallbackEnabled: boolean;
 }

@@ -12,6 +12,8 @@ import {
   Store,
   ToggleLeft,
   ToggleRight,
+  UserX,
+  UserCheck,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 import {
@@ -26,6 +28,7 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
 
 interface BackendMerchantDirectoryRecord {
   merchantId: string;
@@ -52,6 +55,7 @@ interface BackendMerchantDirectoryRecord {
 interface DirectoryMerchantItem extends ManagedWholesaleProfile {
   geospatialMapEnabled?: boolean;
   isOpen?: boolean;
+  isSuspended?: boolean;
   logoCdnUrl?: string | null;
   smsShortCode?: string;
   tierCode?: string;
@@ -72,6 +76,12 @@ export function AdminMerchantsDirectoryPanel({ locale = 'sw' }: { locale?: Local
   const [tierFilter, setTierFilter] = useState<'ALL' | 'Wholesaler' | 'Retailer'>('ALL');
   const [regionFilter, setRegionFilter] = useState<'ALL' | TanzaniaRegion>('ALL');
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
+  const [suspendDialog, setSuspendDialog] = useState<{
+    merchant: DirectoryMerchantItem;
+    nextSuspended: boolean;
+  } | null>(null);
+  const [suspendReason, setSuspendReason] = useState<string>('');
+  const [isSuspending, setIsSuspending] = useState<boolean>(false);
 
   const loadDirectoryFromApi = useCallback(async () => {
     setIsLoading(true);
@@ -288,6 +298,66 @@ export function AdminMerchantsDirectoryPanel({ locale = 'sw' }: { locale?: Local
       }
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleConfirmSuspension = async () => {
+    if (!suspendDialog) return;
+    const { merchant, nextSuspended } = suspendDialog;
+    setIsSuspending(true);
+    setErrorBanner(null);
+    try {
+      const res = await SokoApiClient.patch<{
+        businessId: string;
+        businessName?: string;
+        isOpen?: boolean;
+        isActive?: boolean;
+        suspended?: boolean;
+      }>(`/admin/merchants/${merchant.businessId}/suspension`, {
+        suspended: nextSuspended,
+        ...(suspendReason.trim() ? { reason: suspendReason.trim() } : {}),
+      });
+
+      setMerchants((prev) =>
+        prev.map((m) =>
+          m.businessId === merchant.businessId
+            ? {
+                ...m,
+                isOpen:
+                  typeof res.isOpen === 'boolean' ? res.isOpen : nextSuspended ? false : m.isOpen,
+                isSuspended:
+                  typeof res.suspended === 'boolean' ? res.suspended : nextSuspended,
+              }
+            : m
+        )
+      );
+      setBackendOffline(false);
+      window.dispatchEvent(new CustomEvent('sokokuu:merchants-updated'));
+      setStatusNotice(
+        isSw
+          ? `${merchant.businessName}: ${
+              nextSuspended ? 'Amesimamishwa' : 'Amerejeshwa'
+            } kikamilifu.`
+          : `${merchant.businessName}: ${
+              nextSuspended ? 'Suspended' : 'Restored'
+            } successfully.`
+      );
+      setSuspendDialog(null);
+      setSuspendReason('');
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setErrorBanner(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : isSw
+              ? 'Imeshindikana kusasisha hali ya kusimamishwa kwa Mfanyabiashara.'
+              : 'Failed to update merchant suspension status.'
+        );
+      }
+    } finally {
+      setIsSuspending(false);
     }
   };
 
@@ -633,6 +703,38 @@ export function AdminMerchantsDirectoryPanel({ locale = 'sw' }: { locale?: Local
                         <ToggleLeft className="w-4 h-4 text-slate-400" aria-hidden="true" />
                       )}
                     </button>
+
+                    <button
+                      type="button"
+                      disabled={busyId === merchant.businessId}
+                      onClick={() => {
+                        setSuspendReason('');
+                        setSuspendDialog({
+                          merchant,
+                          nextSuspended: !merchant.isSuspended,
+                        });
+                      }}
+                      className={`min-h-[36px] px-3 py-1.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50 ${
+                        merchant.isSuspended
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-900 hover:bg-emerald-100'
+                          : 'border-red-200 bg-white text-red-800 hover:bg-red-50 hover:border-red-300'
+                      }`}
+                    >
+                      {merchant.isSuspended ? (
+                        <UserCheck className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                      ) : (
+                        <UserX className="w-3.5 h-3.5 text-red-600" aria-hidden="true" />
+                      )}
+                      <span>
+                        {merchant.isSuspended
+                          ? isSw
+                            ? 'Rejesha'
+                            : 'Restore'
+                          : isSw
+                            ? 'Simamisha'
+                            : 'Suspend'}
+                      </span>
+                    </button>
                   </div>
                 </div>
               );
@@ -640,6 +742,45 @@ export function AdminMerchantsDirectoryPanel({ locale = 'sw' }: { locale?: Local
           </div>
         )}
       </section>
+
+      {suspendDialog && (
+        <ConfirmDestructiveDialog
+          locale={locale}
+          titleSw={suspendDialog.nextSuspended ? 'Simamisha Mfanyabiashara' : 'Rejesha Mfanyabiashara'}
+          titleEn={suspendDialog.nextSuspended ? 'Suspend Merchant' : 'Restore Merchant'}
+          descriptionSw={
+            suspendDialog.nextSuspended
+              ? `Mfanyabiashara "${suspendDialog.merchant.businessName}" atasimamishwa. Unaweza kutoa sababu (si lazima).`
+              : `Mfanyabiashara "${suspendDialog.merchant.businessName}" atarejeshwa kwenye mfumo.`
+          }
+          descriptionEn={
+            suspendDialog.nextSuspended
+              ? `Merchant "${suspendDialog.merchant.businessName}" will be suspended. You may provide an optional reason.`
+              : `Merchant "${suspendDialog.merchant.businessName}" will be restored.`
+          }
+          confirmLabelSw={suspendDialog.nextSuspended ? 'Simamisha' : 'Rejesha'}
+          confirmLabelEn={suspendDialog.nextSuspended ? 'Suspend' : 'Restore'}
+          isBusy={isSuspending}
+          onConfirm={() => void handleConfirmSuspension()}
+          onCancel={() => {
+            setSuspendDialog(null);
+            setSuspendReason('');
+          }}
+        >
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">
+              {isSw ? 'Sababu (hiari)' : 'Reason (optional)'}
+            </span>
+            <textarea
+              value={suspendReason}
+              onChange={(e) => setSuspendReason(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white text-slate-900"
+              placeholder={isSw ? 'Andika sababu hapa...' : 'Enter reason...'}
+            />
+          </label>
+        </ConfirmDestructiveDialog>
+      )}
     </div>
   );
 }
