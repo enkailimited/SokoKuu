@@ -438,3 +438,26 @@ export class PublishMarketStockDto {
   @Type(() => MarketStockItemDto)
   items!: MarketStockItemDto[];
 }
+
+export class UpdateClonePublishStatusDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  isPublishedToMarket!: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  isActiveForSale?: boolean;
+}
+
+export class BulkUpdateClonePublishStatusDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsUUID('4', { each: true })
+  clonedProductIds!: string[];
+
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  isPublishedToMarket!: boolean;
+}

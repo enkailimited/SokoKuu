@@ -215,11 +215,15 @@ export function SokoniCoreEngine({
   locale = 'en',
   userRole = 'RETAILER',
   userTier = null,
+  initialGlobalCatalogId = null,
+  onClearInitialCatalogFilter,
 }: {
   locale?: Locale;
   userRole?: 'RETAILER' | 'WHOLESALER' | 'CONSUMER';
   userTier?: string | null;
   businessId?: string | null;
+  initialGlobalCatalogId?: string | null;
+  onClearInitialCatalogFilter?: () => void;
 }) {
   const isSw = locale === 'sw';
   const isSupplierBuyer =
@@ -304,6 +308,12 @@ export function SokoniCoreEngine({
 
   const [orders, setOrders] = useState<DispatchedOrderRecord[]>([]);
   const [activePinOrderId, setActivePinOrderId] = useState<string | null>(null);
+  const [targetCatalogFilter, setTargetCatalogFilter] = useState<{
+    globalCatalogId: string;
+    label: string;
+    searchTerm: string;
+    matchingSellerIds: Set<string>;
+  } | null>(null);
 
   const [floatingToast, setFloatingToast] = useState<{
     title: string;
@@ -473,13 +483,94 @@ export function SokoniCoreEngine({
     [orders],
   );
 
+  useEffect(() => {
+    if (!initialGlobalCatalogId || !navigator.onLine) {
+      if (!initialGlobalCatalogId) setTargetCatalogFilter(null);
+      return;
+    }
+
+    let cancelled = false;
+    setScreen('DIRECTORY');
+
+    const resolveTargetCatalog = async () => {
+      try {
+        const [catalogList, supplierCatalog] = await Promise.all([
+          SokoApiClient.get<
+            Array<{
+              id: string;
+              canonicalSku: string;
+              fixedNameSw: string;
+              fixedNameEn: string;
+            }>
+          >('/marketplace/catalog').catch(() => []),
+          isSupplierAudience
+            ? SokoApiClient.get<{ items?: BackendSupplierListingDto[] }>(
+                '/marketplace/suppliers/catalog',
+              ).catch(() => ({ items: [] as BackendSupplierListingDto[] }))
+            : Promise.resolve({ items: [] as BackendSupplierListingDto[] }),
+        ]);
+
+        if (cancelled) return;
+        const matchedEntry = (Array.isArray(catalogList) ? catalogList : []).find(
+          (item) => item.id === initialGlobalCatalogId,
+        );
+        const matchingSellerIds = new Set<string>();
+        for (const l of supplierCatalog?.items ?? []) {
+          if (l.isAvailable && l.globalCatalogId === initialGlobalCatalogId) {
+            matchingSellerIds.add(l.supplierBusinessId);
+          }
+        }
+
+        if (!isSupplierAudience && hubs.length > 0) {
+          const checks = await Promise.all(
+            hubs.slice(0, 15).map(async (hub) => {
+              if (!isUuid(hub.businessId)) return null;
+              const prods = await SokoApiClient.get<BackendProductDto[]>(
+                `/products/active?businessId=${encodeURIComponent(hub.businessId)}`,
+              ).catch(() => []);
+              const hasMatch = (Array.isArray(prods) ? prods : []).some(
+                (p) => p.globalCatalogId === initialGlobalCatalogId,
+              );
+              return hasMatch ? hub.businessId : null;
+            }),
+          );
+          for (const id of checks) {
+            if (id) matchingSellerIds.add(id);
+          }
+        }
+
+        if (cancelled) return;
+        const label = matchedEntry
+          ? isSw
+            ? matchedEntry.fixedNameSw
+            : matchedEntry.fixedNameEn
+          : initialGlobalCatalogId;
+        const searchTerm = matchedEntry ? matchedEntry.fixedNameSw : '';
+
+        setTargetCatalogFilter({
+          globalCatalogId: initialGlobalCatalogId,
+          label,
+          searchTerm,
+          matchingSellerIds,
+        });
+      } catch {
+        // leave directory open smoothly if metadata lookup fails
+      }
+    };
+
+    void resolveTargetCatalog();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialGlobalCatalogId, isSupplierAudience, isSw, hubs]);
+
   const handleOpenStore = async (hub: WholesaleHub) => {
     setSelectedStore(hub);
     setCartUnitsByProduct({});
     setCheckoutSheetOpen(false);
     setSmartReorderMode(false);
     setSmartGridMode(false);
-    setCatalogSearchQuery('');
+    setCatalogSearchQuery(targetCatalogFilter?.searchTerm ?? '');
     setApiError(null);
     setScreen('CATALOG');
 
@@ -1109,6 +1200,37 @@ export function SokoniCoreEngine({
             </span>
           </div>
 
+          {targetCatalogFilter && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5">
+                <div className="font-bold text-emerald-950">
+                  {isSw
+                    ? `Kuagiza Kupitia SokoKuu: ${targetCatalogFilter.label}`
+                    : `SokoKuu Restock Filter: ${targetCatalogFilter.label}`}
+                </div>
+                <div className="text-emerald-800">
+                  {targetCatalogFilter.matchingSellerIds.size > 0
+                    ? isSw
+                      ? `Wauzaji ${targetCatalogFilter.matchingSellerIds.size} wana bidhaa hii kwenye mfumo.`
+                      : `${targetCatalogFilter.matchingSellerIds.size} seller(s) carry this product.`
+                    : isSw
+                      ? 'Chagua muuzaji wa jumla au msambazaji kuagiza bidhaa hii.'
+                      : 'Select a wholesaler or supplier to order this SKU.'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTargetCatalogFilter(null);
+                  onClearInitialCatalogFilter?.();
+                }}
+                className="px-3 py-1.5 rounded-md border border-emerald-300 bg-white text-emerald-900 font-semibold hover:bg-emerald-100 cursor-pointer"
+              >
+                {isSw ? 'Ondoa Kichujio' : 'Clear Filter'}
+              </button>
+            </div>
+          )}
+
           {loadingHubs && hubs.length === 0 ? (
             <div className="bg-white border border-slate-200 rounded-lg p-6 text-center text-xs text-slate-500">
               {isSw ? directoryLabels.loadingSw : directoryLabels.loadingEn}
@@ -1123,46 +1245,64 @@ export function SokoniCoreEngine({
             />
           ) : (
             <div className="space-y-3">
-              {hubs.map((hub) => (
-                <article
-                  key={hub.businessId}
-                  className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4"
-                >
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    <div
-                      className={`w-12 h-12 rounded-full border flex items-center justify-center shrink-0 font-mono font-bold text-sm overflow-hidden ${hub.brandRingColor}`}
+              {[...hubs]
+                .sort((a, b) => {
+                  if (!targetCatalogFilter) return 0;
+                  const aMatch = targetCatalogFilter.matchingSellerIds.has(a.businessId) ? 1 : 0;
+                  const bMatch = targetCatalogFilter.matchingSellerIds.has(b.businessId) ? 1 : 0;
+                  return bMatch - aMatch;
+                })
+                .map((hub) => {
+                  const hasTargetProduct =
+                    targetCatalogFilter?.matchingSellerIds.has(hub.businessId) ?? false;
+                  return (
+                    <article
+                      key={hub.businessId}
+                      className={`bg-white border rounded-lg p-4 shadow-sm flex items-center justify-between gap-4 ${
+                        hasTargetProduct ? 'border-emerald-300 ring-1 ring-emerald-200' : 'border-slate-100'
+                      }`}
                     >
-                      {hub.logoUrl ? (
-                        <img src={hub.logoUrl} alt={hub.name} className="w-full h-full object-cover" />
-                      ) : (
-                        hub.initials
-                      )}
-                    </div>
-                    <div className="min-w-0 space-y-1">
-                      <h3 className="text-sm font-bold text-slate-900 truncate">
-                        {hub.name}
-                        {hub.kind === 'SUPPLIER' && (
-                          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-[10px] font-semibold text-amber-800 align-middle">
-                            {isSw ? 'MSAMBIZAJI' : 'SUPPLIER'}
-                          </span>
-                        )}
-                      </h3>
-                      <div className="text-xs text-slate-500 truncate">{hub.ward}</div>
-                      <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
-                        📍 Mita {hub.distanceMeters} karibu
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div
+                          className={`w-12 h-12 rounded-full border flex items-center justify-center shrink-0 font-mono font-bold text-sm overflow-hidden ${hub.brandRingColor}`}
+                        >
+                          {hub.logoUrl ? (
+                            <img src={hub.logoUrl} alt={hub.name} className="w-full h-full object-cover" />
+                          ) : (
+                            hub.initials
+                          )}
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <h3 className="text-sm font-bold text-slate-900 truncate">
+                            {hub.name}
+                            {hub.kind === 'SUPPLIER' && (
+                              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-[10px] font-semibold text-amber-800 align-middle">
+                                {isSw ? 'MSAMBIZAJI' : 'SUPPLIER'}
+                              </span>
+                            )}
+                            {hasTargetProduct && (
+                              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-[10px] font-semibold text-emerald-800 align-middle">
+                                {isSw ? '✓ Anayo Bidhaa' : '✓ In Stock'}
+                              </span>
+                            )}
+                          </h3>
+                          <div className="text-xs text-slate-500 truncate">{hub.ward}</div>
+                          <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
+                            📍 Mita {hub.distanceMeters} karibu
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenStore(hub)}
-                    className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
-                  >
-                    Fungua Duka
-                  </button>
-                </article>
-              ))}
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenStore(hub)}
+                        className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                      >
+                        Fungua Duka
+                      </button>
+                    </article>
+                  );
+                })}
             </div>
           )}
         </section>

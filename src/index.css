@@ -179,10 +179,31 @@ body,
   to { opacity: 1; transform: translateX(0); }
 }
 
+@keyframes sk-dashboard-crossfade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.996);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .animate-fade-in { animation: sk-fade-in .4s ease-out both; }
 .animate-fade-in-up { animation: sk-fade-in-up .6s cubic-bezier(.16, 1, .3, 1) both; }
 .animate-scale-in { animation: sk-scale-in .22s cubic-bezier(.16, 1, .3, 1) both; }
 .animate-slide-in-right { animation: sk-slide-in-right .3s cubic-bezier(.16, 1, .3, 1) both; }
+
+.sk-theme-transition {
+  transition: background-color 320ms cubic-bezier(.16, 1, .3, 1),
+              color 280ms cubic-bezier(.16, 1, .3, 1),
+              border-color 280ms cubic-bezier(.16, 1, .3, 1);
+}
+
+.sk-dashboard-crossfade {
+  animation: sk-dashboard-crossfade-in 300ms cubic-bezier(.16, 1, .3, 1) both;
+}
 
 /* Stagger helpers for lists of cards */
 .delay-75 { animation-delay: 75ms; }
@@ -375,7 +396,7 @@ button:active:not(:disabled) {
   .sk-logo-wrap, .sk-reveal,
   .sk-float-slow, .sk-float-slower, .sk-bounce-soft,
   .sk-splash-icon-frame, .sk-splash-skip,
-  .sk-appicon-fill {
+  .sk-appicon-fill, .sk-theme-transition, .sk-dashboard-crossfade {
     animation: none !important;
     transition: none !important;
     opacity: 1 !important;

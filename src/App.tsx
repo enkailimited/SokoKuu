@@ -38,6 +38,15 @@ const SUPPLIER_TAB_STORAGE_KEY = 'sokokuu_supplier_tab_v1';
 
 export type WholesalerTab = 'operations' | 'sokoni';
 
+const ROLE_THEME_CLASSES: Record<PlatformRole, string> = {
+  CONSUMER: 'bg-white text-slate-900',
+  RETAILER: 'bg-emerald-50/20 text-slate-900',
+  WHOLESALER: 'bg-sky-50/25 text-slate-900',
+  SUPPLIER: 'bg-slate-50/60 text-slate-900',
+  DRIVER: 'bg-amber-50/25 text-slate-900',
+  SUPER_ADMIN: 'bg-slate-50/80 text-slate-900',
+};
+
 export default function App() {
   return (
     <DataSaverProvider>
@@ -176,6 +185,7 @@ function SinglePlatformShell() {
     orderRef: string | null;
     orderId: string | null;
   } | null>(null);
+  const [sokoniInitialCatalogId, setSokoniInitialCatalogId] = useState<string | null>(null);
 
   const persistActiveProfile = (profile: UserProfile | null) => {
     setActiveProfile(profile);
@@ -416,28 +426,49 @@ function SinglePlatformShell() {
       return (
         <>
           {splashOverlay}
-          <PublicLandingView
-            locale={locale}
-            onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
-            onEnter={() => setShowAuthPortal(true)}
-          />
+          <div key="stage-landing" className="sk-theme-transition sk-dashboard-crossfade">
+            <PublicLandingView
+              locale={locale}
+              onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+              onEnter={() => setShowAuthPortal(true)}
+            />
+          </div>
         </>
       );
     }
     return (
       <>
         {splashOverlay}
-        <AuthPortalView
-          locale={locale}
-          onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
-          onSignIn={handleSignIn}
-        />
+        <div key="stage-auth" className="sk-theme-transition sk-dashboard-crossfade">
+          <AuthPortalView
+            locale={locale}
+            onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+            onSignIn={handleSignIn}
+          />
+        </div>
       </>
     );
   }
 
+  const activeDashboardTab =
+    activePage !== 'DASHBOARD'
+      ? activePage
+      : activeProfile.role === 'RETAILER'
+        ? retailerTab
+        : activeProfile.role === 'WHOLESALER'
+          ? wholesalerTab
+          : activeProfile.role === 'SUPPLIER'
+            ? supplierTab
+            : activeProfile.role;
+  const dashboardTransitionKey = `${activeProfile.role}:${activePage}:${activeDashboardTab}`;
+  const isFullBleedAdmin = activeProfile.role === 'SUPER_ADMIN' && activePage === 'DASHBOARD';
+
   return (
-    <div className="min-h-dvh bg-white text-slate-900 flex flex-col sk-safe-x">
+    <div
+      key={`stage-shell-${activeProfile.role}`}
+      data-role-theme={activeProfile.role}
+      className={`min-h-dvh flex flex-col sk-safe-x sk-theme-transition sk-dashboard-crossfade ${ROLE_THEME_CLASSES[activeProfile.role]}`}
+    >
       {splashOverlay}
       {mapsQuotaExceeded && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
@@ -489,85 +520,102 @@ function SinglePlatformShell() {
 
       <main
         className={
-          activeProfile.role === 'SUPER_ADMIN' && activePage === 'DASHBOARD'
+          isFullBleedAdmin
             ? 'flex-1 w-full flex flex-col min-w-0'
-            : 'flex-1 p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto space-y-6 min-w-0 sk-safe-bottom'
+            : 'flex-1 p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto min-w-0 sk-safe-bottom'
         }
       >
-        {activePage === 'DASHBOARD' && (
-          <>
-            {activeProfile.role === 'CONSUMER' && (
-              <ConsumerDashboardView locale={locale} consumerWard={activeProfile.ward} />
-            )}
-            {activeProfile.role === 'RETAILER' && (
-              <RetailerShoppingView
-                locale={locale}
-                activeTab={retailerTab}
-                userRole="RETAILER"
-                userTier={activeProfile.tier}
-                businessId={activeProfile.businessId}
-                onRedirectToWorkspace={() => setRetailerTab('core_engine')}
-              />
-            )}
-            {activeProfile.role === 'WHOLESALER' &&
-              (wholesalerTab === 'sokoni' ? (
-                <SokoniCoreEngine
+        <div
+          key={dashboardTransitionKey}
+          className={
+            isFullBleedAdmin
+              ? 'flex-1 flex flex-col min-w-0 sk-dashboard-crossfade'
+              : 'min-w-0 space-y-6 sk-dashboard-crossfade'
+          }
+        >
+          {activePage === 'DASHBOARD' && (
+            <>
+              {activeProfile.role === 'CONSUMER' && (
+                <ConsumerDashboardView locale={locale} consumerWard={activeProfile.ward} />
+              )}
+              {activeProfile.role === 'RETAILER' && (
+                <RetailerShoppingView
                   locale={locale}
-                  userRole="WHOLESALER"
+                  activeTab={retailerTab}
+                  userRole="RETAILER"
                   userTier={activeProfile.tier}
                   businessId={activeProfile.businessId}
+                  onRedirectToWorkspace={() => setRetailerTab('core_engine')}
+                  sokoniInitialCatalogId={sokoniInitialCatalogId}
+                  onClearSokoniCatalogFilter={() => setSokoniInitialCatalogId(null)}
+                  onOpenSokoni={(catalogId) => {
+                    setSokoniInitialCatalogId(catalogId ?? null);
+                    setRetailerTab('core_engine');
+                  }}
                 />
-              ) : (
-                <WholesalerOperationsView
+              )}
+              {activeProfile.role === 'WHOLESALER' &&
+                (wholesalerTab === 'sokoni' ? (
+                  <SokoniCoreEngine
+                    locale={locale}
+                    userRole="WHOLESALER"
+                    userTier={activeProfile.tier}
+                    businessId={activeProfile.businessId}
+                    initialGlobalCatalogId={sokoniInitialCatalogId}
+                    onClearInitialCatalogFilter={() => setSokoniInitialCatalogId(null)}
+                  />
+                ) : (
+                  <WholesalerOperationsView
+                    locale={locale}
+                    businessId={activeProfile.businessId}
+                    focusOrder={focusedOrder}
+                  />
+                ))}
+              {activeProfile.role === 'SUPPLIER' && (
+                <SupplierDashboardView
                   locale={locale}
+                  activeTab={supplierTab}
+                  onTabChange={setSupplierTab}
                   businessId={activeProfile.businessId}
+                  sellerPhone={activeProfile.phone}
                   focusOrder={focusedOrder}
                 />
-              ))}
-            {activeProfile.role === 'SUPPLIER' && (
-              <SupplierDashboardView
-                locale={locale}
-                activeTab={supplierTab}
-                onTabChange={setSupplierTab}
-                businessId={activeProfile.businessId}
-                sellerPhone={activeProfile.phone}
-                focusOrder={focusedOrder}
-              />
-            )}
-            {activeProfile.role === 'DRIVER' && (
-              <MobileDriverReceiptCard locale={locale} />
-            )}
-            {activeProfile.role === 'SUPER_ADMIN' && (
-              <SuperAdminDiagnosticsView
-                locale={locale}
-                authority={activeProfile.role}
-                mobileSidebarOpen={adminMobileSidebarOpen}
-                onMobileSidebarOpenChange={setAdminMobileSidebarOpen}
-                focusOrder={focusedOrder}
-              />
-            )}
-          </>
-        )}
+              )}
+              {activeProfile.role === 'DRIVER' && (
+                <MobileDriverReceiptCard locale={locale} />
+              )}
+              {activeProfile.role === 'SUPER_ADMIN' && (
+                <SuperAdminDiagnosticsView
+                  locale={locale}
+                  authority={activeProfile.role}
+                  mobileSidebarOpen={adminMobileSidebarOpen}
+                  onMobileSidebarOpenChange={setAdminMobileSidebarOpen}
+                  focusOrder={focusedOrder}
+                />
+              )}
+            </>
+          )}
 
-        {activePage === 'PROFILE' && (
-          <ProfileEditView
-            locale={locale}
-            profile={activeProfile}
-            onSaveProfile={handleSaveProfile}
-            onBackToDashboard={() => setActivePage('DASHBOARD')}
-            onLogout={handleLogout}
-          />
-        )}
+          {activePage === 'PROFILE' && (
+            <ProfileEditView
+              locale={locale}
+              profile={activeProfile}
+              onSaveProfile={handleSaveProfile}
+              onBackToDashboard={() => setActivePage('DASHBOARD')}
+              onLogout={handleLogout}
+            />
+          )}
 
-        {activePage === 'SETTINGS' && (
-          <SettingsView
-            locale={locale}
-            onSetLocale={setLocale}
-            profile={activeProfile}
-            onSaveProfile={handleSaveProfile}
-            onBackToDashboard={() => setActivePage('DASHBOARD')}
-          />
-        )}
+          {activePage === 'SETTINGS' && (
+            <SettingsView
+              locale={locale}
+              onSetLocale={setLocale}
+              profile={activeProfile}
+              onSaveProfile={handleSaveProfile}
+              onBackToDashboard={() => setActivePage('DASHBOARD')}
+            />
+          )}
+        </div>
       </main>
       {activePage === 'DASHBOARD' && <DashboardOnlineBadge />}
       <OfflineIndicator locale={locale} />

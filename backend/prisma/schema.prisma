@@ -323,9 +323,11 @@ model MerchantClonedProduct {
   inventoryValueTzs                  BigInt   @default(0) @map("inventory_value_tzs")
   lastBuyingPricePerQuantumTzs       BigInt   @default(0) @map("last_buying_price_per_quantum_tzs")
   weightedAvgBuyingCostPerQuantumTzs BigInt   @default(0) @map("weighted_avg_buying_cost_per_quantum_tzs")
-  buyingPriceEstablished             Boolean  @default(false) @map("buying_price_established")
-  lastAgreedPurchasePriceTzs         BigInt?  @map("last_agreed_purchase_price_tzs")
-  isActive                           Boolean  @default(true) @map("is_active")
+  buyingPriceEstablished             Boolean   @default(false) @map("buying_price_established")
+  lastAgreedPurchasePriceTzs         BigInt?   @map("last_agreed_purchase_price_tzs")
+  isPublishedToMarket                Boolean   @default(false) @map("is_published_to_market")
+  isActiveForSale                    Boolean   @default(true) @map("is_active_for_sale")
+  isActive                           Boolean   @default(true) @map("is_active")
   deletedAt                          DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdAt                          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -987,6 +989,7 @@ model ExternalPurchaseReceipt {
   businessId                         String    @map("business_id") @db.Uuid
   clonedProductId                    String    @map("cloned_product_id") @db.Uuid
   globalProductUnitId                String?   @map("global_product_unit_id") @db.Uuid
+  stockSource                        String    @default("EXTERNAL_SUPPLIER") @map("stock_source") @db.VarChar(32)
   supplierName                       String    @map("supplier_name") @db.VarChar(180)
   supplierReference                  String?   @map("supplier_reference") @db.VarChar(80)
   receiptStatus                      String    @default("GOODS_RECEIVED") @map("receipt_status") @db.VarChar(32)

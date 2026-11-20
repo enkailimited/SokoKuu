@@ -18,10 +18,12 @@ import { Role } from '@common/security/roles.enum';
 import { CatalogService } from './catalog.service';
 import {
   AddGlobalCatalogItemDto,
+  BulkUpdateClonePublishStatusDto,
   CloneStandardCatalogDto,
   CreateCatalogCategoryDto,
   CreateMerchantProductDto,
   PublishMarketStockDto,
+  UpdateClonePublishStatusDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
   UpdateMerchantCloneDto,
@@ -130,6 +132,40 @@ export class CatalogController {
     @Query('businessId') businessId?: string,
   ) {
     return this.catalogService.listMerchantClones(tenantContext, businessId);
+  }
+
+  @Patch('merchant/catalog/:clonedProductId/publish-status')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({
+    summary:
+      'Toggle market visibility (isPublishedToMarket / isActiveForSale) on a cloned product after validating stock > 0 and selling price > 0 TZS',
+  })
+  @ApiResponse({ status: 200, description: 'Cloned product market visibility updated' })
+  @ApiResponse({ status: 400, description: 'Product lacks stock (> 0) or selling price (> 0 TZS)' })
+  updateMerchantClonePublishStatus(
+    @Param('clonedProductId', new ParseUUIDPipe()) clonedProductId: string,
+    @Body() dto: UpdateClonePublishStatusDto,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.updateMerchantClonePublishStatus(
+      clonedProductId,
+      dto,
+      tenantContext,
+    );
+  }
+
+  @Patch('merchant/catalog/publish-status/bulk')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({
+    summary: 'Bulk publish or unpublish cloned Merchant products to Sokoni Marketplace',
+  })
+  bulkUpdateMerchantClonePublishStatus(
+    @Body() dto: BulkUpdateClonePublishStatusDto,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.bulkUpdateMerchantClonePublishStatus(dto, tenantContext);
   }
 
   @Post('marketplace/catalog/clone-standard')
