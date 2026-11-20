@@ -15,6 +15,7 @@ import { ConsumerDashboardView } from './components/ConsumerDashboardView';
 import { RetailerShoppingView, type RetailerTab } from './components/RetailerShoppingView';
 import { SokoniCoreEngine } from './components/SokoniCoreEngine';
 import { WholesalerOperationsView } from './components/WholesalerOperationsView';
+import { MerchantWarehouseView } from './components/MerchantWarehouseView';
 import {
   SupplierDashboardView,
   type SupplierTab,
@@ -36,7 +37,7 @@ const RETAILER_TAB_STORAGE_KEY = 'sokokuu_retailer_tab_v1';
 const WHOLESALER_TAB_STORAGE_KEY = 'sokokuu_wholesaler_tab_v1';
 const SUPPLIER_TAB_STORAGE_KEY = 'sokokuu_supplier_tab_v1';
 
-export type WholesalerTab = 'operations' | 'sokoni';
+export type WholesalerTab = 'operations' | 'ghala' | 'sokoni';
 
 const ROLE_THEME_CLASSES: Record<PlatformRole, string> = {
   CONSUMER: 'bg-white text-slate-900',
@@ -105,6 +106,7 @@ function SinglePlatformShell() {
     try {
       const savedTab = window.localStorage.getItem(RETAILER_TAB_STORAGE_KEY);
       if (
+        savedTab === 'warehouse' ||
         savedTab === 'pos_register' ||
         savedTab === 'inventory_shelf' ||
         savedTab === 'core_engine' ||
@@ -130,7 +132,7 @@ function SinglePlatformShell() {
   const [wholesalerTab, setWholesalerTabState] = useState<WholesalerTab>(() => {
     try {
       const savedTab = window.localStorage.getItem(WHOLESALER_TAB_STORAGE_KEY);
-      if (savedTab === 'operations' || savedTab === 'sokoni') {
+      if (savedTab === 'operations' || savedTab === 'ghala' || savedTab === 'sokoni') {
         return savedTab;
       }
     } catch {
@@ -564,6 +566,8 @@ function SinglePlatformShell() {
                     initialGlobalCatalogId={sokoniInitialCatalogId}
                     onClearInitialCatalogFilter={() => setSokoniInitialCatalogId(null)}
                   />
+                ) : wholesalerTab === 'ghala' ? (
+                  <MerchantWarehouseView locale={locale} />
                 ) : (
                   <WholesalerOperationsView
                     locale={locale}

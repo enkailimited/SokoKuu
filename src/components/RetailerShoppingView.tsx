@@ -2,8 +2,9 @@ import type { Locale } from '../data/i18n';
 import { SokoniCoreEngine } from './SokoniCoreEngine';
 import { InventoryAndUnitManager } from './InventoryAndUnitManager';
 import { FullPageMarketplaceMap } from './FullPageMarketplaceMap';
+import { MerchantWarehouseView } from './MerchantWarehouseView';
 
-export type RetailerTab = 'pos_register' | 'inventory_shelf' | 'core_engine' | 'proximity_map';
+export type RetailerTab = 'warehouse' | 'pos_register' | 'inventory_shelf' | 'core_engine' | 'proximity_map';
 
 export function RetailerShoppingView({
   locale = 'en',
@@ -27,7 +28,7 @@ export function RetailerShoppingView({
   onClearSokoniCatalogFilter?: () => void;
 }) {
   const containerClass =
-    activeTab === 'inventory_shelf'
+    activeTab === 'inventory_shelf' || activeTab === 'warehouse'
       ? 'max-w-5xl mx-auto space-y-5'
       : activeTab === 'proximity_map'
         ? 'max-w-4xl mx-auto space-y-5'
@@ -35,6 +36,7 @@ export function RetailerShoppingView({
 
   return (
     <div className={containerClass}>
+      {activeTab === 'warehouse' && <MerchantWarehouseView locale={locale} />}
       {activeTab === 'pos_register' && (
         <InventoryAndUnitManager
           locale={locale}

@@ -84,6 +84,7 @@ function packetTypeForNotification(category: string, eventType: string): StompPa
 }
 
 export type RetailerNavTab =
+  | 'warehouse'
   | 'pos_register'
   | 'inventory_shelf'
   | 'core_engine'
@@ -97,8 +98,8 @@ export interface BrandedAppBarWithAlertsProps {
   onSelectPage: (page: 'DASHBOARD' | 'PROFILE' | 'SETTINGS') => void;
   retailerTab: RetailerNavTab;
   onSelectRetailerTab: (tab: RetailerNavTab) => void;
-  wholesalerTab?: 'operations' | 'sokoni';
-  onSelectWholesalerTab?: (tab: 'operations' | 'sokoni') => void;
+  wholesalerTab?: 'operations' | 'ghala' | 'sokoni';
+  onSelectWholesalerTab?: (tab: 'operations' | 'ghala' | 'sokoni') => void;
   supplierTab: SupplierTab;
   onSelectSupplierTab: (tab: SupplierTab) => void;
   retailerMapEnabled: boolean;
@@ -673,6 +674,15 @@ export function BrandedAppBarWithAlerts({
   if (activeProfile.role === 'RETAILER') {
     mobileNavTabs.push(
       {
+        key: 'warehouse',
+        label: isSw ? 'Ghala' : 'Warehouse',
+        active: activePage === 'DASHBOARD' && retailerTab === 'warehouse',
+        onSelect: () => {
+          onSelectRetailerTab('warehouse');
+          onSelectPage('DASHBOARD');
+        },
+      },
+      {
         key: 'pos_register',
         label: isSw ? 'POS Mauzo' : 'POS Sales',
         active: activePage === 'DASHBOARD' && retailerTab === 'pos_register',
@@ -719,6 +729,15 @@ export function BrandedAppBarWithAlerts({
         active: activePage === 'DASHBOARD' && wholesalerTab === 'operations',
         onSelect: () => {
           onSelectWholesalerTab?.('operations');
+          onSelectPage('DASHBOARD');
+        },
+      },
+      {
+        key: 'ghala',
+        label: isSw ? 'Ghala' : 'Warehouse',
+        active: activePage === 'DASHBOARD' && wholesalerTab === 'ghala',
+        onSelect: () => {
+          onSelectWholesalerTab?.('ghala');
           onSelectPage('DASHBOARD');
         },
       },
@@ -829,6 +848,21 @@ export function BrandedAppBarWithAlerts({
                 <button
                   type="button"
                   onClick={() => {
+                    onSelectRetailerTab('warehouse');
+                    onSelectPage('DASHBOARD');
+                  }}
+                  className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activePage === 'DASHBOARD' && retailerTab === 'warehouse'
+                      ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-emerald-600 font-semibold'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  {isSw ? 'Ghala' : 'Warehouse'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
                     onSelectRetailerTab('pos_register');
                     onSelectPage('DASHBOARD');
                   }}
@@ -903,6 +937,20 @@ export function BrandedAppBarWithAlerts({
                   }`}
                 >
                   {isSw ? 'Shughuli za Jumla' : 'Wholesale Operations'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectWholesalerTab?.('ghala');
+                    onSelectPage('DASHBOARD');
+                  }}
+                  className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activePage === 'DASHBOARD' && wholesalerTab === 'ghala'
+                      ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-emerald-600 font-semibold'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  {isSw ? 'Ghala' : 'Warehouse'}
                 </button>
                 <button
                   type="button"
@@ -1363,6 +1411,21 @@ export function BrandedAppBarWithAlerts({
                   <button
                     type="button"
                     onClick={() => {
+                      onSelectRetailerTab('warehouse');
+                      onSelectPage('DASHBOARD');
+                      onToggleMobileMenu();
+                    }}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activePage === 'DASHBOARD' && retailerTab === 'warehouse'
+                        ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {isSw ? 'Ghala' : 'Warehouse'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
                       onSelectRetailerTab('pos_register');
                       onSelectPage('DASHBOARD');
                       onToggleMobileMenu();
@@ -1439,6 +1502,21 @@ export function BrandedAppBarWithAlerts({
                     }`}
                   >
                     {isSw ? 'Shughuli za Jumla' : 'Wholesale Operations'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectWholesalerTab?.('ghala');
+                      onSelectPage('DASHBOARD');
+                      onToggleMobileMenu();
+                    }}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activePage === 'DASHBOARD' && wholesalerTab === 'ghala'
+                        ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {isSw ? 'Ghala' : 'Warehouse'}
                   </button>
                   <button
                     type="button"
