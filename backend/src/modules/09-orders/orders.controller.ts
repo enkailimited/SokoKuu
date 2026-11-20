@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -111,5 +112,50 @@ export class OrdersController {
     @CurrentTenant() tenantContext?: TenantContext,
   ) {
     return this.ordersService.getOrderDetails(orderId, user, tenantContext);
+  }
+
+  @Get('wholesale/orders/zone-schedule')
+  @Roles(Role.WHOLESALER, Role.SUPPLIER, Role.SUPER_ADMIN)
+  @ApiQuery({ name: 'date', required: true, example: '2026-11-21' })
+  @ApiOperation({
+    summary: 'Group placed/scheduled orders for a seller by delivery zone and scheduled date',
+  })
+  getZoneSchedule(
+    @Query('date') date: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('Tarehe ya ratiba lazima iwe YYYY-MM-DD.');
+    }
+    return this.ordersService.getZoneSchedule(date, user, tenantContext);
+  }
+
+  @Post('wholesale/orders/dispatch-zone-batch')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.WHOLESALER, Role.SUPPLIER, Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Dispatch all scheduled/placed orders in a geographic zone for a date to a driver',
+  })
+  dispatchZoneBatch(
+    @Body() body: { date: string; deliveryZoneWard: string; driverUserId?: string },
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    if (!body?.date || !/^\d{4}-\d{2}-\d{2}$/.test(body.date)) {
+      throw new BadRequestException('Tarehe ya ratiba lazima iwe YYYY-MM-DD.');
+    }
+    if (!body?.deliveryZoneWard || !String(body.deliveryZoneWard).trim()) {
+      throw new BadRequestException('Eneo (ward/zone) linahitajika.');
+    }
+    return this.ordersService.dispatchZoneBatch(
+      {
+        date: body.date,
+        deliveryZoneWard: String(body.deliveryZoneWard).trim(),
+        driverUserId: body.driverUserId,
+      },
+      user,
+      tenantContext,
+    );
   }
 }

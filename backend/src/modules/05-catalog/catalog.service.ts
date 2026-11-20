@@ -48,7 +48,7 @@ export class CatalogService {
   }
 
   async listMarketplaceMerchants(tier?: string) {
-    const where: Prisma.BusinessProfileWhereInput = { isOpen: true };
+    const where: Prisma.BusinessProfileWhereInput = { isOpen: true, accountStatus: 'ACTIVE' } as any;
     if (
       tier &&
       ['WHOLESALE', 'RETAIL_DUKA', 'HYBRID_STORE', 'MANUFACTURER_SUPPLIER'].includes(
@@ -1125,6 +1125,18 @@ export class CatalogService {
   }
 
   async listActiveProductsByMerchant(businessId: string) {
+    const seller = await this.prismaService.businessProfile.findUnique({
+      where: { id: businessId },
+      select: { id: true, isOpen: true, accountStatus: true },
+    });
+    if (!seller) {
+      throw new NotFoundException(`Merchant ${businessId} was not found.`);
+    }
+    const sellerStatus = (seller as any).accountStatus ?? 'ACTIVE';
+    if (!seller.isOpen || sellerStatus !== 'ACTIVE') {
+      return [];
+    }
+
     const [products, merchantClones] = await Promise.all([
       this.prismaService.product.findMany({
         where: {

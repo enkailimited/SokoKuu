@@ -73,6 +73,15 @@ export class CreateOrderRequestDto {
   @MaxLength(160)
   rawSmsPayload?: string;
 
+  @ApiPropertyOptional({
+    description: 'Optional scheduled delivery date for zone/date batch routing (YYYY-MM-DD)',
+    example: '2026-11-21',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  scheduledDeliveryDate?: string;
+
   @ApiProperty({ type: [CreateOrderLineDto] })
   @IsArray()
   @ArrayMinSize(1)

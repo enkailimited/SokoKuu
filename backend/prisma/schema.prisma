@@ -219,6 +219,13 @@ model BusinessProfile {
   standardDeliveryFeeTzs BigInt                              @default(0) @map("standard_delivery_fee_tzs")
   deliveryCoverageRegions String[]                           @default([]) @map("delivery_coverage_regions")
   geospatialMapEnabled Boolean                               @default(false) @map("geospatial_map_enabled")
+  wardName             String?                               @map("ward_name") @db.VarChar(140)
+  streetLandmark       String?                               @map("street_landmark") @db.VarChar(240)
+  routeWaypoints       Json                                  @default("[]") @map("route_waypoints")
+  accountStatus        String                                @default("ACTIVE") @map("account_status") @db.VarChar(32)
+  suspensionReason     String?                               @map("suspension_reason")
+  suspendedAt          DateTime?                             @map("suspended_at") @db.Timestamptz(6)
+  suspendedByAdminId   String?                               @map("suspended_by_admin_id") @db.Uuid
   version              BigInt                                @default(0)
   createdAt            DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -465,6 +472,8 @@ model Order {
   deliveredAt           DateTime?   @map("delivered_at") @db.Timestamptz(6)
   cancelledAt           DateTime?   @map("cancelled_at") @db.Timestamptz(6)
   cancellationReason    String?     @map("cancellation_reason")
+  scheduledDeliveryDate DateTime?   @map("scheduled_delivery_date") @db.Date
+  deliveryZoneWard      String?     @map("delivery_zone_ward") @db.VarChar(140)
 
   buyer              User                      @relation("OrderBuyer", fields: [buyerUserId], references: [id], onDelete: Restrict)
   seller             BusinessProfile           @relation("OrderSeller", fields: [sellerBusinessId], references: [id], onDelete: Restrict)

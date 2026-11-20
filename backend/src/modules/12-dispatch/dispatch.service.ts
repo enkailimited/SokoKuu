@@ -362,4 +362,123 @@ export class DispatchService {
       })),
     };
   }
+
+  async getActiveDriverDeliveries(user: AuthenticatedUser) {
+    const whereClause =
+      user.role === Role.SUPER_ADMIN
+        ? { status: { in: ['DISPATCHED', 'IN_TRANSIT'] as OrderStatus[] } }
+        : {
+            driverUserId: user.sub,
+            status: { in: ['DISPATCHED', 'IN_TRANSIT'] as OrderStatus[] },
+          };
+
+    const orders = await this.prismaService.order.findMany({
+      where: whereClause as any,
+      orderBy: [{ dispatchedAt: 'asc' }, { placedAt: 'asc' }],
+      take: 50,
+      include: {
+        buyer: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneE164: true,
+            ownedMerchants: {
+              take: 1,
+              orderBy: { createdAt: 'asc' },
+              select: {
+                id: true,
+                businessName: true,
+                latitude: true,
+                longitude: true,
+                ward: true,
+                wardName: true,
+                streetAddress: true,
+                streetLandmark: true,
+                district: true,
+              },
+            },
+          },
+        },
+        seller: {
+          select: {
+            id: true,
+            businessName: true,
+            latitude: true,
+            longitude: true,
+            ward: true,
+            wardName: true,
+            streetAddress: true,
+            streetLandmark: true,
+            district: true,
+            routeWaypoints: true,
+            owner: { select: { phoneE164: true, fullName: true } },
+          },
+        },
+        cashLedger: {
+          select: {
+            verificationStatus: true,
+            expectedCashAmount: true,
+            isBuyerConfirmed: true,
+            isDriverConfirmed: true,
+            isQrTokenConsumed: true,
+          },
+        },
+      } as any,
+    });
+
+    const stops = orders.map((order: any, idx: number) => {
+      const buyerBusiness = order.buyer?.ownedMerchants?.[0] ?? null;
+      const dropLat = buyerBusiness ? Number(buyerBusiness.latitude) : Number(order.seller.latitude);
+      const dropLng = buyerBusiness ? Number(buyerBusiness.longitude) : Number(order.seller.longitude);
+      const dropoff = {
+        latitude: dropLat,
+        longitude: dropLng,
+        name: buyerBusiness?.businessName ?? order.buyer?.fullName ?? 'Mteja',
+        ward: buyerBusiness?.wardName ?? buyerBusiness?.ward ?? order.seller?.wardName ?? order.seller?.ward ?? null,
+        streetAddress: buyerBusiness?.streetAddress ?? null,
+        streetLandmark: buyerBusiness?.streetLandmark ?? null,
+      };
+      const pickup = {
+        latitude: Number(order.seller.latitude),
+        longitude: Number(order.seller.longitude),
+        name: order.seller.businessName,
+        ward: order.seller.wardName ?? order.seller.ward ?? null,
+        streetAddress: order.seller.streetAddress ?? null,
+        streetLandmark: order.seller.streetLandmark ?? null,
+        phoneE164: order.seller.owner?.phoneE164 ?? null,
+      };
+      const routeWaypoints = Array.isArray(order.seller.routeWaypoints) ? order.seller.routeWaypoints : [];
+      return {
+        stop: idx + 1,
+        orderId: order.id,
+        orderRef: order.orderRef,
+        status: order.status,
+        expectedCashTzs: Number(order.expectedTotalTzs ?? 0n),
+        paymentMethod: order.paymentMethod,
+        customer: {
+          name: order.buyer?.fullName ?? null,
+          phoneE164: order.buyer?.phoneE164 ?? null,
+        },
+        pickup,
+        dropoff,
+        routeWaypoints: routeWaypoints.map((w: any, i: number) => ({
+          step: typeof w?.step === 'number' ? w.step : i + 1,
+          label: String(w?.label ?? ''),
+          hint: String(w?.hint ?? ''),
+          lat: typeof w?.lat === 'number' ? w.lat : null,
+          lng: typeof w?.lng === 'number' ? w.lng : null,
+        })),
+        verification_status: order.cashLedger?.verificationStatus ?? 'PENDING',
+        placedAt: order.placedAt?.toISOString?.() ?? null,
+        dispatchedAt: order.dispatchedAt?.toISOString?.() ?? null,
+      };
+    });
+
+    // Best-effort ordering: keep dispatch/placed order as route sequence
+    return {
+      count: stops.length,
+      route: stops,
+      deliveries: stops,
+    };
+  }
 }

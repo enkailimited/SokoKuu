@@ -286,6 +286,72 @@ async function main() {
     },
   });
 
+  // Realistic Dar es Salaam GPS + Swahili route waypoints for driver navigation demos.
+  const seedLocationEnhancements: Array<{
+    id: string;
+    latitude: number;
+    longitude: number;
+    wardName: string;
+    streetLandmark: string;
+    routeWaypoints: Array<{ step: number; label: string; hint: string; lat?: number; lng?: number }>;
+  }> = [
+    {
+      id: kariakooId,
+      latitude: -6.81954,
+      longitude: 39.27642,
+      wardName: 'Kariakoo',
+      streetLandmark: 'Karibu na Soko Kuu la Kariakoo, lango la Msimbazi',
+      routeWaypoints: [
+        { step: 1, label: 'Anzia Mtaa wa Uhuru', hint: 'Fuata Mtaa wa Uhuru kuelekea soko kuu', lat: -6.8188, lng: 39.2756 },
+        { step: 2, label: 'Geuka kulia Msimbazi', hint: 'Baada ya benki kubwa, geuka kulia kuelekea Msimbazi', lat: -6.8192, lng: 39.2760 },
+        { step: 3, label: 'Fika lango la mfanyabiashara', hint: 'Duka liko karibu na lango la pili la soko', lat: -6.81954, lng: 39.27642 },
+      ],
+    },
+    {
+      id: ilalaHybridId,
+      latitude: -6.82711,
+      longitude: 39.24891,
+      wardName: 'Ilala',
+      streetLandmark: 'Karibu na Barabara ya Bungoni, Ilala Boma',
+      routeWaypoints: [
+        { step: 1, label: 'Pita Ilala Boma', hint: 'Tumia barabara ya Bungoni ukielekea kusini', lat: -6.8259, lng: 39.2479 },
+        { step: 2, label: 'Geuka kushoto kwenye kona ya maduka', hint: 'Tafuta alama ya duka la rangi ya kijani', lat: -6.8266, lng: 39.2485 },
+        { step: 3, label: 'Fika Ilala Hybrid Mart', hint: 'Duka liko upande wa kulia wa barabara', lat: -6.82711, lng: 39.24891 },
+      ],
+    },
+    {
+      id: kivuleDukaId,
+      latitude: -6.8918,
+      longitude: 39.1786,
+      wardName: 'Kivule',
+      streetLandmark: 'Karibu na Kituo cha Kivule Mwisho, kwa msikitini',
+      routeWaypoints: [
+        { step: 1, label: 'Fika kituo cha mwisho cha Kivule', hint: 'Shuka kituoni na fuata njia ya udongo fupi', lat: -6.8909, lng: 39.1778 },
+        { step: 2, label: 'Pita msikiti wa Kivule', hint: 'Endelea moja kwa moja baada ya msikiti', lat: -6.8914, lng: 39.1782 },
+        { step: 3, label: 'Fika Kivule Retail Duka', hint: 'Duka lina bango la buluu la SokoKuu', lat: -6.8918, lng: 39.1786 },
+      ],
+    },
+  ];
+
+  for (const loc of seedLocationEnhancements) {
+    await (prisma as any).businessProfile.update({
+      where: { id: loc.id },
+      data: {
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        wardName: loc.wardName,
+        streetLandmark: loc.streetLandmark,
+        routeWaypoints: loc.routeWaypoints as any,
+        accountStatus: 'ACTIVE',
+      },
+    });
+    await prisma.$executeRaw`
+      UPDATE business_profiles
+         SET location = ST_SetSRID(ST_MakePoint(${loc.longitude}::double precision, ${loc.latitude}::double precision), 4326)::geography
+       WHERE id = ${loc.id}::uuid
+    `;
+  }
+
   // 3. Canonical System Units
   const seedUnits: Array<{
     unitCode: string;

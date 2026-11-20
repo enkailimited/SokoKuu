@@ -9,16 +9,24 @@ import {
   useMap,
 } from '@vis.gl/react-google-maps';
 import {
+  AlertTriangle,
   ArrowRight,
+  Banknote,
   CheckCircle2,
+  FileText,
   Globe,
+  LoaderCircle,
   Lock,
   MapPin,
   Navigation,
+  Package,
+  Phone,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
   Store,
+  UserX,
+  UserCheck,
   X,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
@@ -174,6 +182,13 @@ export function FullPageMarketplaceMap({
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
+  const [dossierOpen, setDossierOpen] = useState(false);
+  const [dossierLoading, setDossierLoading] = useState(false);
+  const [dossierError, setDossierError] = useState<string | null>(null);
+  const [dossier, setDossier] = useState<any | null>(null);
+  const [suspendReasonInput, setSuspendReasonInput] = useState('');
+  const [suspendingMerchant, setSuspendingMerchant] = useState(false);
+
   const loadMatrixFromApi = useCallback(async () => {
     if (!SokoApiClient.hasAccessToken()) {
       setIsLoading(false);
@@ -245,6 +260,84 @@ export function FullPageMarketplaceMap({
       window.removeEventListener('sokokuu:merchants-updated', syncAll);
     };
   }, [loadMatrixFromApi, tenantBusinessId]);
+
+  const openMerchantDossier = async (businessId: string) => {
+    if (!isAdmin) return;
+    setDossierOpen(true);
+    setDossierLoading(true);
+    setDossierError(null);
+    setDossier(null);
+    setSuspendReasonInput('');
+    try {
+      const res = await SokoApiClient.get<any>(`/admin/merchants/${businessId}/dossier`);
+      setDossier(res);
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      }
+      setDossierError(
+        err instanceof SokoHttpError
+          ? `HTTP ${err.status}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia taarifa za mfanyabiashara.'
+              : 'Failed to load merchant dossier.',
+      );
+    } finally {
+      setDossierLoading(false);
+    }
+  };
+
+  const handleSetMerchantStatus = async (nextSuspended: boolean) => {
+    if (!dossier?.merchant?.merchantId) return;
+    const reason = suspendReasonInput.trim();
+    if (nextSuspended && !reason) {
+      setDossierError(isSw ? 'Sababu ya kusimamisha akaunti ni lazima.' : 'Suspension reason is required.');
+      return;
+    }
+    if (nextSuspended) {
+      const ok = window.confirm(
+        isSw
+          ? 'Una uhakika unataka kusimamisha akaunti ya mfanyabiashara huyu?'
+          : 'Are you sure you want to suspend this merchant account?',
+      );
+      if (!ok) return;
+    }
+    setSuspendingMerchant(true);
+    setDossierError(null);
+    try {
+      await SokoApiClient.patch(`/admin/merchants/${dossier.merchant.merchantId}/status`, {
+        suspended: nextSuspended,
+        ...(reason ? { reason } : {}),
+      });
+      await openMerchantDossier(dossier.merchant.merchantId);
+      setActionToast(
+        isSw
+          ? nextSuspended
+            ? 'Mfanyabiashara amesimamishwa.'
+            : 'Mfanyabiashara amerudishwa (akaunti hai).'
+          : nextSuspended
+            ? 'Merchant suspended.'
+            : 'Merchant reinstated.',
+      );
+      window.dispatchEvent(new CustomEvent('sokokuu:merchants-updated'));
+    } catch (err) {
+      if (isSokoNetworkError(err)) setBackendOffline(true);
+      setDossierError(
+        err instanceof SokoHttpError
+          ? `HTTP ${err.status}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kusasisha hali ya akaunti.'
+              : 'Failed to update merchant status.',
+      );
+    } finally {
+      setSuspendingMerchant(false);
+    }
+  };
 
   if (!isLoading && !tenantAllowed && !backendOffline) {
     return (
@@ -619,20 +712,22 @@ export function FullPageMarketplaceMap({
                   <button
                     type="button"
                     onClick={() => {
-                      if (onSelectMerchantStorefront) {
+                      if (isAdmin) {
+                        void openMerchantDossier(selectedStore.businessId);
+                      } else if (onSelectMerchantStorefront) {
                         onSelectMerchantStorefront(selectedStore);
                       } else {
                         setActionToast(
                           isSw
                             ? `Umefungua duka la mfanyabiashara: ${selectedStore.businessName} (${selectedStore.region}).`
-                            : `Opened storefront context for ${selectedStore.businessName} (${selectedStore.region}).`
+                            : `Opened storefront context for ${selectedStore.businessName} (${selectedStore.region}).`,
                         );
                       }
                     }}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
                   >
-                    <Store className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>{isSw ? 'Fungua Duka' : 'Open Storefront'}</span>
+                    {isAdmin ? <FileText className="w-3.5 h-3.5" aria-hidden="true" /> : <Store className="w-3.5 h-3.5" aria-hidden="true" />}
+                    <span>{isAdmin ? (isSw ? 'Fungua Mfanyabiashara' : 'Open Merchant') : (isSw ? 'Fungua Duka' : 'Open Storefront')}</span>
                   </button>
                   <button
                     type="button"
@@ -647,6 +742,140 @@ export function FullPageMarketplaceMap({
             </div>
           )}
         </section>
+      )}
+
+      {isAdmin && dossierOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true">
+          <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto bg-white rounded-xl border border-slate-200 shadow-2xl">
+            <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                  <span>{isSw ? 'Taarifa za Mfanyabiashara (Merchant Dossier)' : 'Merchant Dossier'}</span>
+                </h3>
+                {dossier?.merchant?.merchantName && (
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    {dossier.merchant.merchantName} · <span className="font-mono">{dossier.merchant.smsShortCode}</span>
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={() => setDossierOpen(false)} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 cursor-pointer" aria-label={isSw ? 'Funga' : 'Close'}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-6 space-y-5">
+              {dossierError && (
+                <div role="alert" className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs font-semibold text-red-900 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{dossierError}</span>
+                </div>
+              )}
+              {dossierLoading ? (
+                <div className="py-10 text-sm text-slate-600 inline-flex items-center gap-2"><LoaderCircle className="w-4 h-4 animate-spin" /> {isSw ? 'Inapakia taarifa...' : 'Loading dossier...'}</div>
+              ) : dossier ? (
+                <>
+                  <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                      <h4 className="text-sm font-bold text-slate-900">{isSw ? 'Duka & Mawasiliano' : 'Store & Contact'}</h4>
+                      <div className="text-xs text-slate-700 space-y-1">
+                        <div><span className="font-semibold">{isSw ? 'Biashara' : 'Business'}:</span> {dossier.merchant.merchantName} ({dossier.merchant.tier})</div>
+                        <div><span className="font-semibold">{isSw ? 'Mmiliki' : 'Owner'}:</span> {dossier.owner?.fullName || '—'}</div>
+                        <div className="inline-flex items-center gap-1.5"><Phone className="w-3.5 h-3.5" /> <span>{dossier.owner?.phoneE164 || '—'}</span></div>
+                        <div><span className="font-semibold">GPS:</span> <span className="font-mono">{Number(dossier.merchant.latitude).toFixed(5)}, {Number(dossier.merchant.longitude).toFixed(5)}</span></div>
+                        <div><span className="font-semibold">{isSw ? 'Eneo' : 'Area'}:</span> {dossier.merchant.wardName || dossier.merchant.ward} · {dossier.merchant.district}</div>
+                        <div><span className="font-semibold">{isSw ? 'Alama ya mtaa' : 'Landmark'}:</span> {dossier.merchant.streetLandmark || dossier.merchant.streetAddress || '—'}</div>
+                        <div><span className="font-semibold">{isSw ? 'Hali ya akaunti' : 'Account status'}:</span> <span className={`font-semibold ${dossier.merchant.accountStatus === 'SUSPENDED' ? 'text-red-700' : 'text-emerald-700'}`}>{dossier.merchant.accountStatus}</span></div>
+                        {dossier.merchant.suspensionReason ? <div className="text-red-700"><span className="font-semibold">{isSw ? 'Sababu' : 'Reason'}:</span> {dossier.merchant.suspensionReason}</div> : null}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                      <h4 className="text-sm font-bold text-slate-900">{isSw ? 'Muhtasari wa Shughuli' : 'Activity Summary'}</h4>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="bg-slate-50 border border-slate-200 rounded-md p-3"><div className="text-slate-500 flex items-center gap-1"><Banknote className="w-3.5 h-3.5" /> {isSw ? 'Mauzo Jumla' : 'Total Sales'}</div><div className="font-mono font-bold text-slate-900 mt-1">TZS {Number(dossier.activity?.totalSalesTzs ?? 0).toLocaleString('en-US')}</div></div>
+                        <div className="bg-slate-50 border border-slate-200 rounded-md p-3"><div className="text-slate-500 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> {isSw ? 'Oda Zilizokamilika' : 'Orders Completed'}</div><div className="font-mono font-bold text-slate-900 mt-1">{Number(dossier.activity?.ordersCompleted ?? 0).toLocaleString('en-US')}</div></div>
+                        <div className="bg-slate-50 border border-slate-200 rounded-md p-3"><div className="text-slate-500">{isSw ? 'Oda Zote' : 'Total Orders'}</div><div className="font-mono font-bold text-slate-900 mt-1">{Number(dossier.activity?.totalOrders ?? 0).toLocaleString('en-US')}</div></div>
+                        <div className="bg-slate-50 border border-slate-200 rounded-md p-3"><div className="text-slate-500 flex items-center gap-1"><Package className="w-3.5 h-3.5" /> {isSw ? 'Bidhaa Hai Zilizo Stokini' : 'Active Products in Stock'}</div><div className="font-mono font-bold text-slate-900 mt-1">{Number(dossier.activity?.activeProductsInStock ?? 0).toLocaleString('en-US')}</div></div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="border border-slate-200 rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2"><ShieldAlert className="w-4 h-4 text-amber-600" /> {isSw ? 'Simamisha / Rejesha Akaunti (Suspend / Reinstate Merchant)' : 'Suspend / Reinstate Merchant'}</h4>
+                    <p className="text-xs text-slate-600">{isSw ? 'Kusimamisha huficha bidhaa Sokoni na kuzuia oda mpya. Sababu ni lazima unaposimamisha.' : 'Suspending hides products from Sokoni and blocks new orders. A reason is required when suspending.'}</p>
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold text-slate-700">{isSw ? 'Sababu (lazima ukisimamisha)' : 'Reason (required when suspending)'}</span>
+                      <textarea value={suspendReasonInput} onChange={(e) => setSuspendReasonInput(e.target.value)} rows={3} className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white text-slate-900" placeholder={isSw ? 'Andika sababu ya sera...' : 'Enter policy reason...'} />
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button type="button" disabled={suspendingMerchant || dossier.merchant.accountStatus === 'SUSPENDED'} onClick={() => void handleSetMerchantStatus(true)} className="min-h-[40px] px-4 py-2 text-xs font-semibold rounded-md border border-red-200 bg-red-50 text-red-800 hover:bg-red-100 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
+                        {suspendingMerchant ? <LoaderCircle className="w-4 h-4 animate-spin" /> : <UserX className="w-4 h-4" />}
+                        <span>{isSw ? 'Simamisha Akaunti (Suspend Merchant)' : 'Suspend Merchant'}</span>
+                      </button>
+                      <button type="button" disabled={suspendingMerchant || dossier.merchant.accountStatus !== 'SUSPENDED'} onClick={() => void handleSetMerchantStatus(false)} className="min-h-[40px] px-4 py-2 text-xs font-semibold rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
+                        {suspendingMerchant ? <LoaderCircle className="w-4 h-4 animate-spin" /> : <UserCheck className="w-4 h-4" />}
+                        <span>{isSw ? 'Rejesha Akaunti (Reinstate Merchant)' : 'Reinstate Merchant'}</span>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                      <h4 className="text-sm font-bold text-slate-900">{isSw ? 'Migogoro / Malalamiko (Disputes)' : 'Dispute / Audit History (Disputes)'}</h4>
+                      {(dossier.disputeHistory || []).length === 0 ? (
+                        <p className="text-xs text-slate-500">{isSw ? 'Hakuna migogoro iliyorekodiwa.' : 'No disputes recorded.'}</p>
+                      ) : (
+                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                          {dossier.disputeHistory.map((d: any) => (
+                            <div key={d.ledgerId} className="text-xs border border-amber-200 bg-amber-50 rounded-md p-2.5">
+                              <div className="font-semibold text-slate-900">ODA {d.orderRef || d.orderId} · {d.verificationStatus}</div>
+                              <div className="text-slate-700 mt-0.5">{d.discrepancyReason || (isSw ? 'Hakuna maelezo' : 'No details')}</div>
+                              <div className="font-mono text-slate-600 mt-0.5">TZS {Number(d.expectedAmountTzs || 0).toLocaleString('en-US')} / {Number(d.collectedAmountTzs || 0).toLocaleString('en-US')}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                      <h4 className="text-sm font-bold text-slate-900">{isSw ? 'Kumbukumbu za Usalama & Fedha' : 'Security & Financial Audit History'}</h4>
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {[...(dossier.auditHistory?.security || []), ...(dossier.auditHistory?.financial || [])]
+                          .slice(0, 20)
+                          .map((a: any, idx: number) => (
+                            <div key={a.id || idx} className="text-xs border border-slate-200 bg-slate-50 rounded-md p-2.5">
+                              <div className="font-semibold text-slate-900">{a.eventType}</div>
+                              <div className="text-slate-600 mt-0.5">{a.createdAt ? new Date(a.createdAt).toLocaleString() : '—'}</div>
+                            </div>
+                          ))}
+                        {((dossier.auditHistory?.security || []).length + (dossier.auditHistory?.financial || []).length) === 0 && (
+                          <p className="text-xs text-slate-500">{isSw ? 'Hakuna kumbukumbu za ukaguzi.' : 'No audit records.'}</p>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
+                  {(dossier.recentOrders || []).length > 0 && (
+                    <section className="border border-slate-200 rounded-lg p-4 space-y-2">
+                      <h4 className="text-sm font-bold text-slate-900">{isSw ? 'Oda za Hivi Karibuni' : 'Recent Orders'}</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left border-collapse">
+                          <thead><tr className="border-b border-slate-200 text-slate-600"><th className="py-2 pr-3">Ref</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3">{isSw ? 'Kiasi' : 'Amount'}</th><th className="py-2 pr-3">{isSw ? 'Mteja' : 'Buyer'}</th></tr></thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {dossier.recentOrders.slice(0, 10).map((o: any) => (
+                              <tr key={o.orderId}><td className="py-2 pr-3 font-mono font-semibold">{o.orderRef}</td><td className="py-2 pr-3">{o.status}</td><td className="py-2 pr-3 font-mono">TZS {Number(o.expectedTotalTzs || 0).toLocaleString('en-US')}</td><td className="py-2 pr-3">{o.buyer?.fullName || '—'}</td></tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-slate-600">{isSw ? 'Hakuna taarifa.' : 'No dossier data.'}</p>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

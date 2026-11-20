@@ -13,6 +13,7 @@ import { Role } from '@common/security/roles.enum';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
 import { PricingRoutingEngine } from '@modules/07-pricing/pricing-routing.engine';
+import { DispatchService } from '@modules/12-dispatch/dispatch.service';
 import { RedisService } from '@redis/redis.service';
 import { CancelOrderDto, CreateOrderRequestDto } from './dto/orders.dto';
 import { assertValidOrderTransition } from './order-state.policy';
@@ -82,6 +83,7 @@ export class OrdersService {
     private readonly outboxService: OutboxService,
     private readonly redisService: RedisService,
     private readonly pricingEngine: PricingRoutingEngine,
+    private readonly dispatchService: DispatchService,
   ) {}
 
   async createOrder(
@@ -269,6 +271,25 @@ export class OrdersService {
 
         const paymentMethod = dto.paymentMethod ?? 'CASH';
 
+        const sellerZone = await tx.businessProfile.findUnique({
+          where: { id: quote.sellerBusinessId },
+          select: { ward: true, wardName: true },
+        });
+        const deliveryZoneWard = (sellerZone as any)?.wardName || sellerZone?.ward || null;
+        let scheduledDeliveryDate: Date | null = null;
+        if (dto.scheduledDeliveryDate) {
+          const raw = dto.scheduledDeliveryDate.trim();
+          const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+          if (m) {
+            scheduledDeliveryDate = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+          } else {
+            const parsed = new Date(raw);
+            if (!Number.isNaN(parsed.getTime())) {
+              scheduledDeliveryDate = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+            }
+          }
+        }
+
         const createdOrder = await tx.order.create({
           data: {
             id: orderId,
@@ -284,7 +305,9 @@ export class OrdersService {
             deliveryFeeTzs: BigInt(quote.deliveryFeeTzs),
             paymentMethod,
             paidAmountTzs: 0n,
-          },
+            scheduledDeliveryDate: scheduledDeliveryDate as any,
+            deliveryZoneWard: deliveryZoneWard as any,
+          } as any,
           select: {
             id: true,
             orderRef: true,
@@ -846,5 +869,171 @@ export class OrdersService {
     } catch {
       // Lock naturally expires by TTL
     }
+  }
+
+  async getZoneSchedule(
+    date: string,
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    let sellerBusinessId = tenantContext?.businessId ?? null;
+    if (user.role === Role.SUPER_ADMIN) {
+      // super admin can pass? not specified; default to tenant context if present
+      sellerBusinessId = tenantContext?.businessId ?? sellerBusinessId;
+    } else {
+      sellerBusinessId = tenantContext?.businessId ?? null;
+    }
+    if (!sellerBusinessId) {
+      const owned = await this.prismaService.businessProfile.findFirst({
+        where: { ownerUserId: user.sub },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      sellerBusinessId = owned?.id ?? null;
+    }
+    if (!sellerBusinessId) {
+      throw new ForbiddenException('Hakuna wasifu wa biashara uliopatikana kwa muuzaji huyu.');
+    }
+
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+
+    const orders = await this.prismaService.order.findMany({
+      where: {
+        sellerBusinessId,
+        status: { in: ['PLACED', 'DISPATCHED'] as any },
+        OR: [
+          { scheduledDeliveryDate: { gte: dayStart, lte: dayEnd } as any },
+          { scheduledDeliveryDate: null as any, placedAt: { gte: dayStart, lte: dayEnd } },
+        ],
+      } as any,
+      include: {
+        items: { select: { quantity: true, baseUnitsTotal: true } },
+        buyer: { select: { fullName: true, phoneE164: true } },
+        cashLedger: { select: { verificationStatus: true } },
+      },
+      orderBy: [{ deliveryZoneWard: 'asc' as any }, { placedAt: 'asc' }],
+    });
+
+    const groups = new Map<string, any>();
+    for (const o of orders as any[]) {
+      const zone = (o.deliveryZoneWard || 'Eneo Lisilojulikana').trim() || 'Eneo Lisilojulikana';
+      if (!groups.has(zone)) {
+        groups.set(zone, {
+          deliveryZoneWard: zone,
+          orderCount: 0,
+          totalTzs: 0,
+          totalPackages: 0,
+          orders: [],
+        });
+      }
+      const g = groups.get(zone);
+      g.orderCount += 1;
+      g.totalTzs += Number(o.expectedTotalTzs ?? 0n);
+      const packages = (o.items || []).reduce(
+        (sum: number, it: any) => sum + Number(it.quantity ?? 0),
+        0,
+      );
+      g.totalPackages += packages;
+      g.orders.push({
+        orderId: o.id,
+        orderRef: o.orderRef,
+        status: o.status,
+        expectedTotalTzs: Number(o.expectedTotalTzs ?? 0n),
+        deliveryFeeTzs: Number(o.deliveryFeeTzs ?? 0n),
+        scheduledDeliveryDate: o.scheduledDeliveryDate ? new Date(o.scheduledDeliveryDate).toISOString().slice(0, 10) : null,
+        deliveryZoneWard: o.deliveryZoneWard ?? zone,
+        buyerName: o.buyer?.fullName ?? null,
+        buyerPhoneE164: o.buyer?.phoneE164 ?? null,
+        verificationStatus: o.cashLedger?.verificationStatus ?? null,
+        packages,
+      });
+    }
+
+    const zones = Array.from(groups.values()).sort((a, b) => b.orderCount - a.orderCount || b.totalTzs - a.totalTzs);
+    return {
+      date,
+      sellerBusinessId,
+      zoneCount: zones.length,
+      totalOrders: orders.length,
+      zones,
+    };
+  }
+
+  async dispatchZoneBatch(
+    params: { date: string; deliveryZoneWard: string; driverUserId?: string },
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    let sellerBusinessId = tenantContext?.businessId ?? null;
+    if (!sellerBusinessId) {
+      const owned = await this.prismaService.businessProfile.findFirst({
+        where: { ownerUserId: user.sub },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      sellerBusinessId = owned?.id ?? null;
+    }
+    if (!sellerBusinessId) {
+      throw new ForbiddenException('Hakuna wasifu wa biashara uliopatikana kwa muuzaji huyu.');
+    }
+
+    const dayStart = new Date(`${params.date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${params.date}T23:59:59.999Z`);
+    const zone = params.deliveryZoneWard.trim();
+
+    const orders = await this.prismaService.order.findMany({
+      where: {
+        sellerBusinessId,
+        status: 'PLACED' as any,
+        deliveryZoneWard: zone as any,
+        OR: [
+          { scheduledDeliveryDate: { gte: dayStart, lte: dayEnd } as any },
+          { scheduledDeliveryDate: null as any, placedAt: { gte: dayStart, lte: dayEnd } },
+        ],
+      } as any,
+      select: { id: true, orderRef: true },
+      orderBy: { placedAt: 'asc' },
+    });
+
+    if (orders.length === 0) {
+      return {
+        date: params.date,
+        deliveryZoneWard: zone,
+        dispatchedCount: 0,
+        failed: [],
+        message: 'Hakuna oda za PLACED zilizopatikana kwa eneo na tarehe hii.',
+      };
+    }
+
+    const dispatched: Array<{ orderId: string; orderRef: string }> = [];
+    const failed: Array<{ orderId: string; orderRef: string; reason: string }> = [];
+
+    for (const o of orders) {
+      try {
+        await this.dispatchService.dispatchOrderAndAllocatePins(
+          o.id,
+          { driverUserId: params.driverUserId } as any,
+          user,
+          tenantContext,
+        );
+        dispatched.push({ orderId: o.id, orderRef: o.orderRef });
+      } catch (err) {
+        failed.push({
+          orderId: o.id,
+          orderRef: o.orderRef,
+          reason: err instanceof Error ? err.message : 'Imeshindikana kutuma oda.',
+        });
+      }
+    }
+
+    return {
+      date: params.date,
+      deliveryZoneWard: zone,
+      sellerBusinessId,
+      dispatchedCount: dispatched.length,
+      dispatched,
+      failed,
+    };
   }
 }

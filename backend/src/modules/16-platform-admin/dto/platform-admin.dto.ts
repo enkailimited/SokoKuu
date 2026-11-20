@@ -79,13 +79,16 @@ export class SetMerchantVerifiedDto {
 export class SetMerchantSuspensionDto {
   @ApiProperty({
     description:
-      'true suspends the Merchant: storefront closed, sign-in blocked and all active sessions revoked. false restores access.',
+      'true suspends the Merchant (accountStatus SUSPENDED) and blocks storefront/orders; false reinstates ACTIVE.',
     example: true,
   })
   @IsBoolean()
   suspended!: boolean;
 
-  @ApiPropertyOptional({ example: 'Kagosi la akaunti - tuhuma ya udanganyifu' })
+  @ApiPropertyOptional({
+    description: 'Mandatory reason when suspended=true (policy suspension notice)',
+    example: 'Kagosi la sera ya jukwaa - tuhuma ya udanganyifu',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(500)

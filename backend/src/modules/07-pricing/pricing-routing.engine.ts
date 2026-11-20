@@ -85,6 +85,8 @@ export class PricingRoutingEngine {
         businessName: true,
         tier: true,
         isOpen: true,
+        accountStatus: true,
+        suspensionReason: true,
         isPlatformManaged: true,
         allowAdminReceive: true,
         offersFreeDelivery: true,
@@ -96,6 +98,13 @@ export class PricingRoutingEngine {
 
     if (!seller) {
       throw new NotFoundException(`Seller Merchant ${dto.sellerBusinessId} was not found.`);
+    }
+    const sellerAny = seller as any;
+    if (sellerAny.accountStatus && sellerAny.accountStatus !== 'ACTIVE') {
+      const { ForbiddenException } = await import('@nestjs/common');
+      throw new ForbiddenException(
+        'Mfanyabiashara huyu amesimamishwa kwa sasa kutokana na sera za jukwaa. Huwezi kuweka oda mpya. / This merchant is suspended due to platform policy. New orders are blocked.',
+      );
     }
     if (!seller.isOpen) {
       throw new UnprocessableEntityException(

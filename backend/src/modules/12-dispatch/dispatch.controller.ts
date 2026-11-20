@@ -66,4 +66,13 @@ export class DispatchController {
   listAvailableDrivers() {
     return this.dispatchService.listAvailableDrivers();
   }
+
+  @Get('driver/deliveries/active')
+  @Roles(Role.DRIVER, Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'List active DISPATCHED/IN_TRANSIT deliveries for driver as route stops with pickup/dropoff and waypoints',
+  })
+  getActiveDriverDeliveries(@CurrentUser() user: AuthenticatedUser) {
+    return this.dispatchService.getActiveDriverDeliveries(user);
+  }
 }
