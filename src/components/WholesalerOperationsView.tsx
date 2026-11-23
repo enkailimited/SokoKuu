@@ -30,6 +30,7 @@ import {
 import { WholesalerEodReconciliation } from './WholesalerEodReconciliation';
 import { HybridAnalyticsDashboard } from './HybridAnalyticsDashboard';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { NumberDraftInput } from './NumberDraftInput';
 
 export type WholesalerTab = 'riders' | 'schedule' | 'eod' | 'analytics' | 'market' | 'restock';
 
@@ -1617,21 +1618,19 @@ export function WholesalerOperationsView({
                         >
                           {isSw ? 'Quantity' : 'Qty'}
                         </label>
-                        <input
+                        <NumberDraftInput
                           id={`market-qty-${product.productId}`}
-                          type="number"
                           min={1}
                           step={1}
                           disabled={!isSelected}
-                          value={isSelected ? quantity : ''}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const parsed = Math.max(1, Math.trunc(Number(e.target.value) || 1));
+                          value={isSelected ? quantity : 0}
+                          fallback={1}
+                          onValueChange={(parsed) =>
                             setSelectedMarketQty((prev) => ({
                               ...prev,
                               [product.productId]: parsed,
-                            }));
-                          }}
+                            }))
+                          }
                           className="w-24 px-2.5 py-1.5 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded-md text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
                         />
                         <button
@@ -1946,15 +1945,14 @@ export function WholesalerOperationsView({
                         <span className="text-[11px] font-semibold text-slate-600">
                           {isSw ? 'Idadi' : 'Qty'}
                         </span>
-                        <input
-                          type="number"
+                        <NumberDraftInput
                           min={listing.minOrderQuantity}
                           max={Math.max(listing.minOrderQuantity, listing.maxOrderQuantity)}
                           step={1}
                           disabled={!listing.isAvailable || !listing.productId}
                           value={quantity}
-                          onChange={(e) => {
-                            const parsed = Math.trunc(Number(e.target.value) || 0);
+                          fallback={listing.minOrderQuantity}
+                          onValueChange={(parsed) => {
                             setSupplierRestockQty((prev) => ({
                               ...prev,
                               [listing.listingId]: parsed,

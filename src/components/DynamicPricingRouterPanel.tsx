@@ -2,6 +2,7 @@ import { useDynamicCartCalculator } from '../hooks/useDynamicCartCalculator';
 import type { Locale } from '../data/i18n';
 import { formatBusinessTierLabel, formatUnitTypeLabel } from '../lib/sokoManagedState';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { NumberDraftInput } from './NumberDraftInput';
 
 function formatTzs(amount: number): string {
   return `TZS ${amount.toLocaleString('en-US')}`;
@@ -120,13 +121,13 @@ export function DynamicPricingRouterPanel({ locale }: { locale: Locale }) {
                   >
                     -
                   </button>
-                  <input
-                    type="number"
+                  <NumberDraftInput
                     min={0}
                     max={200}
                     aria-label={`Quantity for ${line.sku}`}
                     value={line.quantity}
-                    onChange={(e) => updateQuantity(line.productId, Number(e.target.value))}
+                    fallback={0}
+                    onValueChange={(next) => updateQuantity(line.productId, next)}
                     className="h-9 w-16 px-2 text-center text-sm font-mono tabular-nums border border-slate-300 rounded-md text-slate-900"
                   />
                   <button

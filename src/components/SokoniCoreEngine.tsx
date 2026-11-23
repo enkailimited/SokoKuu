@@ -35,6 +35,7 @@ import {
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { IsolatedQrVerificationTerminal } from './IsolatedQrVerificationTerminal';
+import { NumberDraftInput } from './NumberDraftInput';
 import {
   SokoniOrderDiscoveryView,
   type SokoniSelectionItem,
@@ -296,17 +297,9 @@ export function SokoniCoreEngine({
     setApiError(null);
 
     try {
-      const params = new URLSearchParams();
-      if (selectedCategoryCodes.length > 0) {
-        params.set('categoryCodes', selectedCategoryCodes.join(','));
-      }
-      if (searchQuery.trim().length > 0) {
-        params.set('q', searchQuery.trim());
-      }
-      const query = params.toString();
-      const rows = await SokoApiClient.get<GlobalCatalogItemDto[]>(
-        `/marketplace/catalog${query ? `?${query}` : ''}`,
-      );
+      // Load the full catalog once. Category/search filtering happens locally
+      // so switching categories is instant instead of waiting on two API calls.
+      const rows = await SokoApiClient.get<GlobalCatalogItemDto[]>('/marketplace/catalog');
       setCatalogItems(Array.isArray(rows) ? rows : []);
     } catch (err) {
       if (isSokoNetworkError(err)) {
@@ -323,7 +316,27 @@ export function SokoniCoreEngine({
     } finally {
       setLoadingCatalog(false);
     }
-  }, [isSw, refreshQueueCount, searchQuery, selectedCategoryCodes]);
+  }, [isSw, refreshQueueCount]);
+
+  // Instant client-side filtering — the catalog is already in memory, so
+  // selecting a category never waits for a network round trip.
+  const visibleCatalogItems = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const activeCodes = selectedCategoryCodes.map((code) => code.toLowerCase());
+    if (activeCodes.length === 0 && !query) return catalogItems;
+
+    return catalogItems.filter((item) => {
+      const itemCategory = (item.categoryCode ?? '').toLowerCase();
+      if (activeCodes.length > 0 && !activeCodes.includes(itemCategory)) return false;
+      if (!query) return true;
+      return (
+        (item.fixedNameSw ?? '').toLowerCase().includes(query) ||
+        (item.fixedNameEn ?? '').toLowerCase().includes(query) ||
+        (item.canonicalSku ?? '').toLowerCase().includes(query) ||
+        itemCategory.includes(query)
+      );
+    });
+  }, [catalogItems, searchQuery, selectedCategoryCodes]);
 
   const loadOrders = useCallback(async () => {
     if (!SokoApiClient.hasAccessToken()) {
@@ -987,7 +1000,7 @@ export function SokoniCoreEngine({
                 </div>
               ))}
             </div>
-          ) : catalogItems.length === 0 ? (
+          ) : visibleCatalogItems.length === 0 ? (
             <EmptyStateCard
               locale={locale}
               titleSw={t('sw', 'sokoni.noCatalogTitle')}
@@ -997,7 +1010,7 @@ export function SokoniCoreEngine({
             />
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {catalogItems.map((item) => {
+              {visibleCatalogItems.map((item) => {
                 const qty = selectedQtyByCatalogId[item.id] ?? 0;
                 const activeUnit = getActiveUnitForItem(item);
                 const units = item.productUnits ?? [];
@@ -1393,19 +1406,17 @@ export function SokoniCoreEngine({
                         </label>
 
                         <div className="flex items-center gap-2">
-                          <input
-                            type="number"
+                          <NumberDraftInput
                             min={1}
                             disabled={!checked}
-                            value={checked ? qty : ''}
-                            placeholder="0"
-                            onChange={(e) => {
-                              const val = Math.max(1, Math.trunc(Number(e.target.value) || 1));
+                            value={qty}
+                            fallback={1}
+                            onValueChange={(val) =>
                               setPublishQtyByProductId((prev) => ({
                                 ...prev,
                                 [product.productId]: val,
-                              }));
-                            }}
+                              }))
+                            }
                             className="w-24 min-h-[40px] px-2.5 py-1.5 text-xs font-mono font-bold text-right border border-slate-300 rounded-xl disabled:bg-slate-100"
                           />
                         </div>

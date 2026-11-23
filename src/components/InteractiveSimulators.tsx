@@ -20,6 +20,7 @@ import {
 import { formatOrderStatusLabel } from '../lib/sokoManagedState';
 import { SokoApiClient, isSokoNetworkError } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { NumberDraftInput } from './NumberDraftInput';
 
 function formatTzs(amount: number): string {
   return `TZS ${amount.toLocaleString('en-US')}`;
@@ -298,12 +299,12 @@ export function TieredPricingSimulator({ locale }: { locale: Locale }) {
               <label htmlFor="tier-qty" className="block text-xs font-medium text-slate-700 mb-1.5">
                 {t.qtyLabel}
               </label>
-              <input
+              <NumberDraftInput
                 id="tier-qty"
-                type="number"
                 min={1}
                 value={qty}
-                onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))}
+                fallback={1}
+                onValueChange={setQty}
                 className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-white border border-slate-300 rounded-md text-slate-900"
               />
             </div>

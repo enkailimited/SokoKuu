@@ -14,6 +14,7 @@ import {
 import type { Locale } from '../data/i18n';
 import { SokoApiClient, isSokoNetworkError } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { NumberDraftInput } from './NumberDraftInput';
 import {
   formatPipelineLabel,
   formatRoutingLabel,
@@ -427,11 +428,11 @@ export function ManagedOrderInterceptorPanel({ locale = 'en' }: { locale?: Local
               <label className="text-[11px] font-semibold text-slate-700">
                 {isSw ? 'Idadi' : 'Qty'}
               </label>
-              <input
-                type="number"
+              <NumberDraftInput
                 min={1}
                 value={testQuantity}
-                onChange={(e) => setTestQuantity(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                fallback={1}
+                onValueChange={setTestQuantity}
                 className="w-full min-h-[38px] px-2.5 rounded-md border border-slate-300 bg-white text-xs font-mono text-slate-900"
               />
             </div>
