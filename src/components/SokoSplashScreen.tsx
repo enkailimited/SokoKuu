@@ -93,11 +93,11 @@ export function SokoSplashScreen({
       />
 
       <div className="relative z-10 flex flex-col items-center text-center gap-4">
-        <div className="p-3 rounded-3xl bg-white border border-slate-100 shadow-sm">
+        <div className="sk-brand-light p-3 rounded-3xl bg-white border border-slate-100 shadow-sm">
           <SokoKuuAppIcon sizeClass="w-24 h-24 sm:w-28 sm:h-28" animated />
         </div>
 
-        <div className="space-y-1">
+        <div className="sk-brand-light space-y-1 rounded-xl px-3">
           <div className="text-3xl sm:text-4xl font-extrabold tracking-tight leading-none select-none">
             <span className="text-[#0054A6]">Soko</span>
             <span className="text-[#15AC49]">Kuu</span>
