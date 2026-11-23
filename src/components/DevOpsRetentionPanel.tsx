@@ -5,6 +5,7 @@ import { SOKOKUU_TRANSLATIONS, type SokoKuuPhraseDictionary } from '../data/soko
 import type { Locale } from '../data/i18n';
 import { SokoApiClient, isSokoNetworkError } from '../services/sokoApiClient';
 import { BackendOfflineBanner } from './DatabaseStateBanner';
+import { NumberDraftInput } from './NumberDraftInput';
 
 const PHRASE_KEYS = Object.keys(SOKOKUU_TRANSLATIONS.sw) as Array<keyof SokoKuuPhraseDictionary>;
 
@@ -112,11 +113,11 @@ export function DevOpsRetentionPanel({ locale }: { locale: Locale }) {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <input
-              type="number"
+            <NumberDraftInput
               aria-label="TZS formatter test value"
               value={sampleAmount}
-              onChange={(e) => setSampleAmount(Number(e.target.value) || 0)}
+              fallback={0}
+              onValueChange={setSampleAmount}
               className="h-9 w-32 px-3 text-xs font-mono tabular-nums bg-white border border-slate-300 rounded-md text-slate-900"
             />
             <button

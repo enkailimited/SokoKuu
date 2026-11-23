@@ -3,6 +3,7 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -161,6 +162,83 @@ export class CreateLeadDto {
   @IsOptional()
   @IsUUID()
   agentId?: string;
+
+  @ApiPropertyOptional({
+    example: 'Nahitaji gunia 50 za sukari na mafuta ya kupikia kwa mwezi.',
+    description: 'Optional quote / registration request details supplied by the applicant.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  quoteRequest?: string;
+}
+
+/**
+ * Public (unauthenticated) merchant quote / registration request.
+ *
+ * Mirrors CreateLeadDto without `agentId` so an anonymous applicant cannot
+ * attribute their lead to an arbitrary field agent.
+ */
+export class PublicLeadDto {
+  @ApiProperty({ example: 'Duka la Jumla Kariakoo' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(180)
+  merchantName!: string;
+
+  @ApiProperty({ example: 'Amina Hassan' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(150)
+  ownerName!: string;
+
+  @ApiProperty({ example: '+255712345678' })
+  @IsString()
+  @Matches(TZ_E164_REGEX, {
+    message: 'ownerPhoneE164 must be a valid Tanzanian MSISDN (+2556XXXXXXXX or +2557XXXXXXXX)',
+  })
+  ownerPhoneE164!: string;
+
+  @ApiProperty({ example: 'Kariakoo, Dar es Salaam' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(140)
+  wardName!: string;
+
+  @ApiProperty({ enum: MerchantTierDto, example: MerchantTierDto.RETAIL_DUKA })
+  @IsEnum(MerchantTierDto)
+  @IsIn([MerchantTierDto.RETAIL_DUKA, MerchantTierDto.WHOLESALE, MerchantTierDto.HYBRID_STORE])
+  businessTier!: MerchantTierDto;
+
+  @ApiProperty({ example: -6.8205 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-11.75)
+  @Max(-0.95)
+  latitude!: number;
+
+  @ApiProperty({ example: 39.2725 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(29.3)
+  @Max(40.5)
+  longitude!: number;
+
+  @ApiPropertyOptional({ example: 5000, default: 10 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5000)
+  gpsAccuracyMeters?: number;
+
+  @ApiPropertyOptional({
+    example: 'Ninahitaji bei za jumla za sukari, unga na mafuta ya kupikia.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  quoteRequest?: string;
 }
 
 export class ConvertLeadDto {

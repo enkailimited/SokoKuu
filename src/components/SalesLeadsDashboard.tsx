@@ -35,6 +35,7 @@ export interface SokoLeadRecord {
   latitude: number;
   longitude: number;
   accuracyMeters: number;
+  quoteRequest?: string;
   status: LeadLifecycleStatus;
   version: number;
   convertedAtEat?: string;
@@ -50,6 +51,7 @@ interface BackendLeadDto {
   latitude: number;
   longitude: number;
   gpsAccuracyMeters: number;
+  quoteRequest?: string | null;
   status: 'PROSPECT' | 'CONVERTED' | 'ARCHIVED';
   version: number;
   convertedBusinessId?: string | null;
@@ -94,6 +96,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
         latitude: l.latitude,
         longitude: l.longitude,
         accuracyMeters: l.gpsAccuracyMeters,
+        quoteRequest: l.quoteRequest ?? undefined,
         status: l.status === 'CONVERTED' ? 'Converted' : 'Prospect',
         version: l.version,
         convertedAtEat: l.convertedAtEat
@@ -545,10 +548,13 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
                           <span className="text-slate-600">{lead.businessTier}</span>
                         </div>
                         <div className="text-xs text-slate-600 flex flex-wrap items-center gap-2">
-                          <span className="inline-flex items-center gap-1 font-mono">
+                          <a
+                            href={`tel:${lead.ownerPhoneE164}`}
+                            className="inline-flex items-center gap-1 font-mono text-emerald-700 underline decoration-emerald-300 underline-offset-2 hover:text-emerald-900"
+                          >
                             <Phone className="w-3 h-3 text-emerald-600" aria-hidden="true" />
                             {lead.ownerPhoneE164}
-                          </span>
+                          </a>
                           <span className="text-slate-400">·</span>
                           <span>{lead.ownerName}</span>
                           <span className="text-slate-400">·</span>
@@ -558,6 +564,14 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
                           GPS: {lead.latitude}, {lead.longitude} (±{lead.accuracyMeters}m) · Version v
                           {lead.version}
                         </div>
+                        {lead.quoteRequest && (
+                          <div className="mt-1.5 rounded-md border border-emerald-100 bg-emerald-50/70 px-2.5 py-2 text-[11px] leading-relaxed text-emerald-950 whitespace-pre-wrap">
+                            <span className="font-bold">
+                              {isSw ? 'Maombi / Nukuu: ' : 'Request / Quote: '}
+                            </span>
+                            {lead.quoteRequest}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 shrink-0">

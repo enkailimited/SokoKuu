@@ -2,12 +2,18 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import { randomBytes, randomInt, randomUUID } from 'crypto';
+import { UserRole } from '@prisma/client';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
-import { ConvertLeadDto, CreateLeadDto } from './dto/platform-admin.dto';
+import {
+  ConvertLeadDto,
+  CreateLeadDto,
+  PublicLeadDto,
+} from './dto/platform-admin.dto';
 
 export function buildSwahiliLeadActivationSms(merchantName: string, pin4: string): string {
   const cleanName = merchantName.replace(/[^\x20-\x7E]/g, '').trim().slice(0, 32) || 'Mfanyabiashara';
@@ -46,6 +52,7 @@ export class SalesLeadsService {
         latitude: lead.latitude,
         longitude: lead.longitude,
         gpsAccuracyMeters: lead.gpsAccuracyMeters,
+        quoteRequest: lead.quoteRequest,
         status: lead.status,
         version: Number(lead.version),
         convertedBusinessId: lead.convertedBusinessId,
@@ -55,10 +62,35 @@ export class SalesLeadsService {
     };
   }
 
-  async captureProspectLead(dto: CreateLeadDto, agentUserId: string) {
+  /**
+   * Public registration / quote requests arrive without an authenticated
+   * field agent. Attribute them to the platform's Super Admin lead inbox so
+   * the team sees them in the standard Sales Leads dashboard.
+   */
+  async capturePublicProspectLead(dto: PublicLeadDto) {
+    const leadInboxAgent = await this.prismaService.user.findFirst({
+      where: { role: UserRole.SUPER_ADMIN },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!leadInboxAgent) {
+      throw new ServiceUnavailableException(
+        'Public lead inbox is not configured. Please contact SokoKuu support.',
+      );
+    }
+
+    const created = await this.captureProspectLead(dto, leadInboxAgent.id);
+    return {
+      ...created,
+      message: 'Lead received. SokoKuu team will contact you to complete verification.',
+    };
+  }
+
+  async captureProspectLead(dto: CreateLeadDto | PublicLeadDto, agentUserId: string) {
     const leadId = randomUUID();
     const accuracy = dto.gpsAccuracyMeters ?? 10;
-    const capturedBy = dto.agentId ?? agentUserId;
+    const capturedBy = ('agentId' in dto ? dto.agentId : undefined) ?? agentUserId;
 
     return this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
       try {
@@ -73,6 +105,7 @@ export class SalesLeadsService {
             latitude,
             longitude,
             gps_accuracy_meters,
+            quote_request,
             location,
             status,
             version,
@@ -87,6 +120,7 @@ export class SalesLeadsService {
             ${dto.latitude}::double precision,
             ${dto.longitude}::double precision,
             ${accuracy}::integer,
+            ${dto.quoteRequest?.trim() ?? ''}::text,
             ST_SetSRID(ST_MakePoint(${dto.longitude}::double precision, ${dto.latitude}::double precision), 4326)::geography,
             'PROSPECT'::lead_status,
             1,

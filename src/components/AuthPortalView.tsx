@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
+  CheckCircle2,
+  Crosshair,
   KeyRound,
   Languages,
   Lock,
+  MapPin,
   Phone,
   ShieldCheck,
+  Store,
   UserPlus,
 } from 'lucide-react';
 import type { Locale } from '../data/i18n';
@@ -26,9 +30,34 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 
-type SelfRegistrableRole = 'CONSUMER' | 'RETAILER' | 'WHOLESALER' | 'DRIVER' | 'SUPPLIER';
-
 type ResetView = 'AUTH' | 'RESET_CHALLENGE' | 'RESET_CONFIRM';
+type PublicBusinessTier = 'RETAIL_DUKA' | 'WHOLESALE';
+
+interface PublicLeadCoordinates {
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  source: 'device' | 'estimate';
+}
+
+interface PublicLeadResponse {
+  leadId: string;
+  merchantName: string;
+  status?: string;
+  message?: string;
+}
+
+// Dar es Salaam city centre. Used only when the browser cannot supply GPS;
+// the note attached to the lead tells the team to confirm the applicant's ward.
+const ESTIMATED_LEAD_COORDINATES: PublicLeadCoordinates = {
+  latitude: -6.7924,
+  longitude: 39.2083,
+  accuracyMeters: 5000,
+  source: 'estimate',
+};
+
+const isValidTanzaniaCoordinate = (latitude: number, longitude: number): boolean =>
+  latitude >= -11.75 && latitude <= -0.95 && longitude >= 29.3 && longitude <= 40.5;
 
 interface AuthTokenResponsePayload {
   accessToken: string;
@@ -67,7 +96,20 @@ export function AuthPortalView({
   const [phoneInput, setPhoneInput] = useState<string>('');
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [fullNameInput, setFullNameInput] = useState<string>('');
-  const [registerRole, setRegisterRole] = useState<SelfRegistrableRole>('RETAILER');
+
+  // Public quote / registration lead capture
+  const [businessNameInput, setBusinessNameInput] = useState<string>('');
+  const [wardInput, setWardInput] = useState<string>('');
+  const [quoteInput, setQuoteInput] = useState<string>('');
+  const [businessTier, setBusinessTier] = useState<PublicBusinessTier>('RETAIL_DUKA');
+  const [leadGps, setLeadGps] = useState<PublicLeadCoordinates | null>(null);
+  const [locatingGps, setLocatingGps] = useState(false);
+  const [gpsNotice, setGpsNotice] = useState<string | null>(null);
+  const [submittedLead, setSubmittedLead] = useState<{
+    reference: string;
+    merchantName: string;
+    duplicate?: boolean;
+  } | null>(null);
 
   const [resetPhone, setResetPhone] = useState<string>('');
   const [resetCode, setResetCode] = useState<string>('');
@@ -346,6 +388,53 @@ export function AuthPortalView({
     }
   };
 
+  const readDeviceLocation = () => {
+    setGpsNotice(null);
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setLeadGps(ESTIMATED_LEAD_COORDINATES);
+      setGpsNotice(
+        isSw
+          ? 'GPS haipatikani kwenye kifaa hiki. Tutatumia makadirio ya Dar es Salaam; timu itathibitisha kata yako.'
+          : 'GPS is unavailable on this device. We will use an estimated Dar es Salaam location; our team will confirm your ward.',
+      );
+      return;
+    }
+
+    setLocatingGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        if (isValidTanzaniaCoordinate(latitude, longitude)) {
+          setLeadGps({
+            latitude,
+            longitude,
+            accuracyMeters: Math.min(5000, Math.max(1, Math.round(accuracy || 100))),
+            source: 'device',
+          });
+          setGpsNotice(null);
+        } else {
+          setLeadGps(ESTIMATED_LEAD_COORDINATES);
+          setGpsNotice(
+            isSw
+              ? 'Eneo la kifaa liko nje ya Tanzania; tutatumia makadirio ya Dar es Salaam.'
+              : 'Device location is outside Tanzania; we will use an estimated Dar es Salaam location.',
+          );
+        }
+        setLocatingGps(false);
+      },
+      () => {
+        setLeadGps(ESTIMATED_LEAD_COORDINATES);
+        setGpsNotice(
+          isSw
+            ? 'GPS haikuruhusiwa; tutatumia makadirio ya Dar es Salaam. Timu itathibitisha kata yako.'
+            : 'GPS permission was denied; we will use an estimated Dar es Salaam location. Our team will confirm your ward.',
+        );
+        setLocatingGps(false);
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60_000 },
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
@@ -360,6 +449,85 @@ export function AuthPortalView({
       return;
     }
 
+    if (authTab === 'REGISTER') {
+      const cleanOwner = fullNameInput.trim();
+      const cleanMerchant = businessNameInput.trim();
+      const cleanWard = wardInput.trim();
+      if (!cleanOwner || !cleanMerchant || !cleanWard) {
+        setAuthError(
+          isSw
+            ? 'Jaza jina lako, jina la biashara, na kata/mahali pa biashara.'
+            : 'Enter your name, business name, and business ward/location.'
+        );
+        return;
+      }
+
+      const coordinates = leadGps ?? ESTIMATED_LEAD_COORDINATES;
+      const quoteParts: string[] = [];
+      if (quoteInput.trim()) quoteParts.push(quoteInput.trim());
+      quoteParts.push(
+        coordinates.source === 'device'
+          ? isSw
+            ? `[GPS ya kifaa: ${coordinates.latitude}, ${coordinates.longitude} ±${coordinates.accuracyMeters}m]`
+            : `[Device GPS: ${coordinates.latitude}, ${coordinates.longitude} ±${coordinates.accuracyMeters}m]`
+          : isSw
+            ? `[Eneo lilikadiriwa: Dar es Salaam. Kata: ${cleanWard}. Tafadhali thibitisha na mwombaji.]`
+            : `[Estimated location: Dar es Salaam. Ward: ${cleanWard}. Please verify with applicant.]`,
+      );
+
+      setSubmitting(true);
+      try {
+        const created = await SokoApiClient.post<PublicLeadResponse>(
+          '/sales/leads/public',
+          {
+            merchantName: cleanMerchant,
+            ownerName: cleanOwner,
+            ownerPhoneE164: normalizedPhone,
+            wardName: cleanWard,
+            businessTier,
+            latitude: coordinates.latitude,
+            longitude: coordinates.longitude,
+            gpsAccuracyMeters: coordinates.accuracyMeters,
+            quoteRequest: quoteParts.join('\n').slice(0, 1000),
+          },
+          false
+        );
+        setBackendOnline(true);
+        setSubmittedLead({
+          reference: (created?.leadId ?? '').slice(0, 8).toUpperCase() || 'RECEIVED',
+          merchantName: created?.merchantName || cleanMerchant,
+        });
+        setQuoteInput('');
+      } catch (err) {
+        if (err instanceof SokoHttpError) {
+          setBackendOnline(true);
+          if (err.status === 409) {
+            // Phone already captured as a lead: treat as a completed request so
+            // the applicant is not told to re-submit the same details.
+            setSubmittedLead({
+              reference: 'ALREADY-QUEUED',
+              merchantName: cleanMerchant,
+              duplicate: true,
+            });
+          } else {
+            setAuthError(err.message);
+          }
+        } else if (isSokoNetworkError(err)) {
+          setBackendOnline(false);
+          setAuthError(
+            isSw
+              ? 'Imeshindikana kuunganisha na SokoKuu. Jaribu tena.'
+              : 'Cannot reach SokoKuu. Retry.'
+          );
+        } else {
+          setAuthError(err instanceof Error ? err.message : 'Failed to submit request.');
+        }
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     if (!passwordInput.trim()) {
       setAuthError(
         isSw ? 'Tafadhali weka nenosiri lako.' : 'Please enter your account password.'
@@ -367,60 +535,22 @@ export function AuthPortalView({
       return;
     }
 
-    if (authTab === 'REGISTER') {
-      if (!fullNameInput.trim()) {
-        setAuthError(
-          isSw ? 'Tafadhali weka jina lako kamili.' : 'Please enter your full name.'
-        );
-        return;
-      }
-      if (passwordInput.length < 8) {
-        setAuthError(
-          isSw
-            ? 'Nenosiri lazima liwe na herufi zisizopungua 8.'
-            : 'Password must be at least 8 characters long.'
-        );
-        return;
-      }
-    }
-
     setSubmitting(true);
     try {
-      if (authTab === 'LOGIN') {
-        const resp = await SokoApiClient.post<AuthTokenResponsePayload>(
-          '/auth/login',
-          {
-            phoneE164: normalizedPhone,
-            password: passwordInput,
-          },
-          false
+      const resp = await SokoApiClient.post<AuthTokenResponsePayload>(
+        '/auth/login',
+        {
+          phoneE164: normalizedPhone,
+          password: passwordInput,
+        },
+        false
+      );
+      if (!resp?.accessToken || !resp?.user) {
+        throw new Error(
+          isSw ? 'Majibu ya uthibitisho hayakukamilika.' : 'Incomplete authentication response.'
         );
-        if (!resp?.accessToken || !resp?.user) {
-          throw new Error(
-            isSw ? 'Majibu ya uthibitisho hayakukamilika.' : 'Incomplete authentication response.'
-          );
-        }
-        await hydrateAndEnter(resp, normalizedPhone);
-      } else {
-        const resp = await SokoApiClient.post<AuthTokenResponsePayload>(
-          '/auth/register',
-          {
-            phoneE164: normalizedPhone,
-            fullName: fullNameInput.trim(),
-            password: passwordInput,
-            role: registerRole,
-            preferredLocale: locale,
-            preferredLanguage: locale,
-          },
-          false
-        );
-        if (!resp?.accessToken || !resp?.user) {
-          throw new Error(
-            isSw ? 'Majibu ya usajili hayakukamilika.' : 'Incomplete registration response.'
-          );
-        }
-        await hydrateAndEnter(resp, normalizedPhone);
       }
+      await hydrateAndEnter(resp, normalizedPhone);
     } catch (err) {
       if (err instanceof SokoHttpError) {
         setBackendOnline(true);
@@ -488,9 +618,16 @@ export function AuthPortalView({
                         ? 'Ingia Kwenye Akaunti Yako'
                         : 'Sign In to SokoKuu'
                       : isSw
-                        ? 'Fungua Akaunti Mpya'
-                        : 'Create Your SokoKuu Account'}
+                        ? 'Omba Usajili wa Mfanyabiashara'
+                        : 'Request Merchant Registration'}
               </h1>
+              {resetView === 'AUTH' && authTab === 'REGISTER' && (
+                <p className="text-xs leading-relaxed text-slate-600">
+                  {isSw
+                    ? 'Tuma taarifa zako kama ombi/nukuu. Timu ya SokoKuu itawasiliana nawe kwa simu kukamilisha usajili na uthibitisho wa mfanyabiashara.'
+                    : 'Send your details as a quote/registration request. The SokoKuu team will call you to complete your merchant registration and verification.'}
+                </p>
+              )}
             </div>
 
             {resetView === 'AUTH' && (
@@ -501,6 +638,7 @@ export function AuthPortalView({
                     setAuthTab('LOGIN');
                     setAuthError(null);
                     setResetNotice(null);
+                    setSubmittedLead(null);
                   }}
                   className={`py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                     authTab === 'LOGIN'
@@ -516,6 +654,7 @@ export function AuthPortalView({
                     setAuthTab('REGISTER');
                     setAuthError(null);
                     setResetNotice(null);
+                    setSubmittedLead(null);
                   }}
                   className={`py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                     authTab === 'REGISTER'
@@ -523,7 +662,7 @@ export function AuthPortalView({
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {isSw ? 'Jisajili' : 'Register'}
+                  {isSw ? 'Pata Nukuu' : 'Get a Quote'}
                 </button>
               </div>
             )}
@@ -692,13 +831,48 @@ export function AuthPortalView({
                   {isSw ? 'Rudi kwenye kuingia' : 'Back to sign in'}
                 </button>
               </form>
+            ) : submittedLead ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-5 space-y-3">
+                  <div className="flex items-center gap-2 text-emerald-800">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600" aria-hidden="true" />
+                    <span className="text-sm font-bold">
+                      {isSw ? 'Ombi lako limepokelewa' : 'Your request has been received'}
+                    </span>
+                  </div>
+                  <p className="text-xs leading-relaxed text-emerald-900">
+                    {submittedLead.duplicate
+                      ? isSw
+                        ? `Namba hii tayari ipo kwenye orodha yetu ya wateja. Timu ya SokoKuu itawasiliana nawe kukamilisha usajili wa ${submittedLead.merchantName}.`
+                        : `This phone number is already in our lead list. The SokoKuu team will contact you to complete registration for ${submittedLead.merchantName}.`
+                      : isSw
+                        ? `Asante ${submittedLead.merchantName}. Ombi lako limesajiliwa (REF: ${submittedLead.reference}). Timu yetu itakupigia simu kuthibitisha taarifa, kukamilisha usajili, na kukuwezesha kama mfanyabiashara aliye thibitishwa.`
+                        : `Thank you, ${submittedLead.merchantName}. Your request is recorded (REF: ${submittedLead.reference}). Our team will call you to verify your details, complete registration, and activate your verified merchant account.`}
+                  </p>
+                  <div className="inline-flex items-center gap-1.5 rounded-md bg-white border border-emerald-200 px-2.5 py-1.5 text-[11px] font-mono font-semibold text-emerald-800">
+                    <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                    {isSw ? 'Usajili wote unathibitishwa na timu' : 'Every merchant is team-verified'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSubmittedLead(null);
+                    setAuthTab('LOGIN');
+                    setAuthError(null);
+                  }}
+                  className="w-full min-h-[44px] px-4 text-xs font-semibold text-emerald-700 border border-emerald-200 rounded-md hover:bg-emerald-50 cursor-pointer"
+                >
+                  {isSw ? 'Ingia kwenye akaunti yako' : 'Sign in to your account'}
+                </button>
+              </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
                 {authTab === 'REGISTER' && (
                   <>
                     <label className="block space-y-1.5">
                       <span className="text-xs font-semibold text-slate-700">
-                        {isSw ? 'Jina Kamili' : 'Full Name'}
+                        {isSw ? 'Jina la Mmiliki (Kamili)' : 'Owner Full Name'}
                       </span>
                       <input
                         type="text"
@@ -714,30 +888,100 @@ export function AuthPortalView({
                     </label>
 
                     <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                        <Store className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                        {isSw ? 'Jina la Biashara / Duka' : 'Business / Shop Name'}
+                      </span>
+                      <input
+                        type="text"
+                        required
+                        value={businessNameInput}
+                        onChange={(e) => {
+                          setBusinessNameInput(e.target.value);
+                          setAuthError(null);
+                        }}
+                        placeholder={isSw ? 'Mfano: Duka la Amina' : 'e.g. Amina General Store'}
+                        className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+                      />
+                    </label>
+
+                    <label className="block space-y-1.5">
                       <span className="text-xs font-semibold text-slate-700">
-                        {isSw ? 'Aina ya Akaunti' : 'Account Role'}
+                        {isSw ? 'Aina ya Biashara' : 'Business Type'}
                       </span>
                       <select
-                        value={registerRole}
-                        onChange={(e) => setRegisterRole(e.target.value as SelfRegistrableRole)}
+                        value={businessTier}
+                        onChange={(e) => setBusinessTier(e.target.value as PublicBusinessTier)}
                         className="w-full min-h-[44px] px-3 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
                       >
-                        <option value="RETAILER">
-                          {isSw ? ROLE_LABELS.RETAILER.sw : ROLE_LABELS.RETAILER.en}
+                        <option value="RETAIL_DUKA">
+                          {isSw ? 'Mfanyabiashara wa Rejareja (Duka)' : 'Retailer / Duka'}
                         </option>
-                        <option value="WHOLESALER">
-                          {isSw ? ROLE_LABELS.WHOLESALER.sw : ROLE_LABELS.WHOLESALER.en}
-                        </option>
-                        <option value="CONSUMER">
-                          {isSw ? ROLE_LABELS.CONSUMER.sw : ROLE_LABELS.CONSUMER.en}
-                        </option>
-                        <option value="DRIVER">
-                          {isSw ? ROLE_LABELS.DRIVER.sw : ROLE_LABELS.DRIVER.en}
-                        </option>
-                        <option value="SUPPLIER">
-                          {isSw ? ROLE_LABELS.SUPPLIER.sw : ROLE_LABELS.SUPPLIER.en}
+                        <option value="WHOLESALE">
+                          {isSw ? 'Mfanyabiashara wa Jumla' : 'Wholesaler'}
                         </option>
                       </select>
+                    </label>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                          {isSw ? 'Kata / Mahali pa Biashara' : 'Ward / Business Location'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={readDeviceLocation}
+                          disabled={locatingGps}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 disabled:opacity-50 cursor-pointer"
+                        >
+                          <Crosshair className="w-3.5 h-3.5" aria-hidden="true" />
+                          {locatingGps
+                            ? isSw
+                              ? 'Inasoma...'
+                              : 'Reading...'
+                            : isSw
+                              ? 'Soma GPS'
+                              : 'Use my GPS'}
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={wardInput}
+                        onChange={(e) => {
+                          setWardInput(e.target.value);
+                          setAuthError(null);
+                        }}
+                        placeholder={isSw ? 'Mf. Kariakoo, Dar es Salaam' : 'e.g. Kariakoo, Dar es Salaam'}
+                        className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+                      />
+                      {leadGps && (
+                        <p className="text-[11px] font-mono text-emerald-700">
+                          {leadGps.source === 'device'
+                            ? `GPS: ${leadGps.latitude.toFixed(4)}, ${leadGps.longitude.toFixed(4)} ±${leadGps.accuracyMeters}m`
+                            : isSw
+                              ? 'Eneo litakadiriwa; timu itathibitisha kata yako.'
+                              : 'Estimated location; our team will confirm your ward.'}
+                        </p>
+                      )}
+                      {gpsNotice && <p className="text-[11px] text-amber-700">{gpsNotice}</p>}
+                    </div>
+
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold text-slate-700">
+                        {isSw ? 'Unachohitaji / Nukuu (Hiari)' : 'What do you need? / Quote (Optional)'}
+                      </span>
+                      <textarea
+                        rows={3}
+                        maxLength={800}
+                        value={quoteInput}
+                        onChange={(e) => setQuoteInput(e.target.value)}
+                        placeholder={isSw
+                          ? 'Mfano: Nahitaji bei za jumla za sukari, unga na mafuta ya kupikia...'
+                          : 'e.g. I need wholesale prices for sugar, flour and cooking oil...'}
+                        className="w-full px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none resize-y"
+                      />
                     </label>
                   </>
                 )}
@@ -760,34 +1004,44 @@ export function AuthPortalView({
                   />
                 </label>
 
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                    <KeyRound className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-                    <span>{isSw ? 'Nenosiri la Akaunti' : 'Account Password'}</span>
-                  </span>
-                  <input
-                    type="password"
-                    required
-                    value={passwordInput}
-                    onChange={(e) => {
-                      setPasswordInput(e.target.value);
-                      setAuthError(null);
-                    }}
-                    placeholder="••••••••"
-                    className="w-full min-h-[44px] px-3.5 text-sm font-mono bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
-                  />
-                </label>
-
                 {authTab === 'LOGIN' && (
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={openResetChallenge}
-                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer"
-                    >
-                      {isSw ? 'Sahau nywila?' : 'Forgot password?'}
-                    </button>
-                  </div>
+                  <>
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                        <KeyRound className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                        <span>{isSw ? 'Nenosiri la Akaunti' : 'Account Password'}</span>
+                      </span>
+                      <input
+                        type="password"
+                        required
+                        value={passwordInput}
+                        onChange={(e) => {
+                          setPasswordInput(e.target.value);
+                          setAuthError(null);
+                        }}
+                        placeholder="••••••••"
+                        className="w-full min-h-[44px] px-3.5 text-sm font-mono bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+                      />
+                    </label>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={openResetChallenge}
+                        className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+                      >
+                        {isSw ? 'Sahau nywila?' : 'Forgot password?'}
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {authTab === 'REGISTER' && (
+                  <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-slate-500">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" aria-hidden="true" />
+                    {isSw
+                      ? 'Hii ni ombi, sio akaunti bado. Timu yetu itawasiliana nawe kukamilisha usajili na uthibitisho.'
+                      : 'This is a request, not an account yet. Our team will contact you to complete registration and verification.'}
+                  </p>
                 )}
 
                 {authError && (
@@ -809,15 +1063,15 @@ export function AuthPortalView({
                   <span>
                     {submitting
                       ? isSw
-                        ? 'Inathibitisha...'
-                        : 'Processing...'
+                        ? 'Inatuma...'
+                        : 'Submitting...'
                       : authTab === 'LOGIN'
                         ? isSw
                           ? 'Ingia'
                           : 'Sign In'
                         : isSw
-                          ? 'Sajili Akaunti Mpya'
-                          : 'Create Account & Sign In'}
+                          ? 'Tuma Ombi la Nukuu'
+                          : 'Submit Quote Request'}
                   </span>
                 </button>
               </form>

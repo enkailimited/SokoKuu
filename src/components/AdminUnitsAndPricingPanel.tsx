@@ -24,6 +24,7 @@ import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
 import { PricingTemplateAttachmentEditor } from './AdminPricingTemplatesPanel';
 import { formatQuantaMeasurement } from '../utils/formatProductUnit';
+import { NumberDraftInput } from './NumberDraftInput';
 
 export interface BackendSystemUnit {
   id: string;
@@ -1244,11 +1245,11 @@ export function AdminUnitsAndPricingPanel({
                     ? 'Idadi ya Quarter-Quanta (1 Q = 250g au 250mL; Gunia 50KG = 200 Q)'
                     : 'Quarter-Quanta Factor (4 Q = 1 KG au 1 L; 25 KG Sack = 100 Q)'}
                 </label>
-                <input
-                  type="number"
+                <NumberDraftInput
                   min={1}
                   value={puQuarterQuanta}
-                  onChange={(e) => setPuQuarterQuanta(Number(e.target.value))}
+                  fallback={1}
+                  onValueChange={setPuQuarterQuanta}
                   className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-900"
                   required
                 />

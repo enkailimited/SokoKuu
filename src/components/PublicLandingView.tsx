@@ -400,8 +400,8 @@ export function PublicLandingView({ locale, onToggleLocale, onEnter }: PublicLan
                 </h2>
                 <p className="mt-1.5 text-sm text-emerald-50">
                   {isSw
-                    ? 'Fungua akaunti yako leo — bila malipo.'
-                    : 'Create your account today — free.'}
+                    ? 'Tuma ombi la usajili/nukuu leo — timu yetu itawasiliana nawe kukamilisha uthibitisho.'
+                    : 'Send a registration/quote request today — our team will contact you to complete verification.'}
                 </p>
               </div>
               <button
@@ -409,7 +409,7 @@ export function PublicLandingView({ locale, onToggleLocale, onEnter }: PublicLan
                 onClick={onEnter}
                 className="group inline-flex items-center gap-2 rounded-xl bg-white hover:bg-emerald-50 hover:-translate-y-0.5 px-6 py-3.5 text-sm font-bold text-emerald-800 shadow-lg cursor-pointer"
               >
-                {isSw ? 'Jisajili au Ingia' : 'Register or Sign In'}
+                {isSw ? 'Pata Nukuu au Ingia' : 'Get a Quote or Sign In'}
                 <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" aria-hidden="true" />
               </button>
             </div>

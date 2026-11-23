@@ -52,6 +52,7 @@ import {
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { ConfirmDestructiveDialog } from './ConfirmDestructiveDialog';
 import { ImageKitUpload } from './ImageKitUpload';
+import { NumberDraftInput } from './NumberDraftInput';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -2832,11 +2833,11 @@ export function InventoryAndUnitManager({
                           </select>
                         ) : (
                           <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min="1"
+                            <NumberDraftInput
+                              min={1}
                               value={stockInQuantaPerUnit}
-                              onChange={(e) => setStockInQuantaPerUnit(parseInt(e.target.value, 10) || 4)}
+                              fallback={4}
+                              onValueChange={setStockInQuantaPerUnit}
                               className="w-28 min-h-[40px] px-3 rounded-lg border border-slate-200 bg-white text-xs font-mono"
                             />
                             <span className="text-xs text-slate-500">
@@ -2852,11 +2853,11 @@ export function InventoryAndUnitManager({
                           <label className="text-xs font-semibold text-slate-700">
                             {isSw ? '4a. Idadi (Quantity)' : '4a. Quantity Received'}
                           </label>
-                          <input
-                            type="number"
-                            min="1"
+                          <NumberDraftInput
+                            min={1}
                             value={stockInQtyUnits}
-                            onChange={(e) => setStockInQtyUnits(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                            fallback={1}
+                            onValueChange={setStockInQtyUnits}
                             className="w-full min-h-[42px] px-3 rounded-lg border border-slate-200 bg-white text-sm font-mono font-bold text-slate-900"
                             required
                           />
@@ -3478,17 +3479,13 @@ export function InventoryAndUnitManager({
                   >
                     <Minus className="w-5 h-5" aria-hidden="true" />
                   </button>
-                  <input
+                  <NumberDraftInput
                     id="pos-quanta-input"
-                    type="number"
                     min={1}
                     max={maxPosQuanta}
                     value={promptQuantity}
-                    onChange={(e) => {
-                      const parsed = Number(e.target.value);
-                      const next = Number.isFinite(parsed) ? Math.trunc(parsed) : 1;
-                      setPromptQuantity(Math.min(maxPosQuanta, Math.max(1, next)));
-                    }}
+                    fallback={1}
+                    onValueChange={setPromptQuantity}
                     className="w-24 h-12 text-center font-mono text-xl font-bold text-emerald-700 bg-white border-2 border-emerald-200 rounded-xl focus:border-emerald-600 focus:outline-none"
                   />
                   <button
