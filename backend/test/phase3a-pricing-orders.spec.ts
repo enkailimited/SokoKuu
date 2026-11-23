@@ -268,7 +268,8 @@ describe('Phase 3A: PricingRoutingEngine, Orders Idempotency, Bulk Reservation, 
       } as unknown as OutboxService;
       const redis = { getClient: jest.fn().mockReturnValue({ status: 'wait' }) } as unknown as RedisService;
       const pricingEngine = new PricingRoutingEngine(prisma);
-      const ordersService = new OrdersService(prisma, outbox, redis, pricingEngine);
+      const dispatchService = { dispatchOrderAndAllocatePins: jest.fn() } as any;
+      const ordersService = new OrdersService(prisma, outbox, redis, pricingEngine, dispatchService);
 
       // 4 x SINGLE_KILO_LITRE = 16 quanta -> triggers auto_break_bulk_package (10 + 200 - 16 = 194 quanta)
       const firstReceipt = await ordersService.createOrder(
@@ -357,7 +358,8 @@ describe('Phase 3A: PricingRoutingEngine, Orders Idempotency, Bulk Reservation, 
       const outbox = { enqueue: jest.fn().mockResolvedValue({ id: 'o-c1' }) } as unknown as OutboxService;
       const redis = { getClient: jest.fn() } as unknown as RedisService;
       const engine = new PricingRoutingEngine(prisma);
-      const ordersService = new OrdersService(prisma, outbox, redis, engine);
+      const dispatchService = { dispatchOrderAndAllocatePins: jest.fn() } as any;
+      const ordersService = new OrdersService(prisma, outbox, redis, engine, dispatchService);
 
       const cancelled = await ordersService.cancelOrder(
         orderId,

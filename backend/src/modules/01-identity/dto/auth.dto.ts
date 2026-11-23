@@ -66,6 +66,11 @@ export class RegisterDto {
   @IsOptional()
   @IsIn(['sw', 'en'])
   preferredLocale?: 'sw' | 'en';
+
+  @ApiPropertyOptional({ enum: ['sw', 'en'], default: 'sw' })
+  @IsOptional()
+  @IsIn(['sw', 'en'])
+  preferredLanguage?: 'sw' | 'en';
 }
 
 export class LoginDto {
@@ -116,6 +121,11 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsIn(['sw', 'en'])
   preferredLocale?: 'sw' | 'en';
+
+  @ApiPropertyOptional({ enum: ['sw', 'en'], example: 'sw' })
+  @IsOptional()
+  @IsIn(['sw', 'en'])
+  preferredLanguage?: 'sw' | 'en';
 
   @ApiPropertyOptional({ example: 'Kuluthum Beverages Wholesale' })
   @IsOptional()
@@ -199,4 +209,10 @@ export class UpdateMerchantShopImageDto {
   })
   @MaxLength(2048)
   logoCdnUrl!: string;
+}
+
+export class UpdatePreferencesDto {
+  @ApiProperty({ enum: ['sw', 'en'], example: 'sw' })
+  @IsIn(['sw', 'en'])
+  preferredLanguage!: 'sw' | 'en';
 }

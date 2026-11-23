@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Inbox } from 'lucide-react';
 import type { Locale } from '../data/i18n';
 
@@ -21,12 +22,14 @@ export function EmptyStateCard({
   titleEn,
   descriptionSw,
   descriptionEn,
+  action,
 }: {
   locale: Locale;
   titleSw?: string;
   titleEn?: string;
   descriptionSw?: string;
   descriptionEn?: string;
+  action?: ReactNode;
 }) {
   const isSw = locale === 'sw';
   return (
@@ -44,6 +47,7 @@ export function EmptyStateCard({
           : descriptionEn ??
             'No records exist in PostgreSQL for this view yet.'}
       </p>
+      {action ? <div className="pt-2">{action}</div> : null}
     </div>
   );
 }

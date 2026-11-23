@@ -25,6 +25,7 @@ import {
   RegisterDto,
   RegistrationChallengeDto,
   UpdateMerchantShopImageDto,
+  UpdatePreferencesDto,
   UpdateProfileDto,
 } from './dto/auth.dto';
 import { AuthTokenResponse, IdentityService } from './identity.service';
@@ -153,6 +154,18 @@ export class IdentityController {
     @Body() dto: UpdateProfileDto,
   ) {
     return this.identityService.updateProfile(user.sub, dto, tenantContext);
+  }
+
+  @Patch('preferences')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('bearer')
+  @ApiOperation({ summary: 'Persist user preferred UI language (sw | en) in PostgreSQL' })
+  @ApiResponse({ status: 200, description: 'User localization preference updated' })
+  updatePreferences(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdatePreferencesDto,
+  ) {
+    return this.identityService.updatePreferences(user.sub, dto.preferredLanguage);
   }
 
   @Patch('me/merchant-image')

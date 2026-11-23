@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { BusinessTier, Prisma } from '@prisma/client';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
@@ -15,6 +15,10 @@ export interface MerchantDirectoryRecord {
   latitude: number;
   longitude: number;
   isOpen: boolean;
+  accountStatus?: string;
+  suspensionReason?: string | null;
+  suspendedAt?: string | null;
+  suspendedByAdminId?: string | null;
   isPlatformManaged: boolean;
   allowAdminReceive: boolean;
   geospatialMapEnabled: boolean;
@@ -69,7 +73,7 @@ export class AdminMerchantsService {
       take: 200,
     });
 
-    const merchants: MerchantDirectoryRecord[] = rows.map((row) => ({
+    const merchants: MerchantDirectoryRecord[] = rows.map((row: any) => ({
       merchantId: row.id,
       smsShortCode: row.smsShortCode,
       merchantName: row.businessName,
@@ -80,6 +84,10 @@ export class AdminMerchantsService {
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
       isOpen: row.isOpen,
+      accountStatus: row.accountStatus ?? (row.isOpen ? 'ACTIVE' : 'SUSPENDED'),
+      suspensionReason: row.suspensionReason ?? null,
+      suspendedAt: row.suspendedAt ? new Date(row.suspendedAt).toISOString() : null,
+      suspendedByAdminId: row.suspendedByAdminId ?? null,
       isPlatformManaged: row.isPlatformManaged,
       allowAdminReceive: row.allowAdminReceive,
       geospatialMapEnabled: row.geospatialMapEnabled,
@@ -227,6 +235,7 @@ export class AdminMerchantsService {
           businessName: true,
           isOpen: true,
           ownerUserId: true,
+          accountStatus: true,
           owner: { select: { id: true, isActive: true } },
         },
       });
@@ -236,20 +245,34 @@ export class AdminMerchantsService {
       }
 
       const suspended = dto.suspended;
+      const reason = (dto.reason || '').trim();
+      if (suspended && !reason) {
+        throw new BadRequestException(
+          'Sababu ya kusimamisha akaunti ni lazima / Suspension reason is required.',
+        );
+      }
       const now = new Date();
 
       const updatedBusiness = await tx.businessProfile.update({
         where: { id: businessId },
         data: {
           isOpen: !suspended,
+          accountStatus: suspended ? 'SUSPENDED' : 'ACTIVE',
+          suspensionReason: suspended ? reason : null,
+          suspendedAt: suspended ? now : null,
+          suspendedByAdminId: suspended ? adminUserId : null,
           version: { increment: 1 },
-        },
+        } as any,
         select: {
           id: true,
           businessName: true,
           isOpen: true,
+          accountStatus: true,
+          suspensionReason: true,
+          suspendedAt: true,
+          suspendedByAdminId: true,
           updatedAt: true,
-        },
+        } as any,
       });
 
       await tx.user.update({
@@ -267,7 +290,7 @@ export class AdminMerchantsService {
       await this.outboxService.enqueue(
         {
           aggregateType: 'BusinessProfile',
-          aggregateId: updatedBusiness.id,
+          aggregateId: String(updatedBusiness.id),
           eventType: 'MerchantSuspensionToggledEvent',
           routingKey: 'admin.merchant.suspension_toggled',
           payload: {
@@ -275,9 +298,9 @@ export class AdminMerchantsService {
             merchantName: updatedBusiness.businessName,
             ownerUserId: existing.ownerUserId,
             suspended,
-            reason: dto.reason ?? null,
+            reason: suspended ? reason : null,
             updatedByAdminId: adminUserId,
-          },
+          } as any,
         },
         tx,
       );
@@ -290,8 +313,8 @@ export class AdminMerchantsService {
             details: {
               merchantId: updatedBusiness.id,
               ownerUserId: existing.ownerUserId,
-              reason: dto.reason ?? null,
-            },
+              reason: suspended ? reason : null,
+            } as any,
           },
         });
       }
@@ -300,13 +323,19 @@ export class AdminMerchantsService {
         `[ADMIN-MERCHANT-SUSPENSION] merchantId=${updatedBusiness.id} suspended=${suspended} by=${adminUserId}`,
       );
 
+      const ub: any = updatedBusiness;
       return {
-        businessId: updatedBusiness.id,
-        businessName: updatedBusiness.businessName,
-        isOpen: updatedBusiness.isOpen,
+        merchantId: ub.id,
+        businessId: ub.id,
+        businessName: ub.businessName,
+        isOpen: ub.isOpen,
         isActive: !suspended,
         suspended,
-        updatedAtEat: updatedBusiness.updatedAt.toISOString(),
+        accountStatus: ub.accountStatus ?? (suspended ? 'SUSPENDED' : 'ACTIVE'),
+        suspensionReason: ub.suspensionReason ?? (suspended ? reason : null),
+        suspendedAt: ub.suspendedAt ? new Date(ub.suspendedAt).toISOString() : null,
+        suspendedByAdminId: ub.suspendedByAdminId ?? (suspended ? adminUserId : null),
+        updatedAtEat: ub.updatedAt.toISOString(),
       };
     });
   }
@@ -351,6 +380,218 @@ export class AdminMerchantsService {
         updatedAtEat: updated.updatedAt.toISOString(),
       };
     });
+  }
+
+  async getMerchantDossier(businessId: string) {
+    const profile = await this.prismaService.businessProfile.findUnique({
+      where: { id: businessId },
+      select: {
+        id: true,
+        smsShortCode: true,
+        businessName: true,
+        tier: true,
+        district: true,
+        ward: true,
+        streetAddress: true,
+        latitude: true,
+        longitude: true,
+        isOpen: true,
+        isPlatformManaged: true,
+        geospatialMapEnabled: true,
+        logoCdnUrl: true,
+        wardName: true,
+        streetLandmark: true,
+        routeWaypoints: true,
+        accountStatus: true,
+        suspensionReason: true,
+        suspendedAt: true,
+        suspendedByAdminId: true,
+        createdAt: true,
+        updatedAt: true,
+        owner: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneE164: true,
+            preferredLocale: true,
+            isActive: true,
+          },
+        },
+      } as any,
+    });
+
+    if (!profile) {
+      throw new NotFoundException(`Merchant profile ${businessId} was not found.`);
+    }
+
+    const p: any = profile;
+    const [
+      totalSalesAgg,
+      ordersCompleted,
+      totalOrders,
+      activeProductsInStock,
+      recentOrders,
+      disputes,
+      securityAuditLogs,
+      financialAuditLogs,
+    ] = await Promise.all([
+      this.prismaService.order.aggregate({
+        where: { sellerBusinessId: businessId, status: 'DELIVERED' as any },
+        _sum: { expectedTotalTzs: true },
+      }),
+      this.prismaService.order.count({
+        where: { sellerBusinessId: businessId, status: 'DELIVERED' as any },
+      }),
+      this.prismaService.order.count({ where: { sellerBusinessId: businessId } }),
+      this.prismaService.product.count({
+        where: { sellerBusinessId: businessId, isActive: true, baseQuarterQuantaStock: { gt: 0 } },
+      }),
+      this.prismaService.order.findMany({
+        where: { sellerBusinessId: businessId },
+        orderBy: { placedAt: 'desc' },
+        take: 20,
+        select: {
+          id: true,
+          orderRef: true,
+          status: true,
+          expectedTotalTzs: true,
+          deliveryFeeTzs: true,
+          placedAt: true,
+          dispatchedAt: true,
+          deliveredAt: true,
+          buyer: { select: { id: true, fullName: true, phoneE164: true } },
+          cashLedger: { select: { verificationStatus: true, collectedCashAmount: true } },
+        },
+      }),
+      this.prismaService.cashDeliveryLedger.findMany({
+        where: { order: { sellerBusinessId: businessId }, verificationStatus: 'DISPUTED' as any },
+        orderBy: { updatedAt: 'desc' },
+        take: 20,
+        select: {
+          id: true,
+          orderId: true,
+          verificationStatus: true,
+          expectedCashAmount: true,
+          collectedCashAmount: true,
+          updatedAt: true,
+          order: { select: { orderRef: true, status: true } },
+        },
+      }),
+      this.prismaService.securityAuditLog.findMany({
+        where: {
+          OR: [
+            { userId: p.owner?.id ?? undefined },
+            { details: { path: ['merchantId'], equals: businessId } as any },
+          ],
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+        select: { id: true, eventType: true, details: true, createdAt: true, userId: true },
+      }),
+      this.prismaService.financialAuditLog.findMany({
+        where: { sellerBusinessId: businessId },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+        select: {
+          id: true,
+          eventType: true,
+          amountTzs: true,
+          previousState: true,
+          newState: true,
+          details: true,
+          createdAt: true,
+          orderId: true,
+        },
+      }),
+    ]);
+
+    const totalSalesTzs = Number((totalSalesAgg as any)._sum?.expectedTotalTzs ?? 0n);
+
+    return {
+      merchant: {
+        merchantId: p.id,
+        smsShortCode: p.smsShortCode,
+        merchantName: p.businessName,
+        tier: p.tier,
+        district: p.district,
+        ward: p.ward,
+        wardName: p.wardName ?? p.ward,
+        streetAddress: p.streetAddress,
+        streetLandmark: p.streetLandmark ?? p.streetAddress,
+        latitude: Number(p.latitude),
+        longitude: Number(p.longitude),
+        isOpen: p.isOpen,
+        isPlatformManaged: p.isPlatformManaged,
+        geospatialMapEnabled: p.geospatialMapEnabled,
+        logoCdnUrl: p.logoCdnUrl ?? null,
+        routeWaypoints: Array.isArray(p.routeWaypoints) ? p.routeWaypoints : [],
+        accountStatus: p.accountStatus ?? (p.isOpen ? 'ACTIVE' : 'SUSPENDED'),
+        suspensionReason: p.suspensionReason ?? null,
+        suspendedAt: p.suspendedAt ? new Date(p.suspendedAt).toISOString() : null,
+        suspendedByAdminId: p.suspendedByAdminId ?? null,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
+      },
+      owner: p.owner
+        ? {
+            userId: p.owner.id,
+            fullName: p.owner.fullName,
+            phoneE164: p.owner.phoneE164,
+            preferredLocale: p.owner.preferredLocale,
+            isActive: p.owner.isActive,
+          }
+        : null,
+      activity: {
+        totalSalesTzs,
+        totalOrders,
+        ordersCompleted,
+        activeProductsInStock,
+      },
+      recentOrders: recentOrders.map((o: any) => ({
+        orderId: o.id,
+        orderRef: o.orderRef,
+        status: o.status,
+        expectedTotalTzs: Number(o.expectedTotalTzs ?? 0n),
+        deliveryFeeTzs: Number(o.deliveryFeeTzs ?? 0n),
+        placedAt: o.placedAt?.toISOString?.() ?? null,
+        dispatchedAt: o.dispatchedAt?.toISOString?.() ?? null,
+        deliveredAt: o.deliveredAt?.toISOString?.() ?? null,
+        buyer: o.buyer
+          ? { userId: o.buyer.id, fullName: o.buyer.fullName, phoneE164: o.buyer.phoneE164 }
+          : null,
+        verificationStatus: o.cashLedger?.verificationStatus ?? null,
+      })),
+      disputeHistory: disputes.map((d: any) => ({
+        ledgerId: d.id,
+        orderId: d.orderId,
+        orderRef: d.order?.orderRef ?? null,
+        orderStatus: d.order?.status ?? null,
+        verificationStatus: d.verificationStatus,
+        discrepancyReason: null,
+        expectedAmountTzs: Number(d.expectedCashAmount ?? 0n),
+        collectedAmountTzs: Number(d.collectedCashAmount ?? 0n),
+        updatedAt: d.updatedAt?.toISOString?.() ?? null,
+      })),
+      auditHistory: {
+        security: securityAuditLogs.map((l: any) => ({
+          id: l.id,
+          eventType: l.eventType,
+          details: l.details,
+          createdAt: l.createdAt?.toISOString?.() ?? null,
+          userId: l.userId ?? null,
+        })),
+        financial: financialAuditLogs.map((l: any) => ({
+          id: l.id,
+          eventType: l.eventType,
+          amountTzs: l.amountTzs != null ? Number(l.amountTzs) : null,
+          previousState: l.previousState ?? null,
+          newState: l.newState ?? null,
+          details: l.details,
+          createdAt: l.createdAt?.toISOString?.() ?? null,
+          orderId: l.orderId ?? null,
+        })),
+      },
+    };
   }
 
   async getPlatformMetrics() {

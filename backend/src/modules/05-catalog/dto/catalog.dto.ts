@@ -438,3 +438,64 @@ export class PublishMarketStockDto {
   @Type(() => MarketStockItemDto)
   items!: MarketStockItemDto[];
 }
+
+export class UpdateClonePublishStatusDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  isPublishedToMarket!: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  isActiveForSale?: boolean;
+}
+
+export class BulkUpdateClonePublishStatusDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsUUID('4', { each: true })
+  clonedProductIds!: string[];
+
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  isPublishedToMarket!: boolean;
+}
+
+export class DiscoverMerchantItemDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  globalCatalogId!: string;
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  systemUnitId?: string;
+
+  @ApiProperty({ example: 5, minimum: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quantity!: number;
+}
+
+export class DiscoverMerchantsDto {
+  @ApiProperty({ type: [DiscoverMerchantItemDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => DiscoverMerchantItemDto)
+  items!: DiscoverMerchantItemDto[];
+
+  @ApiPropertyOptional({ example: -6.816 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 39.28 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  longitude?: number;
+}

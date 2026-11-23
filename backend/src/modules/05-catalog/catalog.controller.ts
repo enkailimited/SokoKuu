@@ -12,16 +12,19 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { TenantContext } from '@common/security/auth.types';
-import { CurrentTenant, Roles, TenantScoped } from '@common/security/decorators';
+import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
+import { CurrentTenant, CurrentUser, Roles, TenantScoped } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
 import { CatalogService } from './catalog.service';
 import {
   AddGlobalCatalogItemDto,
+  BulkUpdateClonePublishStatusDto,
   CloneStandardCatalogDto,
   CreateCatalogCategoryDto,
   CreateMerchantProductDto,
+  DiscoverMerchantsDto,
   PublishMarketStockDto,
+  UpdateClonePublishStatusDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
   UpdateMerchantCloneDto,
@@ -100,12 +103,29 @@ export class CatalogController {
   @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.CONSUMER, Role.SUPPLIER)
   @ApiOperation({ summary: 'Browse active canonical SKUs in soko_global_catalog' })
   @ApiQuery({ name: 'categoryCode', required: false })
+  @ApiQuery({ name: 'categoryCodes', required: false, description: 'Comma-separated category codes' })
   @ApiQuery({ name: 'q', required: false })
   listGlobalCatalog(
     @Query('categoryCode') categoryCode?: string,
+    @Query('categoryCodes') categoryCodes?: string,
     @Query('q') q?: string,
   ) {
-    return this.catalogService.listGlobalCatalog(categoryCode, q);
+    return this.catalogService.listGlobalCatalog(categoryCode, q, categoryCodes);
+  }
+
+  @Post('marketplace/discover-merchants')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.SUPPLIER, Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Smart Merchant Discovery ranked by PostGIS proximity and item coverage',
+  })
+  @ApiResponse({ status: 200, description: 'Matched active verified Merchants returned' })
+  discoverMerchants(
+    @Body() dto: DiscoverMerchantsDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.discoverMerchants(dto, user, tenantContext);
   }
 
   @Get('marketplace/merchants')
@@ -130,6 +150,40 @@ export class CatalogController {
     @Query('businessId') businessId?: string,
   ) {
     return this.catalogService.listMerchantClones(tenantContext, businessId);
+  }
+
+  @Patch('merchant/catalog/:clonedProductId/publish-status')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({
+    summary:
+      'Toggle market visibility (isPublishedToMarket / isActiveForSale) on a cloned product after validating stock > 0 and selling price > 0 TZS',
+  })
+  @ApiResponse({ status: 200, description: 'Cloned product market visibility updated' })
+  @ApiResponse({ status: 400, description: 'Product lacks stock (> 0) or selling price (> 0 TZS)' })
+  updateMerchantClonePublishStatus(
+    @Param('clonedProductId', new ParseUUIDPipe()) clonedProductId: string,
+    @Body() dto: UpdateClonePublishStatusDto,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.updateMerchantClonePublishStatus(
+      clonedProductId,
+      dto,
+      tenantContext,
+    );
+  }
+
+  @Patch('merchant/catalog/publish-status/bulk')
+  @Roles(Role.RETAILER, Role.WHOLESALER, Role.SUPER_ADMIN)
+  @TenantScoped()
+  @ApiOperation({
+    summary: 'Bulk publish or unpublish cloned Merchant products to Sokoni Marketplace',
+  })
+  bulkUpdateMerchantClonePublishStatus(
+    @Body() dto: BulkUpdateClonePublishStatusDto,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.bulkUpdateMerchantClonePublishStatus(dto, tenantContext);
   }
 
   @Post('marketplace/catalog/clone-standard')

@@ -181,3 +181,74 @@ export function isWholesaleOnly(role?: string | null, tier?: string | null): boo
   if (tier === 'WHOLESALE' || tier === 'WHOLESALLE_HUB' || tier === 'WHOLESALE_HUB') return true;
   return role === 'WHOLESALER';
 }
+
+export function formatQuantumDefinition(
+  category: UnitCategory,
+  locale: UnitLocale = 'sw',
+): string {
+  if (category === 'VOLUME') {
+    return locale === 'sw' ? '1 Quanta = 250 mL' : '1 Quantum = 250 mL';
+  }
+  return locale === 'sw' ? '1 Quanta = 250 g' : '1 Quantum = 250 g';
+}
+
+export function formatContextAwareStock(params: {
+  quanta: number;
+  category: UnitCategory;
+  locale?: UnitLocale;
+  wholesaleMode?: boolean;
+  packageUnitLabelSw?: string;
+  packageUnitLabelEn?: string;
+  quantaPerPackage?: number;
+  itemsPerPackage?: number;
+  itemNamePluralSw?: string;
+  itemNamePluralEn?: string;
+}): string {
+  const locale = params.locale ?? 'sw';
+  const quanta = Math.max(0, Math.round(params.quanta));
+  if (quanta <= 0) {
+    return locale === 'sw' ? '0 (Hakuna Stock)' : '0 (Out of Stock)';
+  }
+
+  if (
+    params.wholesaleMode &&
+    params.quantaPerPackage &&
+    params.quantaPerPackage > 1 &&
+    quanta >= params.quantaPerPackage
+  ) {
+    const pkgCount = Math.floor(quanta / params.quantaPerPackage);
+    const remQuanta = quanta % params.quantaPerPackage;
+    const pkgLabel =
+      locale === 'sw'
+        ? params.packageUnitLabelSw || 'Katoni'
+        : params.packageUnitLabelEn || 'Carton';
+
+    if (params.itemsPerPackage && params.itemsPerPackage > 0) {
+      const totalItems = pkgCount * params.itemsPerPackage;
+      const itemPlural =
+        locale === 'sw'
+          ? params.itemNamePluralSw || (params.category === 'VOLUME' ? 'Chupa' : 'Vipande')
+          : params.itemNamePluralEn || (params.category === 'VOLUME' ? 'Bottles' : 'Units');
+      const remPart =
+        remQuanta > 0 ? ` + ${formatQuantaMeasurement(remQuanta, params.category, locale)}` : '';
+      return `${pkgLabel} ${pkgCount} (${itemPlural} ${totalItems}${remPart})`;
+    }
+
+    const totalMeasure = formatQuantaMeasurement(
+      pkgCount * params.quantaPerPackage,
+      params.category,
+      locale,
+    );
+    const remPart =
+      remQuanta > 0 ? ` + ${formatQuantaMeasurement(remQuanta, params.category, locale)}` : '';
+    return `${pkgLabel} ${pkgCount} (${totalMeasure}${remPart})`;
+  }
+
+  const primaryMeasure = formatQuantaMeasurement(quanta, params.category, locale);
+  if (params.category === 'PACKAGING') {
+    return `${quanta} Q`;
+  }
+  const roboWord = locale === 'sw' ? 'Robo' : 'Q';
+  return `${primaryMeasure} (${quanta} ${roboWord})`;
+}
+

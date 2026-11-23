@@ -1,23 +1,40 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   Languages,
   LoaderCircle,
+  LocateFixed,
   Lock,
   LogOut,
   MapPin,
+  Navigation,
   Phone,
+  Plus,
   Save,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
+  Trash2,
   Truck,
   User,
   WifiOff,
 } from 'lucide-react';
+import L from 'leaflet';
+import { CircleMarker, MapContainer, Marker, TileLayer, useMapEvents } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
 import type { Locale } from '../data/i18n';
 import { useDataSaver } from '../context/DataSaverContext';
+import { usePWAInstall } from '../hooks/usePWAInstall';
+import { PWAInstallButton } from './PWAInstallButton';
 import {
   MODE_LABELS,
   ROLE_LABELS,
@@ -87,7 +104,176 @@ export function ProfileEditView({
   const canManageShopImage =
     profile.role === 'RETAILER' ||
     profile.role === 'WHOLESALER' ||
-    profile.role === 'SUPPLIER';
+    profile.role === 'SUPPLIER' ||
+    (profile.role as string) === 'MANUFACTURER_SUPPLIER';
+
+  const canManageMerchantLocation =
+    profile.role === 'RETAILER' ||
+    profile.role === 'WHOLESALER' ||
+    profile.role === 'SUPPLIER' ||
+    (profile.role as string) === 'MANUFACTURER_SUPPLIER';
+
+  type MerchantRouteWaypoint = { step: number; label: string; hint: string; lat?: number | null; lng?: number | null };
+  const [merchantLocation, setMerchantLocation] = useState<{
+    latitude: number;
+    longitude: number;
+    wardName: string;
+    streetLandmark: string;
+    routeWaypoints: MerchantRouteWaypoint[];
+  } | null>(null);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationSaving, setLocationSaving] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
+
+  const loadMerchantLocation = useCallback(async () => {
+    if (!canManageMerchantLocation || !SokoApiClient.hasAccessToken()) return;
+    setLocationLoading(true);
+    setLocationError(null);
+    try {
+      const res = await SokoApiClient.get<any>('/merchant/profile/location');
+      setMerchantLocation({
+        latitude: Number(res.latitude ?? 0),
+        longitude: Number(res.longitude ?? 0),
+        wardName: String(res.wardName ?? res.ward ?? ''),
+        streetLandmark: String(res.streetLandmark ?? res.streetAddress ?? ''),
+        routeWaypoints: Array.isArray(res.routeWaypoints)
+          ? res.routeWaypoints.map((w: any, i: number) => ({
+              step: typeof w?.step === 'number' ? w.step : i + 1,
+              label: String(w?.label ?? ''),
+              hint: String(w?.hint ?? ''),
+              lat: typeof w?.lat === 'number' ? w.lat : w?.lat != null && w?.lat !== '' ? Number(w.lat) : null,
+              lng: typeof w?.lng === 'number' ? w.lng : w?.lng != null && w?.lng !== '' ? Number(w.lng) : null,
+            }))
+          : [],
+      });
+    } catch (err) {
+      // Not fatal for profile page; show inline
+      if (!isSokoNetworkError(err)) {
+        setLocationError(
+          err instanceof SokoHttpError ? `HTTP ${err.status}: ${err.message}` : err instanceof Error ? err.message : String(err),
+        );
+      }
+    } finally {
+      setLocationLoading(false);
+    }
+  }, [canManageMerchantLocation]);
+
+  useEffect(() => {
+    void loadMerchantLocation();
+  }, [loadMerchantLocation]);
+
+  const handleUseCurrentLocation = () => {
+    setLocationNotice(null);
+    setLocationError(null);
+    if (!('geolocation' in navigator)) {
+      setLocationError(isSw ? 'Kifaa hakina GPS.' : 'Geolocation is unavailable on this device.');
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setMerchantLocation((prev) => ({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          wardName: prev?.wardName ?? '',
+          streetLandmark: prev?.streetLandmark ?? '',
+          routeWaypoints: prev?.routeWaypoints ?? [],
+        }));
+        setLocationNotice(isSw ? 'Eneo la sasa limechukuliwa. Hifadhi ili kusasisha ramani.' : 'Current location captured. Save to update map pin.');
+        setLocating(false);
+      },
+      () => {
+        setLocationError(isSw ? 'Imeshindikana kupata eneo la sasa.' : 'Failed to get current location.');
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 },
+    );
+  };
+
+  const handleSaveMerchantLocation = async () => {
+    if (!merchantLocation) return;
+    setLocationSaving(true);
+    setLocationError(null);
+    setLocationNotice(null);
+    try {
+      const payload = {
+        latitude: Number(merchantLocation.latitude),
+        longitude: Number(merchantLocation.longitude),
+        wardName: (merchantLocation.wardName || '').trim(),
+        streetLandmark: (merchantLocation.streetLandmark || '').trim(),
+        routeWaypoints: (merchantLocation.routeWaypoints || [])
+          .map((w, i) => ({
+            step: i + 1,
+            label: String(w.label || '').trim(),
+            hint: String(w.hint || '').trim(),
+            ...(typeof w.lat === 'number' && !Number.isNaN(w.lat) ? { lat: w.lat } : {}),
+            ...(typeof w.lng === 'number' && !Number.isNaN(w.lng) ? { lng: w.lng } : {}),
+          }))
+          .filter((w) => w.label || w.hint),
+      };
+      const res = await SokoApiClient.patch<any>('/merchant/profile/location', payload);
+      setMerchantLocation({
+        latitude: Number(res.latitude ?? payload.latitude),
+        longitude: Number(res.longitude ?? payload.longitude),
+        wardName: String(res.wardName ?? payload.wardName ?? ''),
+        streetLandmark: String(res.streetLandmark ?? payload.streetLandmark ?? ''),
+        routeWaypoints: Array.isArray(res.routeWaypoints)
+          ? res.routeWaypoints.map((w: any, i: number) => ({
+              step: typeof w?.step === 'number' ? w.step : i + 1,
+              label: String(w?.label ?? ''),
+              hint: String(w?.hint ?? ''),
+              lat: typeof w?.lat === 'number' ? w.lat : null,
+              lng: typeof w?.lng === 'number' ? w.lng : null,
+            }))
+          : payload.routeWaypoints,
+      });
+      setLocationNotice(isSw ? 'Mahali pa duka na alama za njia vimehifadhiwa.' : 'Store location and route markers saved.');
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setLocationError(isSw ? 'Hakuna muunganisho na SokoKuu API.' : 'SokoKuu API is unreachable.');
+      } else {
+        setLocationError(
+          err instanceof SokoHttpError ? `HTTP ${err.status}: ${err.message}` : err instanceof Error ? err.message : 'Failed to save location.',
+        );
+      }
+    } finally {
+      setLocationSaving(false);
+    }
+  };
+
+  const addRouteWaypoint = () => {
+    setMerchantLocation((prev) => {
+      if (!prev) return prev;
+      const nextStep = (prev.routeWaypoints?.length ?? 0) + 1;
+      return {
+        ...prev,
+        routeWaypoints: [
+          ...(prev.routeWaypoints ?? []),
+          { step: nextStep, label: '', hint: '', lat: null, lng: null },
+        ],
+      };
+    });
+  };
+
+  const updateRouteWaypoint = (index: number, patch: Partial<MerchantRouteWaypoint>) => {
+    setMerchantLocation((prev) => {
+      if (!prev) return prev;
+      const list = [...(prev.routeWaypoints ?? [])];
+      list[index] = { ...list[index], ...patch };
+      return { ...prev, routeWaypoints: list.map((w, i) => ({ ...w, step: i + 1 })) };
+    });
+  };
+
+  const removeRouteWaypoint = (index: number) => {
+    setMerchantLocation((prev) => {
+      if (!prev) return prev;
+      const list = [...(prev.routeWaypoints ?? [])];
+      list.splice(index, 1);
+      return { ...prev, routeWaypoints: list.map((w, i) => ({ ...w, step: i + 1 })) };
+    });
+  };
 
   useEffect(() => {
     setForm({
@@ -176,6 +362,7 @@ export function ProfileEditView({
           fullName?: string;
           role?: UserProfile['role'];
           preferredLocale?: string;
+          preferredLanguage?: string;
         };
         businessProfile?: {
           id?: string;
@@ -222,7 +409,11 @@ export function ProfileEditView({
         role,
         mode: mapTierToAccountMode(role, tier),
         preferredLocale:
-          (res.user?.preferredLocale as Locale | undefined) ??
+          ((res.user?.preferredLanguage ?? res.user?.preferredLocale) as Locale | undefined) ??
+          (form.preferredLocale as Locale | undefined) ??
+          locale,
+        preferredLanguage:
+          ((res.user?.preferredLanguage ?? res.user?.preferredLocale) as Locale | undefined) ??
           (form.preferredLocale as Locale | undefined) ??
           locale,
       };
@@ -701,6 +892,187 @@ export function ProfileEditView({
           </button>
         </div>
       </form>
+
+      {canManageMerchantLocation && (
+        <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                <span>{isSw ? 'Mahali Duka Lilipo & Alama za Njia (Store Map Pin & Driver Markers)' : 'Store Map Pin & Driver Route Markers'}</span>
+              </h2>
+              <p className="text-xs text-slate-600">
+                {isSw
+                  ? 'Weka pini ya GPS ya duka, maelezo ya eneo, na alama za njia ili madereva wafike kwa urahisi.'
+                  : 'Set your store GPS pin, area details, and ordered route markers to help drivers reach you easily.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleUseCurrentLocation}
+                disabled={locating}
+                className="min-h-[40px] px-3 py-2 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+              >
+                {locating ? <LoaderCircle className="w-4 h-4 animate-spin" aria-hidden="true" /> : <LocateFixed className="w-4 h-4" aria-hidden="true" />}
+                <span>{isSw ? 'Weka Pini (GPS ya Sasa)' : '1-tap Geolocation Pin'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSaveMerchantLocation()}
+                disabled={locationSaving || !merchantLocation}
+                className="min-h-[40px] px-4 py-2 text-xs font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+              >
+                {locationSaving ? <LoaderCircle className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Save className="w-4 h-4" aria-hidden="true" />}
+                <span>{isSw ? 'Hifadhi Mahali' : 'Save Location'}</span>
+              </button>
+            </div>
+          </div>
+
+          {locationError && (
+            <div role="alert" className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs font-semibold text-red-900">{locationError}</div>
+          )}
+          {locationNotice && (
+            <div role="status" className="border border-emerald-200 bg-emerald-50 rounded-lg p-3 text-xs font-semibold text-emerald-900">{locationNotice}</div>
+          )}
+
+          {locationLoading ? (
+            <div className="text-sm text-slate-600 py-4 inline-flex items-center gap-2"><LoaderCircle className="w-4 h-4 animate-spin" /> {isSw ? 'Inapakia mahali pa duka...' : 'Loading store location...'}</div>
+          ) : merchantLocation ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold text-slate-700">Latitude</span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={merchantLocation.latitude}
+                        onChange={(e) => setMerchantLocation((p) => (p ? { ...p, latitude: Number(e.target.value) } : p))}
+                        className="w-full min-h-[40px] px-3 text-sm bg-white border border-slate-300 rounded-md text-slate-900"
+                      />
+                    </label>
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold text-slate-700">Longitude</span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={merchantLocation.longitude}
+                        onChange={(e) => setMerchantLocation((p) => (p ? { ...p, longitude: Number(e.target.value) } : p))}
+                        className="w-full min-h-[40px] px-3 text-sm bg-white border border-slate-300 rounded-md text-slate-900"
+                      />
+                    </label>
+                  </div>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-semibold text-slate-700">{isSw ? 'Jina la Kata / Eneo (Ward Name)' : 'Ward Name'}</span>
+                    <input
+                      type="text"
+                      value={merchantLocation.wardName}
+                      onChange={(e) => setMerchantLocation((p) => (p ? { ...p, wardName: e.target.value } : p))}
+                      className="w-full min-h-[40px] px-3 text-sm bg-white border border-slate-300 rounded-md text-slate-900"
+                      placeholder={isSw ? 'Mfano: Kariakoo' : 'e.g. Kariakoo'}
+                    />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-semibold text-slate-700">{isSw ? 'Alama ya Mtaa / Maelekezo (Street Landmark)' : 'Street Landmark'}</span>
+                    <input
+                      type="text"
+                      value={merchantLocation.streetLandmark}
+                      onChange={(e) => setMerchantLocation((p) => (p ? { ...p, streetLandmark: e.target.value } : p))}
+                      className="w-full min-h-[40px] px-3 text-sm bg-white border border-slate-300 rounded-md text-slate-900"
+                      placeholder={isSw ? 'Mfano: Karibu na kituo cha daladala' : 'e.g. Near the bus stop'}
+                    />
+                  </label>
+                </div>
+                <div className="rounded-lg border border-slate-200 overflow-hidden h-[260px]">
+                  {Number.isFinite(merchantLocation.latitude) && Number.isFinite(merchantLocation.longitude) ? (
+                    <MapContainer
+                      center={[merchantLocation.latitude, merchantLocation.longitude]}
+                      zoom={15}
+                      style={{ height: '100%', width: '100%' }}
+                      scrollWheelZoom={false}
+                    >
+                      <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                      <Marker position={[merchantLocation.latitude, merchantLocation.longitude]} />
+                      {(merchantLocation.routeWaypoints || []).map((w, i) =>
+                        typeof w.lat === 'number' && typeof w.lng === 'number' ? (
+                          <CircleMarker key={`wp-${i}`} center={[w.lat, w.lng]} radius={8} pathOptions={{ color: '#0054A6', fillColor: '#0054A6', fillOpacity: 0.9 }} />
+                        ) : null,
+                      )}
+                    </MapContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-xs text-slate-500 bg-slate-50">
+                      {isSw ? 'Weka lat/lng au tumia GPS kuonyesha ramani.' : 'Set lat/lng or use GPS to preview the map.'}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                    <Navigation className="w-4 h-4 text-[#0054A6]" aria-hidden="true" />
+                    <span>{isSw ? 'Alama za Njia kwa Mpangilio (Route Markers)' : 'Ordered Route Markers'}</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={addRouteWaypoint}
+                    className="min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{isSw ? '+ Ongeza Alama ya Njia (Add Route Marker)' : '+ Add Route Marker'}</span>
+                  </button>
+                </div>
+                {(merchantLocation.routeWaypoints || []).length === 0 ? (
+                  <p className="text-xs text-slate-500">{isSw ? 'Hakuna alama za njia bado. Ongeza maelekezo ya kufika dukani.' : 'No route markers yet. Add directions to help drivers find your store.'}</p>
+                ) : (
+                  <div className="space-y-3">
+                    {merchantLocation.routeWaypoints.map((wp, idx) => (
+                      <div key={idx} className="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-[#0054A6] text-white text-xs font-bold">{idx + 1}</span>
+                          <button type="button" onClick={() => removeRouteWaypoint(idx)} className="text-red-700 hover:text-red-900 inline-flex items-center gap-1 text-xs cursor-pointer">
+                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>{isSw ? 'Ondoa' : 'Remove'}</span>
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <label className="block space-y-1">
+                            <span className="text-[11px] font-semibold text-slate-700">{isSw ? 'Jina la Alama (Label)' : 'Label'}</span>
+                            <input type="text" value={wp.label} onChange={(e) => updateRouteWaypoint(idx, { label: e.target.value })} className="w-full min-h-[36px] px-2.5 text-xs bg-white border border-slate-300 rounded-md" placeholder={isSw ? 'Mfano: Geuka kulia sokoni' : 'e.g. Turn right at the market'} />
+                          </label>
+                          <label className="block space-y-1">
+                            <span className="text-[11px] font-semibold text-slate-700">{isSw ? 'Maelekezo (Hint)' : 'Hint'}</span>
+                            <input type="text" value={wp.hint} onChange={(e) => updateRouteWaypoint(idx, { hint: e.target.value })} className="w-full min-h-[36px] px-2.5 text-xs bg-white border border-slate-300 rounded-md" placeholder={isSw ? 'Maelezo mafupi ya njia' : 'Short direction hint'} />
+                          </label>
+                          <label className="block space-y-1">
+                            <span className="text-[11px] font-semibold text-slate-700">Lat ({isSw ? 'hiari' : 'optional'})</span>
+                            <input type="number" step="any" value={wp.lat ?? ''} onChange={(e) => updateRouteWaypoint(idx, { lat: e.target.value === '' ? null : Number(e.target.value) })} className="w-full min-h-[36px] px-2.5 text-xs bg-white border border-slate-300 rounded-md" />
+                          </label>
+                          <label className="block space-y-1">
+                            <span className="text-[11px] font-semibold text-slate-700">Lng ({isSw ? 'hiari' : 'optional'})</span>
+                            <input type="number" step="any" value={wp.lng ?? ''} onChange={(e) => updateRouteWaypoint(idx, { lng: e.target.value === '' ? null : Number(e.target.value) })} className="w-full min-h-[36px] px-2.5 text-xs bg-white border border-slate-300 rounded-md" />
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-slate-600">
+              {isSw ? 'Hakuna data ya mahali pa duka bado. Tumia GPS au weka taarifa kisha uhifadhi.' : 'No store location data yet. Use GPS or enter details and save.'}
+              <div className="mt-2">
+                <button type="button" onClick={() => setMerchantLocation({ latitude: -6.7924, longitude: 39.2083, wardName: '', streetLandmark: '', routeWaypoints: [] })} className="text-emerald-700 font-semibold hover:underline cursor-pointer">
+                  {isSw ? 'Anza kuweka mahali pa duka' : 'Start setting store location'}
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -720,6 +1092,7 @@ export function SettingsView({
 }) {
   const isSw = locale === 'sw';
   const { isLowDataModeActive, toggleLowDataMode } = useDataSaver();
+  const { isInstalled: isPwaInstalled } = usePWAInstall();
   const [savedFlag, setSavedFlag] = useState(false);
 
   const togglePref = (field: 'smsAlertsEnabled' | 'offlineSmsFallbackEnabled') => {
@@ -917,7 +1290,10 @@ export function SettingsView({
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
             <button
               type="button"
-              onClick={() => onSetLocale('sw')}
+              onClick={() => {
+                onSetLocale('sw');
+                setSavedFlag(true);
+              }}
               className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
                 locale === 'sw' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
               }`}
@@ -926,7 +1302,10 @@ export function SettingsView({
             </button>
             <button
               type="button"
-              onClick={() => onSetLocale('en')}
+              onClick={() => {
+                onSetLocale('en');
+                setSavedFlag(true);
+              }}
               className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
                 locale === 'en' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
               }`}
@@ -1180,6 +1559,25 @@ export function SettingsView({
                     : isSw ? 'Imezimwa' : 'Disabled'}
               </span>
             </label>
+          </div>
+        )}
+
+        {!isPwaInstalled && (
+          <div className="p-5 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <Smartphone className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {isSw ? 'Sakinisha SokoKuu kwenye Simu' : 'Install SokoKuu on Your Phone'}
+                </div>
+                <div className="text-xs text-slate-500">
+                  {isSw
+                    ? 'Weka app kwenye home screen yako ili ifunguke haraka na ifanye kazi hata nje ya mtandao.'
+                    : 'Add the app to your home screen for quick access and offline support.'}
+                </div>
+              </div>
+            </div>
+            <PWAInstallButton locale={locale} />
           </div>
         )}
       </div>

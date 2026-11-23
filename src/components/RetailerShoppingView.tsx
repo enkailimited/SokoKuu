@@ -2,8 +2,9 @@ import type { Locale } from '../data/i18n';
 import { SokoniCoreEngine } from './SokoniCoreEngine';
 import { InventoryAndUnitManager } from './InventoryAndUnitManager';
 import { FullPageMarketplaceMap } from './FullPageMarketplaceMap';
+import { MerchantWarehouseView } from './MerchantWarehouseView';
 
-export type RetailerTab = 'pos_register' | 'inventory_shelf' | 'core_engine' | 'proximity_map';
+export type RetailerTab = 'warehouse' | 'pos_register' | 'inventory_shelf' | 'core_engine' | 'proximity_map';
 
 export function RetailerShoppingView({
   locale = 'en',
@@ -12,6 +13,9 @@ export function RetailerShoppingView({
   userTier = null,
   businessId,
   onRedirectToWorkspace,
+  onOpenSokoni,
+  sokoniInitialCatalogId = null,
+  onClearSokoniCatalogFilter,
 }: {
   locale?: Locale;
   activeTab?: RetailerTab;
@@ -19,14 +23,28 @@ export function RetailerShoppingView({
   userTier?: string | null;
   businessId?: string | null;
   onRedirectToWorkspace?: () => void;
+  onOpenSokoni?: (globalCatalogId?: string | null) => void;
+  sokoniInitialCatalogId?: string | null;
+  onClearSokoniCatalogFilter?: () => void;
 }) {
+  const containerClass =
+    activeTab === 'inventory_shelf' || activeTab === 'warehouse'
+      ? 'max-w-5xl mx-auto space-y-5'
+      : activeTab === 'proximity_map'
+        ? 'max-w-4xl mx-auto space-y-5'
+        : 'max-w-2xl mx-auto space-y-5';
+
   return (
-    <div className={activeTab === 'proximity_map' ? 'max-w-4xl mx-auto space-y-5' : 'max-w-2xl mx-auto space-y-5'}>
+    <div className={containerClass}>
+      {activeTab === 'warehouse' && <MerchantWarehouseView locale={locale} />}
       {activeTab === 'pos_register' && (
         <InventoryAndUnitManager
           locale={locale}
           activeSection="pos_register"
           businessId={businessId}
+          userRole={userRole}
+          userTier={userTier}
+          onOpenSokoni={onOpenSokoni}
         />
       )}
       {activeTab === 'inventory_shelf' && (
@@ -34,10 +52,19 @@ export function RetailerShoppingView({
           locale={locale}
           activeSection="inventory_shelf"
           businessId={businessId}
+          userRole={userRole}
+          userTier={userTier}
+          onOpenSokoni={onOpenSokoni}
         />
       )}
       {activeTab === 'core_engine' && (
-        <SokoniCoreEngine locale={locale} userRole={userRole} userTier={userTier} />
+        <SokoniCoreEngine
+          locale={locale}
+          userRole={userRole}
+          userTier={userTier}
+          initialGlobalCatalogId={sokoniInitialCatalogId}
+          onClearInitialCatalogFilter={onClearSokoniCatalogFilter}
+        />
       )}
       {activeTab === 'proximity_map' && (
         <FullPageMarketplaceMap

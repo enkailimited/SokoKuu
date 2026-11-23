@@ -88,6 +88,13 @@ enum OrderOrigin {
   @@map("order_origin")
 }
 
+enum OrderMode {
+  INSTANT
+  SCHEDULED
+
+  @@map("order_mode")
+}
+
 enum LedgerVerificationStatus {
   PENDING
   WAITING
@@ -152,9 +159,10 @@ model User {
   phoneE164       String   @unique @map("phone_e164") @db.VarChar(16)
   fullName        String   @map("full_name") @db.VarChar(150)
   passwordHash    String   @map("password_hash") @db.VarChar(255)
-  role            UserRole
-  preferredLocale String   @default("sw") @map("preferred_locale") @db.VarChar(5)
-  smsHmacSecret   String   @map("sms_hmac_secret") @db.VarChar(128)
+  role              UserRole
+  preferredLocale   String   @default("sw") @map("preferred_locale") @db.VarChar(5)
+  preferredLanguage String   @default("sw") @map("preferred_language") @db.VarChar(5)
+  smsHmacSecret     String   @map("sms_hmac_secret") @db.VarChar(128)
   isActive        Boolean  @default(true) @map("is_active")
   version         BigInt   @default(0)
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -219,6 +227,13 @@ model BusinessProfile {
   standardDeliveryFeeTzs BigInt                              @default(0) @map("standard_delivery_fee_tzs")
   deliveryCoverageRegions String[]                           @default([]) @map("delivery_coverage_regions")
   geospatialMapEnabled Boolean                               @default(false) @map("geospatial_map_enabled")
+  wardName             String?                               @map("ward_name") @db.VarChar(140)
+  streetLandmark       String?                               @map("street_landmark") @db.VarChar(240)
+  routeWaypoints       Json                                  @default("[]") @map("route_waypoints")
+  accountStatus        String                                @default("ACTIVE") @map("account_status") @db.VarChar(32)
+  suspensionReason     String?                               @map("suspension_reason")
+  suspendedAt          DateTime?                             @map("suspended_at") @db.Timestamptz(6)
+  suspendedByAdminId   String?                               @map("suspended_by_admin_id") @db.Uuid
   version              BigInt                                @default(0)
   createdAt            DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -323,9 +338,11 @@ model MerchantClonedProduct {
   inventoryValueTzs                  BigInt   @default(0) @map("inventory_value_tzs")
   lastBuyingPricePerQuantumTzs       BigInt   @default(0) @map("last_buying_price_per_quantum_tzs")
   weightedAvgBuyingCostPerQuantumTzs BigInt   @default(0) @map("weighted_avg_buying_cost_per_quantum_tzs")
-  buyingPriceEstablished             Boolean  @default(false) @map("buying_price_established")
-  lastAgreedPurchasePriceTzs         BigInt?  @map("last_agreed_purchase_price_tzs")
-  isActive                           Boolean  @default(true) @map("is_active")
+  buyingPriceEstablished             Boolean   @default(false) @map("buying_price_established")
+  lastAgreedPurchasePriceTzs         BigInt?   @map("last_agreed_purchase_price_tzs")
+  isPublishedToMarket                Boolean   @default(false) @map("is_published_to_market")
+  isActiveForSale                    Boolean   @default(true) @map("is_active_for_sale")
+  isActive                           Boolean   @default(true) @map("is_active")
   deletedAt                          DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdAt                          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -366,6 +383,7 @@ model Product {
   wholesaleMinWeightKg       Decimal       @default(1.00) @map("wholesale_min_weight_kg") @db.Decimal(8, 2)
   wholesaleMinQuarterQuanta  Int?          @map("wholesale_min_quarter_quanta")
   lowStockThresholdQuanta    Int           @default(20) @map("low_stock_threshold_quanta")
+  isPublishedToMarket        Boolean       @default(true) @map("is_published_to_market")
   isActive                   Boolean       @default(true) @map("is_active")
   version                    BigInt        @default(0)
   createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -449,9 +467,10 @@ model Order {
   sellerBusinessId      String      @map("seller_business_id") @db.Uuid
   driverUserId          String?     @map("driver_user_id") @db.Uuid
   status                OrderStatus @default(PLACED)
-  originChannel         OrderOrigin @default(PWA_ONLINE) @map("origin_channel")
+  originChannel         OrderOrigin  @default(PWA_ONLINE) @map("origin_channel")
   orderChannel          OrderChannel @default(RETAIL_MARKETPLACE) @map("order_channel")
-  routingTargetPipeline String      @default("SUPER_ADMIN_HELPDESK_PIPELINE") @map("routing_target_pipeline") @db.VarChar(64)
+  orderMode             OrderMode    @default(INSTANT) @map("order_mode")
+  routingTargetPipeline String       @default("SUPER_ADMIN_HELPDESK_PIPELINE") @map("routing_target_pipeline") @db.VarChar(64)
   rawSmsPayload         String?     @map("raw_sms_payload") @db.VarChar(160)
   expectedTotalTzs      BigInt      @map("expected_total_tzs")
   deliveryFeeTzs        BigInt      @default(0) @map("delivery_fee_tzs")
@@ -463,6 +482,8 @@ model Order {
   deliveredAt           DateTime?   @map("delivered_at") @db.Timestamptz(6)
   cancelledAt           DateTime?   @map("cancelled_at") @db.Timestamptz(6)
   cancellationReason    String?     @map("cancellation_reason")
+  scheduledDeliveryDate DateTime?   @map("scheduled_delivery_date") @db.Date
+  deliveryZoneWard      String?     @map("delivery_zone_ward") @db.VarChar(140)
 
   buyer              User                      @relation("OrderBuyer", fields: [buyerUserId], references: [id], onDelete: Restrict)
   seller             BusinessProfile           @relation("OrderSeller", fields: [sellerBusinessId], references: [id], onDelete: Restrict)
@@ -987,6 +1008,7 @@ model ExternalPurchaseReceipt {
   businessId                         String    @map("business_id") @db.Uuid
   clonedProductId                    String    @map("cloned_product_id") @db.Uuid
   globalProductUnitId                String?   @map("global_product_unit_id") @db.Uuid
+  stockSource                        String    @default("EXTERNAL_SUPPLIER") @map("stock_source") @db.VarChar(32)
   supplierName                       String    @map("supplier_name") @db.VarChar(180)
   supplierReference                  String?   @map("supplier_reference") @db.VarChar(80)
   receiptStatus                      String    @default("GOODS_RECEIVED") @map("receipt_status") @db.VarChar(32)

@@ -275,10 +275,19 @@ export class RecordExternalPurchaseReceiptDto {
   @IsUUID()
   globalProductUnitId?: string;
 
-  @ApiProperty({ example: 'Kariakoo Millers Ltd' })
+  @ApiPropertyOptional({
+    enum: ['EXISTING_STORE_STOCK', 'EXTERNAL_SUPPLIER'],
+    default: 'EXTERNAL_SUPPLIER',
+  })
+  @IsOptional()
+  @IsIn(['EXISTING_STORE_STOCK', 'EXTERNAL_SUPPLIER'])
+  stockSource?: 'EXISTING_STORE_STOCK' | 'EXTERNAL_SUPPLIER';
+
+  @ApiPropertyOptional({ example: 'Kariakoo Millers Ltd' })
+  @IsOptional()
   @IsString()
   @MaxLength(180)
-  supplierName!: string;
+  supplierName?: string;
 
   @ApiPropertyOptional({ example: 'INV-2026-881' })
   @IsOptional()

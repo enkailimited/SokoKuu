@@ -80,7 +80,7 @@ export class AdminMerchantsController {
 
   @Patch(':businessId/suspension')
   @ApiOperation({
-    summary: 'Suspend or restore a Merchant account (blocks sign-in, closes storefront, revokes sessions)',
+    summary: 'Simamisha / Rejesha Akaunti ya Mfanyabiashara (Suspend / Reinstate Merchant)',
   })
   @ApiResponse({ status: 200, description: 'Merchant suspension status updated' })
   @ApiResponse({ status: 404, description: 'Merchant profile not found' })
@@ -94,6 +94,34 @@ export class AdminMerchantsController {
       dto,
       admin.sub,
     );
+  }
+
+  @Patch(':businessId/status')
+  @ApiOperation({
+    summary: 'Suspend or reinstate a Merchant account (policy governance status alias)',
+  })
+  @ApiResponse({ status: 200, description: 'Merchant account status updated' })
+  @ApiResponse({ status: 404, description: 'Merchant profile not found' })
+  setMerchantStatus(
+    @Param('businessId', new ParseUUIDPipe()) businessId: string,
+    @Body() dto: SetMerchantSuspensionDto,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.adminMerchantsService.setMerchantSuspension(
+      businessId,
+      dto,
+      admin.sub,
+    );
+  }
+
+  @Get(':businessId/dossier')
+  @ApiOperation({
+    summary: 'Open Merchant dossier (profile, activity, sales, orders, stock, disputes, audit)',
+  })
+  @ApiResponse({ status: 200, description: 'Merchant dossier returned' })
+  @ApiResponse({ status: 404, description: 'Merchant profile not found' })
+  getMerchantDossier(@Param('businessId', new ParseUUIDPipe()) businessId: string) {
+    return this.adminMerchantsService.getMerchantDossier(businessId);
   }
 
   @Post(':merchantId/toggle-map')

@@ -5,22 +5,28 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PackagingUnit, Prisma } from '@prisma/client';
+import { BusinessTier, OrderChannel, PackagingUnit, Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
-import { MerchantTier, TenantContext } from '@common/security/auth.types';
+import { AuthenticatedUser, MerchantTier, TenantContext } from '@common/security/auth.types';
+import { Role } from '@common/security/roles.enum';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
 import { kgToQuarterQuantaChecked } from '@modules/06-inventory/quarter-quanta.util';
 import {
   assertChannelHarmonyForCustomUnit,
   assertChannelHarmonyForTier,
+  WHOLESALE_BLOCKED_RETAIL_UNITS,
+  RETAIL_BLOCKED_BULK_UNITS,
 } from './channel-harmony.policy';
 import {
   AddGlobalCatalogItemDto,
+  BulkUpdateClonePublishStatusDto,
   CloneStandardCatalogDto,
   CreateCatalogCategoryDto,
   CreateMerchantProductDto,
+  DiscoverMerchantsDto,
   PublishMarketStockDto,
+  UpdateClonePublishStatusDto,
   UpdateFreeDeliveryDto,
   UpdateGlobalCatalogItemDto,
   UpdateMerchantCloneDto,
@@ -28,6 +34,63 @@ import {
   UpsertCustomMerchantUnitDto,
   UpsertProductPriceTierDto,
 } from './dto/catalog.dto';
+import { syncLinkedProductFromClone } from './clone-product-sync.util';
+import { deriveUnitCategory } from './unit-category.util';
+
+const DEFAULT_QPU_BY_UNIT: Record<PackagingUnit, number> = {
+  QUARTER_KILO_LITRE: 1,
+  HALF_KILO_LITRE: 2,
+  THREE_QUARTER_KILO: 3,
+  SINGLE_KILO_LITRE: 4,
+  UNIT: 4,
+  PACK: 4,
+  DOZEN: 48,
+  CARTON: 96,
+  SACK_25KG: 100,
+  SACK_50KG: 200,
+};
+
+function haversineDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const r = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(r * c * 100) / 100;
+}
+
+function mapUnitCodeToPackagingUnit(
+  unitCode: string | undefined,
+  quarterQuantaPerUnit: number,
+): PackagingUnit {
+  const code = (unitCode ?? '').toUpperCase();
+  if (code.includes('GUNIA_50') || code.includes('SACK_50')) return 'SACK_50KG';
+  if (code.includes('GUNIA_25') || code.includes('SACK_25') || code.includes('GUNIA')) {
+    return quarterQuantaPerUnit >= 200 ? 'SACK_50KG' : 'SACK_25KG';
+  }
+  if (code.includes('CARTON') || code.includes('KATONI') || code.includes('DEBE')) return 'CARTON';
+  if (code.includes('DOZEN') || code.includes('DAZANI')) return 'DOZEN';
+  if (code.includes('PACK') || code.includes('PAKI')) return 'PACK';
+  if (quarterQuantaPerUnit >= 200) return 'SACK_50KG';
+  if (quarterQuantaPerUnit >= 100) return 'SACK_25KG';
+  if (quarterQuantaPerUnit >= 96) return 'CARTON';
+  if (quarterQuantaPerUnit >= 48) return 'DOZEN';
+  if (quarterQuantaPerUnit === 1) return 'QUARTER_KILO_LITRE';
+  if (quarterQuantaPerUnit === 2) return 'HALF_KILO_LITRE';
+  if (quarterQuantaPerUnit === 3) return 'THREE_QUARTER_KILO';
+  return 'SINGLE_KILO_LITRE';
+}
 
 @Injectable()
 export class CatalogService {
@@ -44,7 +107,7 @@ export class CatalogService {
   }
 
   async listMarketplaceMerchants(tier?: string) {
-    const where: Prisma.BusinessProfileWhereInput = { isOpen: true };
+    const where: Prisma.BusinessProfileWhereInput = { isOpen: true, accountStatus: 'ACTIVE' } as any;
     if (
       tier &&
       ['WHOLESALE', 'RETAIL_DUKA', 'HYBRID_STORE', 'MANUFACTURER_SUPPLIER'].includes(
@@ -103,7 +166,14 @@ export class CatalogService {
     const clones = await this.prismaService.merchantClonedProduct.findMany({
       where: { retailerBusinessId: targetMerchantId, isActive: true },
       include: {
-        globalCatalog: true,
+        globalCatalog: {
+          include: {
+            productUnits: {
+              where: { isActive: true },
+              include: { systemUnit: true },
+            },
+          },
+        },
         unitPricingOverrides: {
           where: { isActive: true },
           include: {
@@ -116,42 +186,176 @@ export class CatalogService {
       orderBy: { updatedAt: 'desc' },
     });
 
-    return clones.map((clone) => ({
-      clonedProductId: clone.id,
-      retailerBusinessId: clone.retailerBusinessId,
-      globalCatalogId: clone.globalCatalogId,
-      canonicalSku: clone.globalCatalog.canonicalSku,
-      fixedNameSw: clone.globalCatalog.fixedNameSw,
-      fixedNameEn: clone.globalCatalog.fixedNameEn,
-      imagekitCdnUrl: clone.imagekitCdnUrl || clone.globalCatalog.imagekitCdnUrl,
-      availableQuantaStock: clone.availableQuantaStock,
-      lowStockThresholdQuanta: clone.lowStockThresholdQuanta,
-      unitPriceTzs: Number(clone.unitPriceTzs),
-      inventoryValueTzs: Number(clone.inventoryValueTzs),
-      lastBuyingPricePerQuantumTzs: Number(clone.lastBuyingPricePerQuantumTzs),
-      weightedAvgBuyingCostPerQuantumTzs: Number(clone.weightedAvgBuyingCostPerQuantumTzs),
-      buyingPriceEstablished: clone.buyingPriceEstablished,
-      unitPricingOverrides: clone.unitPricingOverrides.map((ov) => ({
-        overrideId: ov.id,
-        globalProductUnitId: ov.globalProductUnitId,
-        unitCode: ov.globalProductUnit.systemUnit.unitCode,
-        displayLabelSw:
-          ov.globalProductUnit.displayLabelSw || ov.globalProductUnit.systemUnit.nameSw,
-        displayLabelEn:
-          ov.globalProductUnit.displayLabelEn || ov.globalProductUnit.systemUnit.nameEn,
-        quarterQuantaPerUnit: ov.globalProductUnit.quarterQuantaPerUnit,
-        standardPriceId: ov.standardPriceId,
-        standardPriceVersion: ov.standardPriceVersion,
-        selectedStandardPriceTzs: ov.selectedStandardPriceTzs
-          ? Number(ov.selectedStandardPriceTzs)
-          : null,
-        amendedSellingPriceTzs: ov.amendedSellingPriceTzs
-          ? Number(ov.amendedSellingPriceTzs)
-          : null,
-        effectiveSellingPriceTzs: Number(ov.effectiveSellingPriceTzs),
-        isOverridden: ov.isOverridden,
-      })),
-    }));
+    return clones.map((clone) => {
+      const units = clone.globalCatalog.productUnits ?? [];
+      const unitCategory = deriveUnitCategory({
+        systemUnitCategories: units.map((u) => u.systemUnit.category),
+        baseQuantumUnit: clone.globalCatalog.baseQuantumUnit,
+        categoryCode: clone.globalCatalog.categoryCode,
+      });
+
+      const baseOverride =
+        clone.unitPricingOverrides.find((ov) => ov.globalProductUnit.quarterQuantaPerUnit === 4) ??
+        clone.unitPricingOverrides[0];
+      const sellingPriceTzs =
+        Number(clone.unitPriceTzs) > 0
+          ? Number(clone.unitPriceTzs)
+          : baseOverride
+            ? Number(baseOverride.effectiveSellingPriceTzs)
+            : 0;
+
+      return {
+        clonedProductId: clone.id,
+        retailerBusinessId: clone.retailerBusinessId,
+        globalCatalogId: clone.globalCatalogId,
+        canonicalSku: clone.globalCatalog.canonicalSku,
+        categoryCode: clone.globalCatalog.categoryCode,
+        baseQuantumUnit: clone.globalCatalog.baseQuantumUnit,
+        unitCategory,
+        fixedNameSw: clone.globalCatalog.fixedNameSw,
+        fixedNameEn: clone.globalCatalog.fixedNameEn,
+        imagekitCdnUrl: clone.imagekitCdnUrl || clone.globalCatalog.imagekitCdnUrl,
+        availableQuantaStock: clone.availableQuantaStock,
+        lowStockThresholdQuanta: clone.lowStockThresholdQuanta,
+        unitPriceTzs: Number(clone.unitPriceTzs),
+        sellingPriceTzs,
+        inventoryValueTzs: Number(clone.inventoryValueTzs),
+        lastBuyingPricePerQuantumTzs: Number(clone.lastBuyingPricePerQuantumTzs),
+        weightedAvgBuyingCostPerQuantumTzs: Number(clone.weightedAvgBuyingCostPerQuantumTzs),
+        buyingPriceEstablished: clone.buyingPriceEstablished,
+        isPublishedToMarket: clone.isPublishedToMarket,
+        isActiveForSale: clone.isActiveForSale,
+        unitPricingOverrides: clone.unitPricingOverrides.map((ov) => ({
+          overrideId: ov.id,
+          globalProductUnitId: ov.globalProductUnitId,
+          unitCode: ov.globalProductUnit.systemUnit.unitCode,
+          category: ov.globalProductUnit.systemUnit.category,
+          abbreviation: ov.globalProductUnit.systemUnit.abbreviation,
+          displayLabelSw:
+            ov.globalProductUnit.displayLabelSw || ov.globalProductUnit.systemUnit.nameSw,
+          displayLabelEn:
+            ov.globalProductUnit.displayLabelEn || ov.globalProductUnit.systemUnit.nameEn,
+          quarterQuantaPerUnit: ov.globalProductUnit.quarterQuantaPerUnit,
+          standardPriceId: ov.standardPriceId,
+          standardPriceVersion: ov.standardPriceVersion,
+          selectedStandardPriceTzs: ov.selectedStandardPriceTzs
+            ? Number(ov.selectedStandardPriceTzs)
+            : null,
+          amendedSellingPriceTzs: ov.amendedSellingPriceTzs
+            ? Number(ov.amendedSellingPriceTzs)
+            : null,
+          effectiveSellingPriceTzs: Number(ov.effectiveSellingPriceTzs),
+          isOverridden: ov.isOverridden,
+        })),
+      };
+    });
+  }
+
+  async updateMerchantClonePublishStatus(
+    clonedProductId: string,
+    dto: UpdateClonePublishStatusDto,
+    tenantContext?: TenantContext,
+  ) {
+    if (!tenantContext?.isSuperAdmin && !tenantContext?.businessId) {
+      throw new ForbiddenException(
+        'Authenticated Merchant tenant context is required to update market visibility.',
+      );
+    }
+
+    return this.prismaService.runInTransaction('Serializable', async (tx) => {
+      const existing = await tx.merchantClonedProduct.findUnique({
+        where: { id: clonedProductId },
+        include: {
+          globalCatalog: {
+            select: { fixedNameSw: true, fixedNameEn: true },
+          },
+          unitPricingOverrides: {
+            where: { isActive: true },
+            select: { effectiveSellingPriceTzs: true },
+          },
+        },
+      });
+
+      if (!existing || !existing.isActive) {
+        throw new NotFoundException(`Cloned catalog item ${clonedProductId} was not found.`);
+      }
+
+      this.assertTenantOwnership(existing.retailerBusinessId, tenantContext, 'publish');
+
+      const hasActiveOverridePrice = existing.unitPricingOverrides.some(
+        (ov) => Number(ov.effectiveSellingPriceTzs) > 0,
+      );
+      const hasSellingPrice = Number(existing.unitPriceTzs) > 0 || hasActiveOverridePrice;
+
+      if (dto.isPublishedToMarket) {
+        if (existing.availableQuantaStock <= 0) {
+          throw new BadRequestException(
+            `Bidhaa "${existing.globalCatalog.fixedNameSw}" haina stock (0 Quanta). Ingiza mzigo kwanza kabla ya kupeleka Sokoni / Product must have stock (> 0) before publishing to Sokoni Market.`,
+          );
+        }
+        if (!hasSellingPrice) {
+          throw new BadRequestException(
+            `Bidhaa "${existing.globalCatalog.fixedNameSw}" haijawekewa bei ya kuuzia (> 0 TZS). Chagua au rekebisha bei kwanza / Set a selling price (> 0 TZS) before publishing to Sokoni Market.`,
+          );
+        }
+      }
+
+      const nextIsActiveForSale =
+        dto.isActiveForSale !== undefined ? dto.isActiveForSale : dto.isPublishedToMarket;
+
+      const updated = await tx.merchantClonedProduct.update({
+        where: { id: clonedProductId },
+        data: {
+          isPublishedToMarket: dto.isPublishedToMarket,
+          isActiveForSale: nextIsActiveForSale,
+        },
+      });
+
+      await syncLinkedProductFromClone(tx, clonedProductId);
+
+      return {
+        clonedProductId: updated.id,
+        retailerBusinessId: updated.retailerBusinessId,
+        isPublishedToMarket: updated.isPublishedToMarket,
+        isActiveForSale: updated.isActiveForSale,
+        availableQuantaStock: updated.availableQuantaStock,
+        sellingPriceTzs: Number(updated.unitPriceTzs),
+        updatedAtEat: updated.updatedAt.toISOString(),
+      };
+    });
+  }
+
+  async bulkUpdateMerchantClonePublishStatus(
+    dto: BulkUpdateClonePublishStatusDto,
+    tenantContext?: TenantContext,
+  ) {
+    const results: Array<{
+      clonedProductId: string;
+      isPublishedToMarket: boolean;
+      isActiveForSale: boolean;
+    }> = [];
+
+    for (const clonedProductId of dto.clonedProductIds) {
+      const updated = await this.updateMerchantClonePublishStatus(
+        clonedProductId,
+        {
+          isPublishedToMarket: dto.isPublishedToMarket,
+          isActiveForSale: dto.isPublishedToMarket,
+        },
+        tenantContext,
+      );
+      results.push({
+        clonedProductId: updated.clonedProductId,
+        isPublishedToMarket: updated.isPublishedToMarket,
+        isActiveForSale: updated.isActiveForSale,
+      });
+    }
+
+    return {
+      updatedCount: results.length,
+      isPublishedToMarket: dto.isPublishedToMarket,
+      results,
+    };
   }
 
   async createCategory(dto: CreateCatalogCategoryDto) {
@@ -254,11 +458,19 @@ export class CatalogService {
     };
   }
 
-  async listGlobalCatalog(categoryCode?: string, q?: string) {
+  async listGlobalCatalog(categoryCode?: string, q?: string, categoryCodes?: string) {
     const where: Prisma.SokoGlobalCatalogWhereInput = { isActive: true };
-    if (categoryCode) {
+    const codeList = (categoryCodes ?? '')
+      .split(',')
+      .map((c) => c.trim().toUpperCase())
+      .filter((c) => c.length > 0 && c !== 'ALL');
+
+    if (codeList.length > 0) {
+      where.categoryCode = { in: codeList };
+    } else if (categoryCode && categoryCode.trim().toUpperCase() !== 'ALL') {
       where.categoryCode = categoryCode.trim().toUpperCase();
     }
+
     if (q && q.trim().length > 0) {
       const term = q.trim();
       where.OR = [
@@ -270,14 +482,562 @@ export class CatalogService {
 
     const items = await this.prismaService.sokoGlobalCatalog.findMany({
       where,
+      include: {
+        productUnits: {
+          where: { isActive: true },
+          include: { systemUnit: true },
+          orderBy: { quarterQuantaPerUnit: 'asc' },
+        },
+        standardPrices: {
+          where: { isActive: true },
+          include: {
+            globalProductUnit: {
+              include: { systemUnit: true },
+            },
+          },
+          orderBy: [{ version: 'desc' }, { minQty: 'asc' }],
+        },
+      },
       orderBy: [{ clonedByStoresCount: 'desc' }, { fixedNameSw: 'asc' }],
       take: 200,
     });
 
-    return items.map((item) => ({
-      ...item,
-      clonedByStoresCount: Number(item.clonedByStoresCount),
-    }));
+    return items.map((item) => {
+      const units = item.productUnits ?? [];
+      const unitCategory = deriveUnitCategory({
+        systemUnitCategories: units.map((u) => u.systemUnit.category),
+        baseQuantumUnit: item.baseQuantumUnit,
+        categoryCode: item.categoryCode,
+      });
+      const stdRetail = (item.standardPrices ?? []).find((p) => p.profileType === 'RETAIL');
+      const stdWholesale = (item.standardPrices ?? []).find((p) => p.profileType === 'WHOLESALE');
+
+      return {
+        ...item,
+        clonedByStoresCount: Number(item.clonedByStoresCount),
+        unitCategory,
+        availableUnits: units.map((u) => ({
+          id: u.id,
+          unitCode: u.systemUnit.unitCode,
+          category: u.systemUnit.category,
+          abbreviation: u.systemUnit.abbreviation,
+          displayLabelSw: u.displayLabelSw || u.systemUnit.nameSw,
+          displayLabelEn: u.displayLabelEn || u.systemUnit.nameEn,
+          quarterQuantaPerUnit: u.quarterQuantaPerUnit,
+          isWholesaleUnit: u.isWholesaleUnit,
+        })),
+        standardPrices: (item.standardPrices ?? []).map((sp) => ({
+          id: sp.id,
+          globalProductUnitId: sp.globalProductUnitId,
+          profileType: sp.profileType,
+          minQty: sp.minQty,
+          maxQty: sp.maxQty,
+          standardPriceTzs: Number(sp.standardPriceTzs),
+        })),
+        standardRetailPriceTzs: stdRetail ? Number(stdRetail.standardPriceTzs) : null,
+        standardRetailUnitLabelSw:
+          stdRetail?.globalProductUnit?.displayLabelSw ||
+          stdRetail?.globalProductUnit?.systemUnit?.nameSw ||
+          null,
+        standardWholesalePriceTzs: stdWholesale ? Number(stdWholesale.standardPriceTzs) : null,
+        standardWholesaleUnitLabelSw:
+          stdWholesale?.globalProductUnit?.displayLabelSw ||
+          stdWholesale?.globalProductUnit?.systemUnit?.nameSw ||
+          null,
+      };
+    });
+  }
+
+  async discoverMerchants(
+    dto: DiscoverMerchantsDto,
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    const requestedByCatalog = new Map<
+      string,
+      { globalCatalogId: string; systemUnitId?: string; quantity: number }
+    >();
+    for (const line of dto.items) {
+      const existing = requestedByCatalog.get(line.globalCatalogId);
+      if (existing) {
+        existing.quantity += line.quantity;
+        if (!existing.systemUnitId && line.systemUnitId) {
+          existing.systemUnitId = line.systemUnitId;
+        }
+      } else {
+        requestedByCatalog.set(line.globalCatalogId, {
+          globalCatalogId: line.globalCatalogId,
+          systemUnitId: line.systemUnitId,
+          quantity: line.quantity,
+        });
+      }
+    }
+
+    const requestedItems = Array.from(requestedByCatalog.values());
+    const catalogIds = requestedItems.map((item) => item.globalCatalogId);
+
+    // Resolve buyer GPS (DTO -> buyer businessProfile -> Dar es Salaam center)
+    let buyerLat = dto.latitude;
+    let buyerLng = dto.longitude;
+    const buyerBusinessId = tenantContext?.businessId ?? null;
+
+    if (buyerLat === undefined || buyerLng === undefined) {
+      const buyerProfile = buyerBusinessId
+        ? await this.prismaService.businessProfile.findUnique({
+            where: { id: buyerBusinessId },
+            select: { latitude: true, longitude: true },
+          })
+        : await this.prismaService.businessProfile.findFirst({
+            where: { ownerUserId: user.sub },
+            orderBy: { createdAt: 'asc' },
+            select: { latitude: true, longitude: true },
+          });
+      if (buyerProfile) {
+        buyerLat = Number(buyerProfile.latitude);
+        buyerLng = Number(buyerProfile.longitude);
+      }
+    }
+    const finalBuyerLat = Number.isFinite(buyerLat) ? Number(buyerLat) : -6.816;
+    const finalBuyerLng = Number.isFinite(buyerLng) ? Number(buyerLng) : 39.28;
+
+    // Channel eligibility matrix
+    const buyerTier = tenantContext?.tier ?? null;
+    let eligibleTiers: BusinessTier[];
+    if (user.role === Role.WHOLESALER || buyerTier === 'WHOLESALE') {
+      eligibleTiers = [BusinessTier.MANUFACTURER_SUPPLIER];
+    } else if (buyerTier === 'HYBRID_STORE') {
+      eligibleTiers = [BusinessTier.MANUFACTURER_SUPPLIER, BusinessTier.WHOLESALE];
+    } else if (user.role === Role.RETAILER) {
+      eligibleTiers = [BusinessTier.WHOLESALE, BusinessTier.HYBRID_STORE];
+    } else if (user.role === Role.CONSUMER) {
+      eligibleTiers = [BusinessTier.RETAIL_DUKA, BusinessTier.HYBRID_STORE];
+    } else {
+      eligibleTiers = [
+        BusinessTier.WHOLESALE,
+        BusinessTier.HYBRID_STORE,
+        BusinessTier.RETAIL_DUKA,
+        BusinessTier.MANUFACTURER_SUPPLIER,
+      ];
+    }
+
+    const [catalogRecords, candidateMerchants] = await Promise.all([
+      this.prismaService.sokoGlobalCatalog.findMany({
+        where: { id: { in: catalogIds }, isActive: true },
+        include: {
+          productUnits: {
+            where: { isActive: true },
+            include: { systemUnit: true },
+          },
+        },
+      }),
+      this.prismaService.businessProfile.findMany({
+        where: {
+          accountStatus: 'ACTIVE',
+          isOpen: true,
+          tier: { in: eligibleTiers },
+          owner: { isActive: true },
+          ...(buyerBusinessId ? { id: { not: buyerBusinessId } } : {}),
+        },
+        select: {
+          id: true,
+          businessName: true,
+          tier: true,
+          ward: true,
+          district: true,
+          latitude: true,
+          longitude: true,
+          logoCdnUrl: true,
+          offersFreeDelivery: true,
+          isFreeDeliveryEnabled: true,
+          freeDeliveryMinOrderTzs: true,
+          standardDeliveryFeeTzs: true,
+        },
+      }),
+    ]);
+
+    const catalogMap = new Map(catalogRecords.map((item) => [item.id, item]));
+    const merchantIds = candidateMerchants.map((m) => m.id);
+
+    if (merchantIds.length === 0 || catalogMap.size === 0) {
+      return {
+        buyerLocation: { latitude: finalBuyerLat, longitude: finalBuyerLng },
+        requestedCount: requestedItems.length,
+        matchedMerchantsCount: 0,
+        merchants: [],
+      };
+    }
+
+    // PostGIS proximity distance calculation
+    const distanceMap = new Map<string, number>();
+    try {
+      const distanceRows = await this.prismaService.$queryRaw<
+        Array<{ id: string; distance_km: number }>
+      >`
+        SELECT id::text AS id,
+               ROUND((ST_Distance(
+                 location,
+                 ST_SetSRID(ST_MakePoint(${finalBuyerLng}::double precision, ${finalBuyerLat}::double precision), 4326)::geography
+               ) / 1000.0)::numeric, 2)::float8 AS distance_km
+          FROM business_profiles
+         WHERE account_status = 'ACTIVE'
+           AND is_open = TRUE
+           AND location IS NOT NULL
+      `;
+      for (const row of distanceRows) {
+        distanceMap.set(row.id, Number(row.distance_km));
+      }
+    } catch {
+      // Fallback to Haversine below if spatial extension query is unavailable in mock/test contexts
+    }
+
+    const [sellerProducts, supplierListings] = await Promise.all([
+      this.prismaService.product.findMany({
+        where: {
+          sellerBusinessId: { in: merchantIds },
+          globalCatalogId: { in: catalogIds },
+          isActive: true,
+          isPublishedToMarket: true,
+        },
+        include: {
+          priceTiers: {
+            where: { isActive: true },
+            orderBy: { quarterQuantaPerUnit: 'asc' },
+          },
+        },
+      }),
+      eligibleTiers.includes(BusinessTier.MANUFACTURER_SUPPLIER)
+        ? this.prismaService.supplierCatalogListing.findMany({
+            where: {
+              supplierBusinessId: { in: merchantIds },
+              globalCatalogId: { in: catalogIds },
+              isPublishedToMarket: true,
+            },
+            include: { systemUnit: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const productByMerchantCatalog = new Map<string, (typeof sellerProducts)[number]>();
+    for (const prod of sellerProducts) {
+      if (!prod.globalCatalogId) continue;
+      const key = `${prod.sellerBusinessId}:${prod.globalCatalogId}`;
+      const existing = productByMerchantCatalog.get(key);
+      const totalQuanta =
+        prod.baseQuarterQuantaStock + prod.sealedBulkPackagesStock * prod.quantaPerSealedPackage;
+      const existingQuanta = existing
+        ? existing.baseQuarterQuantaStock +
+          existing.sealedBulkPackagesStock * existing.quantaPerSealedPackage
+        : -1;
+      if (!existing || totalQuanta > existingQuanta) {
+        productByMerchantCatalog.set(key, prod);
+      }
+    }
+
+    const listingsByMerchantCatalog = new Map<
+      string,
+      Array<(typeof supplierListings)[number]>
+    >();
+    for (const listing of supplierListings) {
+      const key = `${listing.supplierBusinessId}:${listing.globalCatalogId}`;
+      const arr = listingsByMerchantCatalog.get(key) ?? [];
+      arr.push(listing);
+      listingsByMerchantCatalog.set(key, arr);
+    }
+
+    const matchedMerchants = [];
+
+    for (const merchant of candidateMerchants) {
+      const distanceKm =
+        distanceMap.get(merchant.id) ??
+        haversineDistanceKm(
+          finalBuyerLat,
+          finalBuyerLng,
+          Number(merchant.latitude),
+          Number(merchant.longitude),
+        );
+
+      const orderChannel: OrderChannel =
+        merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER
+          ? OrderChannel.SUPPLIER_TO_WHOLESALER
+          : OrderChannel.RETAIL_MARKETPLACE;
+
+      const matchedItems: Array<{
+        productId: string;
+        globalCatalogId: string;
+        sku: string;
+        nameSw: string;
+        nameEn: string;
+        imageUrl: string;
+        quantity: number;
+        unitType: PackagingUnit;
+        unitLabelSw: string;
+        unitLabelEn: string;
+        quarterQuantaPerUnit: number;
+        unitPriceTzs: number;
+        lineTotalTzs: number;
+        supplierListingId?: string;
+        isWholesaleTierApplied: boolean;
+      }> = [];
+
+      const missingItems: Array<{
+        globalCatalogId: string;
+        nameSw: string;
+        nameEn: string;
+        requestedQuantity: number;
+      }> = [];
+
+      for (const reqItem of requestedItems) {
+        const catalog = catalogMap.get(reqItem.globalCatalogId);
+        if (!catalog) continue;
+
+        const product = productByMerchantCatalog.get(
+          `${merchant.id}:${reqItem.globalCatalogId}`,
+        );
+        const totalAvailableQuanta = product
+          ? product.baseQuarterQuantaStock +
+            product.sealedBulkPackagesStock * product.quantaPerSealedPackage
+          : 0;
+
+        if (!product || totalAvailableQuanta <= 0) {
+          missingItems.push({
+            globalCatalogId: catalog.id,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            requestedQuantity: reqItem.quantity,
+          });
+          continue;
+        }
+
+        const requestedUnit = reqItem.systemUnitId
+          ? catalog.productUnits.find((pu) => pu.systemUnitId === reqItem.systemUnitId)
+          : catalog.productUnits[0];
+        const desiredQpu = requestedUnit?.quarterQuantaPerUnit ?? 4;
+
+        if (merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER) {
+          const listings =
+            listingsByMerchantCatalog.get(`${merchant.id}:${catalog.id}`) ?? [];
+          const listing =
+            (reqItem.systemUnitId
+              ? listings.find((l) => l.systemUnitId === reqItem.systemUnitId)
+              : undefined) ?? listings[0];
+          if (!listing) {
+            missingItems.push({
+              globalCatalogId: catalog.id,
+              nameSw: catalog.fixedNameSw,
+              nameEn: catalog.fixedNameEn,
+              requestedQuantity: reqItem.quantity,
+            });
+            continue;
+          }
+          const matchingUnit = catalog.productUnits.find(
+            (pu) => pu.systemUnitId === listing.systemUnitId,
+          );
+          const qpu = matchingUnit?.quarterQuantaPerUnit ?? Math.max(4, desiredQpu);
+          const effectiveQty = Math.max(reqItem.quantity, listing.minOrderQuantity);
+          if (totalAvailableQuanta < effectiveQty * qpu) {
+            missingItems.push({
+              globalCatalogId: catalog.id,
+              nameSw: catalog.fixedNameSw,
+              nameEn: catalog.fixedNameEn,
+              requestedQuantity: reqItem.quantity,
+            });
+            continue;
+          }
+          const unitType = mapUnitCodeToPackagingUnit(listing.systemUnit.unitCode, qpu);
+          const unitPriceTzs = Number(listing.supplierBulkPriceTzs);
+          matchedItems.push({
+            productId: product.id,
+            globalCatalogId: catalog.id,
+            sku: catalog.canonicalSku,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            imageUrl: catalog.imagekitCdnUrl || catalog.staticImageUrl,
+            quantity: effectiveQty,
+            unitType,
+            unitLabelSw: listing.systemUnit.nameSw,
+            unitLabelEn: listing.systemUnit.nameEn,
+            quarterQuantaPerUnit: qpu,
+            unitPriceTzs,
+            lineTotalTzs: unitPriceTzs * effectiveQty,
+            supplierListingId: listing.id,
+            isWholesaleTierApplied: true,
+          });
+          continue;
+        }
+
+        // Standard Merchant matching (WHOLESALE, RETAIL_DUKA, HYBRID_STORE) with Channel Harmony alignment
+        let chosenUnitType: PackagingUnit = mapUnitCodeToPackagingUnit(
+          requestedUnit?.systemUnit?.unitCode,
+          desiredQpu,
+        );
+        if (
+          merchant.tier === BusinessTier.WHOLESALE &&
+          WHOLESALE_BLOCKED_RETAIL_UNITS.has(chosenUnitType)
+        ) {
+          const validWholesaleTier = product.priceTiers.find(
+            (t) => t.isWholesaleTier && !WHOLESALE_BLOCKED_RETAIL_UNITS.has(t.unitType),
+          );
+          chosenUnitType =
+            validWholesaleTier?.unitType ??
+            (!WHOLESALE_BLOCKED_RETAIL_UNITS.has(product.sealedParentUnitType)
+              ? product.sealedParentUnitType
+              : 'CARTON');
+        } else if (
+          merchant.tier === BusinessTier.RETAIL_DUKA &&
+          RETAIL_BLOCKED_BULK_UNITS.has(chosenUnitType)
+        ) {
+          const validRetailTier = product.priceTiers.find(
+            (t) => !t.isWholesaleTier && !RETAIL_BLOCKED_BULK_UNITS.has(t.unitType),
+          );
+          chosenUnitType = validRetailTier?.unitType ?? 'SINGLE_KILO_LITRE';
+        }
+
+        const retailTier = product.priceTiers.find(
+          (t) => t.unitType === chosenUnitType && !t.isWholesaleTier,
+        );
+        const wholesaleTier = product.priceTiers.find(
+          (t) => t.unitType === chosenUnitType && t.isWholesaleTier,
+        );
+
+        const fallbackQuanta =
+          chosenUnitType === product.sealedParentUnitType
+            ? product.quantaPerSealedPackage
+            : DEFAULT_QPU_BY_UNIT[chosenUnitType];
+        const prelimQpu =
+          wholesaleTier?.quarterQuantaPerUnit ??
+          retailTier?.quarterQuantaPerUnit ??
+          fallbackQuanta;
+        const prelimTotalQuanta = prelimQpu * reqItem.quantity;
+
+        let isWholesaleTierApplied = false;
+        if (merchant.tier === BusinessTier.WHOLESALE) {
+          isWholesaleTierApplied = true;
+        } else if (merchant.tier === BusinessTier.RETAIL_DUKA) {
+          isWholesaleTierApplied = false;
+        } else {
+          const minUnits = Math.max(1, product.wholesaleMinUnitsThreshold ?? 1);
+          const minQuanta = Math.max(
+            1,
+            product.wholesaleMinQuarterQuanta ??
+              Math.max(1, Math.round(Number(product.wholesaleMinWeightKg ?? 1) * 4)),
+          );
+          const meetsThreshold =
+            reqItem.quantity >= minUnits || prelimTotalQuanta >= minQuanta;
+          isWholesaleTierApplied = Boolean(
+            (wholesaleTier && meetsThreshold) || (!retailTier && wholesaleTier),
+          );
+        }
+
+        const selectedTier = isWholesaleTierApplied
+          ? wholesaleTier ?? retailTier
+          : retailTier ?? wholesaleTier;
+        const finalQpu = selectedTier?.quarterQuantaPerUnit ?? fallbackQuanta;
+        const neededQuanta = finalQpu * reqItem.quantity;
+
+        if (totalAvailableQuanta < neededQuanta) {
+          missingItems.push({
+            globalCatalogId: catalog.id,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            requestedQuantity: reqItem.quantity,
+          });
+          continue;
+        }
+
+        const unitPriceBigInt = selectedTier
+          ? BigInt(selectedTier.priceTzs)
+          : chosenUnitType === 'CARTON' ||
+              chosenUnitType === 'SACK_50KG' ||
+              chosenUnitType === 'SACK_25KG'
+            ? BigInt(product.cartonPriceTzs)
+            : chosenUnitType === 'DOZEN'
+              ? BigInt(product.dozenPriceTzs)
+              : chosenUnitType === 'PACK'
+                ? BigInt(product.packPriceTzs)
+                : BigInt(product.unitPriceTzs);
+
+        const unitPriceTzs = Number(unitPriceBigInt);
+        if (unitPriceTzs <= 0) {
+          missingItems.push({
+            globalCatalogId: catalog.id,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            requestedQuantity: reqItem.quantity,
+          });
+          continue;
+        }
+
+        matchedItems.push({
+          productId: product.id,
+          globalCatalogId: catalog.id,
+          sku: catalog.canonicalSku,
+          nameSw: catalog.fixedNameSw,
+          nameEn: catalog.fixedNameEn,
+          imageUrl: catalog.imagekitCdnUrl || catalog.staticImageUrl,
+          quantity: reqItem.quantity,
+          unitType: chosenUnitType,
+          unitLabelSw: requestedUnit?.displayLabelSw || requestedUnit?.systemUnit?.nameSw || chosenUnitType,
+          unitLabelEn: requestedUnit?.displayLabelEn || requestedUnit?.systemUnit?.nameEn || chosenUnitType,
+          quarterQuantaPerUnit: finalQpu,
+          unitPriceTzs,
+          lineTotalTzs: unitPriceTzs * reqItem.quantity,
+          isWholesaleTierApplied,
+        });
+      }
+
+      if (matchedItems.length === 0) continue;
+
+      const merchantSubtotalTzs = matchedItems.reduce((sum, l) => sum + l.lineTotalTzs, 0);
+      const freeDeliveryEnabled =
+        merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER
+          ? merchant.isFreeDeliveryEnabled
+          : merchant.offersFreeDelivery;
+
+      let estimatedDeliveryFeeTzs = 0;
+      if (merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER) {
+        const minOrder = Number(merchant.freeDeliveryMinOrderTzs ?? 0n);
+        const qualifies =
+          merchant.isFreeDeliveryEnabled && (minOrder === 0 || merchantSubtotalTzs >= minOrder);
+        estimatedDeliveryFeeTzs = qualifies ? 0 : Number(merchant.standardDeliveryFeeTzs ?? 0n);
+      }
+
+      matchedMerchants.push({
+        merchantId: merchant.id,
+        businessName: merchant.businessName,
+        storeImageUrl:
+          merchant.logoCdnUrl ??
+          'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/default-merchant.webp',
+        wardName: merchant.ward,
+        district: merchant.district,
+        distanceKm,
+        isFreeDeliveryEnabled: freeDeliveryEnabled,
+        freeDeliveryMinOrderTzs: Number(merchant.freeDeliveryMinOrderTzs ?? 0n),
+        standardDeliveryFeeTzs: Number(merchant.standardDeliveryFeeTzs ?? 0n),
+        tier: merchant.tier,
+        orderChannel,
+        matchedItems,
+        merchantSubtotalTzs,
+        estimatedDeliveryFeeTzs,
+        missingItems,
+      });
+    }
+
+    matchedMerchants.sort((a, b) => {
+      if (b.matchedItems.length !== a.matchedItems.length) {
+        return b.matchedItems.length - a.matchedItems.length;
+      }
+      if (a.distanceKm !== b.distanceKm) {
+        return a.distanceKm - b.distanceKm;
+      }
+      return a.merchantSubtotalTzs - b.merchantSubtotalTzs;
+    });
+
+    return {
+      buyerLocation: { latitude: finalBuyerLat, longitude: finalBuyerLng },
+      requestedCount: requestedItems.length,
+      matchedMerchantsCount: matchedMerchants.length,
+      merchants: matchedMerchants,
+    };
   }
 
   private async generateSupplierSmsItemCode(
@@ -771,6 +1531,7 @@ export class CatalogService {
             where: { id: productId },
             data: {
               baseQuarterQuantaStock: { increment: quantityQuanta },
+              isPublishedToMarket: true,
               isActive: true,
               version: { increment: 1 },
             },
@@ -932,64 +1693,131 @@ export class CatalogService {
   }
 
   async listActiveProductsByMerchant(businessId: string) {
-    const products = await this.prismaService.product.findMany({
-      where: {
-        sellerBusinessId: businessId,
-        isActive: true,
-      },
-      include: {
-        globalCatalog: {
-          select: { imagekitCdnUrl: true, staticImageUrl: true },
-        },
-        priceTiers: {
-          where: { isActive: true },
-          orderBy: { quarterQuantaPerUnit: 'asc' },
-        },
-        customUnits: {
-          where: { isActive: true },
-          orderBy: { quarterQuantaPerUnit: 'asc' },
-        },
-      },
-      orderBy: { nameSw: 'asc' },
+    const seller = await this.prismaService.businessProfile.findUnique({
+      where: { id: businessId },
+      select: { id: true, isOpen: true, accountStatus: true },
     });
+    if (!seller) {
+      throw new NotFoundException(`Merchant ${businessId} was not found.`);
+    }
+    const sellerStatus = (seller as any).accountStatus ?? 'ACTIVE';
+    if (!seller.isOpen || sellerStatus !== 'ACTIVE') {
+      return [];
+    }
 
-    return products.map((product) => ({
-      productId: product.id,
-      sellerBusinessId: product.sellerBusinessId,
-      globalCatalogId: product.globalCatalogId,
-      sku: product.smsItemCode,
-      imagekitCdnUrl:
-        product.globalCatalog?.imagekitCdnUrl || product.globalCatalog?.staticImageUrl || '',
-      nameSw: product.nameSw,
-      nameEn: product.nameEn,
-      unitPriceTzs: Number(product.unitPriceTzs),
-      cartonPriceTzs: Number(product.cartonPriceTzs),
-      dozenPriceTzs: Number(product.dozenPriceTzs),
-      packPriceTzs: Number(product.packPriceTzs),
-      cartonUnits: product.cartonUnits,
-      quantaPerSealedPackage: product.quantaPerSealedPackage,
-      sealedParentUnitType: product.sealedParentUnitType,
-      lowStockThresholdQuanta: product.lowStockThresholdQuanta,
-      wholesaleThresholdUnits: product.wholesaleMinUnitsThreshold,
-      availableQuarterQuanta: product.baseQuarterQuantaStock,
-      sealedBulkPackagesStock: product.sealedBulkPackagesStock,
-      priceTiers: product.priceTiers.map((tier) => ({
-        id: tier.id,
-        unitType: tier.unitType,
-        quarterQuantaPerUnit: tier.quarterQuantaPerUnit,
-        priceTzs: Number(tier.priceTzs),
-        isWholesaleTier: tier.isWholesaleTier,
-      })),
-      customUnits: product.customUnits.map((unit) => ({
-        id: unit.id,
-        unitCode: unit.unitCode,
-        unitLabel: unit.unitLabel,
-        baseKg: Number(unit.baseKg),
-        quarterQuantaPerUnit: unit.quarterQuantaPerUnit,
-        priceTzs: Number(unit.priceTzs),
-        isWholesaleTier: unit.isWholesaleTier,
-      })),
-    }));
+    const [products, merchantClones] = await Promise.all([
+      this.prismaService.product.findMany({
+        where: {
+          sellerBusinessId: businessId,
+          isActive: true,
+        },
+        include: {
+          globalCatalog: {
+            select: {
+              imagekitCdnUrl: true,
+              staticImageUrl: true,
+              baseQuantumUnit: true,
+              categoryCode: true,
+              productUnits: {
+                where: { isActive: true },
+                include: { systemUnit: true },
+              },
+            },
+          },
+          priceTiers: {
+            where: { isActive: true },
+            orderBy: { quarterQuantaPerUnit: 'asc' },
+          },
+          customUnits: {
+            where: { isActive: true },
+            orderBy: { quarterQuantaPerUnit: 'asc' },
+          },
+        },
+        orderBy: { nameSw: 'asc' },
+      }),
+      this.prismaService.merchantClonedProduct &&
+      typeof this.prismaService.merchantClonedProduct.findMany === 'function'
+        ? this.prismaService.merchantClonedProduct.findMany({
+            where: { retailerBusinessId: businessId, isActive: true },
+            select: {
+              id: true,
+              globalCatalogId: true,
+              availableQuantaStock: true,
+              lastBuyingPricePerQuantumTzs: true,
+              weightedAvgBuyingCostPerQuantumTzs: true,
+              unitPriceTzs: true,
+              isPublishedToMarket: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const cloneByGlobalId = new Map(
+      merchantClones.map((c) => [c.globalCatalogId, c]),
+    );
+
+    return products.map((product) => {
+      const clone = product.globalCatalogId
+        ? cloneByGlobalId.get(product.globalCatalogId)
+        : undefined;
+      const units = product.globalCatalog?.productUnits ?? [];
+      const unitCategory = deriveUnitCategory({
+        systemUnitCategories: units.map((u) => u.systemUnit.category),
+        baseQuantumUnit: product.globalCatalog?.baseQuantumUnit,
+        categoryCode: product.globalCatalog?.categoryCode,
+      });
+      const sellingPriceTzs =
+        clone && Number(clone.unitPriceTzs) > 0
+          ? Number(clone.unitPriceTzs)
+          : Number(product.unitPriceTzs);
+
+      return {
+        productId: product.id,
+        sellerBusinessId: product.sellerBusinessId,
+        globalCatalogId: product.globalCatalogId,
+        clonedProductId: clone?.id ?? null,
+        sku: product.smsItemCode,
+        imagekitCdnUrl:
+          product.globalCatalog?.imagekitCdnUrl || product.globalCatalog?.staticImageUrl || '',
+        nameSw: product.nameSw,
+        nameEn: product.nameEn,
+        unitPriceTzs: Number(product.unitPriceTzs),
+        sellingPriceTzs,
+        cartonPriceTzs: Number(product.cartonPriceTzs),
+        dozenPriceTzs: Number(product.dozenPriceTzs),
+        packPriceTzs: Number(product.packPriceTzs),
+        cartonUnits: product.cartonUnits,
+        quantaPerSealedPackage: product.quantaPerSealedPackage,
+        sealedParentUnitType: product.sealedParentUnitType,
+        lowStockThresholdQuanta: product.lowStockThresholdQuanta,
+        wholesaleThresholdUnits: product.wholesaleMinUnitsThreshold,
+        availableQuarterQuanta: product.baseQuarterQuantaStock,
+        availableQuantaStock: clone?.availableQuantaStock ?? product.baseQuarterQuantaStock,
+        lastBuyingPricePerQuantumTzs: clone ? Number(clone.lastBuyingPricePerQuantumTzs) : 0,
+        weightedAvgBuyingCostPerQuantumTzs: clone
+          ? Number(clone.weightedAvgBuyingCostPerQuantumTzs)
+          : 0,
+        unitCategory,
+        isPublishedToMarket: clone ? clone.isPublishedToMarket : product.isActive,
+        sealedBulkPackagesStock: product.sealedBulkPackagesStock,
+        priceTiers: product.priceTiers.map((tier) => ({
+          id: tier.id,
+          unitType: tier.unitType,
+          quarterQuantaPerUnit: tier.quarterQuantaPerUnit,
+          priceTzs: Number(tier.priceTzs),
+          isWholesaleTier: tier.isWholesaleTier,
+        })),
+        customUnits: product.customUnits.map((unit) => ({
+          id: unit.id,
+          unitCode: unit.unitCode,
+          unitLabel: unit.unitLabel,
+          baseKg: Number(unit.baseKg),
+          quarterQuantaPerUnit: unit.quarterQuantaPerUnit,
+          priceTzs: Number(unit.priceTzs),
+          isWholesaleTier: unit.isWholesaleTier,
+        })),
+      };
+    });
   }
 
   async getIntelligentCatalogView(
@@ -1011,7 +1839,16 @@ export class CatalogService {
         },
         include: {
           globalCatalog: {
-            select: { imagekitCdnUrl: true, staticImageUrl: true },
+            select: {
+              imagekitCdnUrl: true,
+              staticImageUrl: true,
+              baseQuantumUnit: true,
+              categoryCode: true,
+              productUnits: {
+                where: { isActive: true },
+                include: { systemUnit: true },
+              },
+            },
           },
           priceTiers: {
             where: { isActive: true, isWholesaleTier: true },
@@ -1023,22 +1860,47 @@ export class CatalogService {
 
       const buyerClones = buyerBusinessId
         ? await tx.merchantClonedProduct.findMany({
-            where: { retailerBusinessId: buyerBusinessId },
+            where: { retailerBusinessId: buyerBusinessId, isActive: true },
             select: {
               globalCatalogId: true,
               availableQuantaStock: true,
               lowStockThresholdQuanta: true,
+              lastBuyingPricePerQuantumTzs: true,
+              weightedAvgBuyingCostPerQuantumTzs: true,
+              unitPriceTzs: true,
+              isPublishedToMarket: true,
             },
           })
         : [];
 
+      const sellerClones =
+        tx.merchantClonedProduct && typeof tx.merchantClonedProduct.findMany === 'function'
+          ? await tx.merchantClonedProduct.findMany({
+              where: { retailerBusinessId: wholesalerBusinessId, isActive: true },
+              select: {
+                globalCatalogId: true,
+                availableQuantaStock: true,
+                lastBuyingPricePerQuantumTzs: true,
+                weightedAvgBuyingCostPerQuantumTzs: true,
+                unitPriceTzs: true,
+                isPublishedToMarket: true,
+              },
+            })
+          : [];
+
       const cloneMap = new Map(
         buyerClones.map((clone) => [clone.globalCatalogId, clone]),
+      );
+      const sellerCloneMap = new Map(
+        sellerClones.map((clone) => [clone.globalCatalogId, clone]),
       );
 
       const enriched = sellerProducts.map((product) => {
         const buyerShelf = product.globalCatalogId
           ? cloneMap.get(product.globalCatalogId)
+          : undefined;
+        const sellerClone = product.globalCatalogId
+          ? sellerCloneMap.get(product.globalCatalogId)
           : undefined;
         const requiresUrgentReorder = buyerShelf
           ? buyerShelf.availableQuantaStock <= buyerShelf.lowStockThresholdQuanta
@@ -1046,9 +1908,17 @@ export class CatalogService {
         const wholesalePriceTzs = product.priceTiers[0]
           ? Number(product.priceTiers[0].priceTzs)
           : Number(product.cartonPriceTzs);
+        const sellingPriceTzs = wholesalePriceTzs > 0 ? wholesalePriceTzs : Number(product.unitPriceTzs);
+        const units = product.globalCatalog?.productUnits ?? [];
+        const unitCategory = deriveUnitCategory({
+          systemUnitCategories: units.map((u) => u.systemUnit.category),
+          baseQuantumUnit: product.globalCatalog?.baseQuantumUnit,
+          categoryCode: product.globalCatalog?.categoryCode,
+        });
 
         return {
           productId: product.id,
+          globalCatalogId: product.globalCatalogId,
           sku: product.smsItemCode,
           nameSw: product.nameSw,
           nameEn: product.nameEn,
@@ -1057,8 +1927,18 @@ export class CatalogService {
             product.globalCatalog?.staticImageUrl ||
             '',
           wholesalePriceTzs,
+          sellingPriceTzs,
           moqLabel: `${product.wholesaleMinUnitsThreshold} Vifungashio`,
           wholesalerStockQuanta: product.baseQuarterQuantaStock,
+          availableQuantaStock: sellerClone?.availableQuantaStock ?? product.baseQuarterQuantaStock,
+          lastBuyingPricePerQuantumTzs: buyerShelf
+            ? Number(buyerShelf.lastBuyingPricePerQuantumTzs)
+            : 0,
+          weightedAvgBuyingCostPerQuantumTzs: buyerShelf
+            ? Number(buyerShelf.weightedAvgBuyingCostPerQuantumTzs)
+            : 0,
+          unitCategory,
+          isPublishedToMarket: sellerClone ? sellerClone.isPublishedToMarket : product.isActive,
           buyerShelfQuanta: buyerShelf?.availableQuantaStock ?? null,
           requiresUrgentReorder,
         };

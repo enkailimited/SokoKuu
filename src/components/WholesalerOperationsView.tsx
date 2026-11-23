@@ -3,10 +3,14 @@ import {
   AlertTriangle,
   Banknote,
   BarChart3,
+  Calendar,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ClipboardCheck,
   Download,
   KeyRound,
+  MapPin,
   PackagePlus,
   RefreshCw,
   Search,
@@ -27,7 +31,7 @@ import { WholesalerEodReconciliation } from './WholesalerEodReconciliation';
 import { HybridAnalyticsDashboard } from './HybridAnalyticsDashboard';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
-type WholesalerTab = 'riders' | 'eod' | 'analytics' | 'market' | 'restock';
+export type WholesalerTab = 'riders' | 'schedule' | 'eod' | 'analytics' | 'market' | 'restock';
 
 type SupplierPackagingUnit =
   | 'CARTON'
@@ -211,14 +215,20 @@ export function WholesalerOperationsView({
   locale = 'en',
   businessId,
   focusOrder,
+  initialTab = 'riders',
 }: {
   locale?: Locale;
   businessId?: string | null;
   focusOrder?: FocusOrderTarget | null;
+  initialTab?: WholesalerTab;
 }) {
   const isSw = locale === 'sw';
   useFocusOrderScroll(focusOrder, true);
-  const [subTab, setSubTab] = useState<WholesalerTab>('riders');
+  const [subTab, setSubTab] = useState<WholesalerTab>(initialTab);
+
+  useEffect(() => {
+    setSubTab(initialTab);
+  }, [initialTab]);
   const [wardFilter, setWardFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -254,6 +264,37 @@ export function WholesalerOperationsView({
   const [quotingSupplierOrder, setQuotingSupplierOrder] = useState<boolean>(false);
   const [placingSupplierOrder, setPlacingSupplierOrder] = useState<boolean>(false);
   const [restockNotice, setRestockNotice] = useState<string | null>(null);
+
+  const [scheduleDate, setScheduleDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [zoneSchedule, setZoneSchedule] = useState<{
+    date: string;
+    sellerBusinessId: string;
+    zoneCount: number;
+    totalOrders: number;
+    zones: Array<{
+      deliveryZoneWard: string;
+      orderCount: number;
+      totalTzs: number;
+      totalPackages: number;
+      orders: Array<{
+        orderId: string;
+        orderRef: string;
+        status: string;
+        expectedTotalTzs: number;
+        deliveryFeeTzs: number;
+        scheduledDeliveryDate: string | null;
+        deliveryZoneWard: string;
+        buyerName: string | null;
+        buyerPhoneE164: string | null;
+        verificationStatus: string | null;
+        packages: number;
+      }>;
+    }>;
+  } | null>(null);
+  const [zoneScheduleLoading, setZoneScheduleLoading] = useState(false);
+  const [expandedZones, setExpandedZones] = useState<Record<string, boolean>>({});
+  const [dispatchingZone, setDispatchingZone] = useState<string | null>(null);
+  const [scheduleNotice, setScheduleNotice] = useState<string | null>(null);
 
   const loadWholesalerData = useCallback(async () => {
     if (!SokoApiClient.hasAccessToken()) {
@@ -430,6 +471,84 @@ export function WholesalerOperationsView({
       void loadSupplierCatalog();
     }
   }, [subTab, loadSupplierCatalog]);
+
+  const loadZoneSchedule = useCallback(async () => {
+    if (!SokoApiClient.hasAccessToken() || !scheduleDate) {
+      setZoneSchedule(null);
+      return;
+    }
+    setZoneScheduleLoading(true);
+    setApiError(null);
+    setScheduleNotice(null);
+    try {
+      const res = await SokoApiClient.get<any>(
+        `/wholesale/orders/zone-schedule?date=${encodeURIComponent(scheduleDate)}`,
+      );
+      setZoneSchedule(res ?? null);
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+        setZoneSchedule(null);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kupakia ratiba ya maeneo.'
+                : 'Failed to load zone delivery schedule.',
+        );
+      }
+    } finally {
+      setZoneScheduleLoading(false);
+    }
+  }, [isSw, scheduleDate]);
+
+  useEffect(() => {
+    if (subTab === 'schedule') {
+      void loadZoneSchedule();
+    }
+  }, [subTab, loadZoneSchedule]);
+
+  const handleDispatchZoneBatch = async (deliveryZoneWard: string) => {
+    setApiError(null);
+    setScheduleNotice(null);
+    setDispatchingZone(deliveryZoneWard);
+    try {
+      const res = await SokoApiClient.post<any>('/wholesale/orders/dispatch-zone-batch', {
+        date: scheduleDate,
+        deliveryZoneWard,
+      });
+      const dispatched = Number(res?.dispatchedCount ?? 0);
+      const failed = Array.isArray(res?.failed) ? res.failed.length : 0;
+      setScheduleNotice(
+        isSw
+          ? `Eneo "${deliveryZoneWard}": oda ${dispatched} zimetumwa kwa dereva${failed ? `, ${failed} zimeshindwa.` : '.'}`
+          : `Zone "${deliveryZoneWard}": dispatched ${dispatched} orders${failed ? `, ${failed} failed.` : '.'}`,
+      );
+      await loadZoneSchedule();
+      await loadWholesalerData();
+      setBackendOffline(false);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : isSw
+                ? 'Imeshindikana kutuma kundi la eneo.'
+                : 'Failed to dispatch zone batch.',
+        );
+      }
+    } finally {
+      setDispatchingZone(null);
+    }
+  };
 
   const buildSupplierOrderPayloads = useCallback(
     (): SupplierOrderPayload[] => {
@@ -833,6 +952,18 @@ export function WholesalerOperationsView({
           </button>
           <button
             type="button"
+            onClick={() => setSubTab('schedule')}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-md whitespace-nowrap cursor-pointer ${
+              subTab === 'schedule'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>{isSw ? 'Ratiba ya Maeneo' : 'Zone Schedule'}</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setSubTab('eod')}
             className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-md whitespace-nowrap cursor-pointer ${
               subTab === 'eod'
@@ -1167,6 +1298,137 @@ export function WholesalerOperationsView({
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {subTab === 'schedule' && (
+        <div className="space-y-4">
+          <section className="border border-slate-200 bg-white rounded-lg p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                  <span>{isSw ? 'Ratiba ya Maeneo (Zone & Date Delivery Schedule)' : 'Zone & Date Delivery Schedule'}</span>
+                </h2>
+                <p className="text-xs text-slate-600 mt-1">
+                  {isSw
+                    ? 'Panga na tuma oda kwa makundi ya eneo na tarehe ya usafirishaji.'
+                    : 'Group and dispatch orders by delivery zone and scheduled date.'}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs font-medium text-slate-700 inline-flex items-center gap-2">
+                  <span>{isSw ? 'Tarehe' : 'Date'}</span>
+                  <input
+                    type="date"
+                    value={scheduleDate}
+                    onChange={(e) => setScheduleDate(e.target.value)}
+                    className="min-h-[40px] px-3 py-2 text-xs bg-white border border-slate-300 rounded-md text-slate-900"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void loadZoneSchedule()}
+                  disabled={zoneScheduleLoading}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${zoneScheduleLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  <span>{isSw ? 'Pakua Ratiba' : 'Load Schedule'}</span>
+                </button>
+              </div>
+            </div>
+
+            {scheduleNotice && (
+              <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3 text-xs font-semibold text-emerald-900 flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{scheduleNotice}</span>
+                </div>
+                <button type="button" onClick={() => setScheduleNotice(null)} className="text-emerald-800 hover:text-emerald-950 cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {zoneScheduleLoading ? (
+              <div className="text-sm text-slate-600 py-6">{isSw ? 'Inapakia ratiba ya maeneo...' : 'Loading zone schedule...'}</div>
+            ) : !zoneSchedule || (zoneSchedule.zones?.length ?? 0) === 0 ? (
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Hakuna oda za ratiba kwa tarehe hii"
+                titleEn="No scheduled zone orders for this date"
+                descriptionSw="Chagua tarehe nyingine au hakikisha oda zina tarehe/eneo la usafirishaji."
+                descriptionEn="Pick another date or ensure orders have a scheduled delivery date/zone."
+              />
+            ) : (
+              <div className="space-y-3">
+                <div className="text-xs text-slate-600">
+                  {isSw ? 'Maeneo' : 'Zones'}: <strong>{zoneSchedule.zoneCount}</strong> · {isSw ? 'Oda' : 'Orders'}: <strong>{zoneSchedule.totalOrders}</strong>
+                </div>
+                {zoneSchedule.zones.map((zone) => {
+                  const isExpanded = !!expandedZones[zone.deliveryZoneWard];
+                  const isDispatching = dispatchingZone === zone.deliveryZoneWard;
+                  return (
+                    <div key={zone.deliveryZoneWard} className="border border-slate-200 rounded-lg overflow-hidden">
+                      <div className="p-4 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <MapPin className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                            <h3 className="text-sm font-semibold text-slate-900">{zone.deliveryZoneWard}</h3>
+                            <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700">
+                              {zone.orderCount} {isSw ? 'oda' : 'orders'}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
+                            <span>{isSw ? 'Jumla' : 'Total'}: <strong className="text-slate-900">TZS {Number(zone.totalTzs).toLocaleString('en-US')}</strong></span>
+                            <span>{isSw ? 'Vifurushi' : 'Packages'}: <strong className="text-slate-900">{Number(zone.totalPackages).toLocaleString('en-US')}</strong></span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setExpandedZones((prev) => ({ ...prev, [zone.deliveryZoneWard]: !prev[zone.deliveryZoneWard] }))}
+                            className="min-h-[40px] px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer"
+                          >
+                            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            <span>{isSw ? 'Angalia oda' : 'Inspect orders'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isDispatching || zone.orderCount === 0}
+                            onClick={() => void handleDispatchZoneBatch(zone.deliveryZoneWard)}
+                            className="min-h-[40px] px-3.5 py-2 text-xs font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                          >
+                            <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>{isDispatching ? (isSw ? 'Inatuma...' : 'Dispatching...') : (isSw ? 'Tuma Kundi la Eneo' : 'Dispatch Zone Batch')}</span>
+                          </button>
+                        </div>
+                      </div>
+                      {isExpanded && (
+                        <div className="divide-y divide-slate-200 bg-white">
+                          {zone.orders.map((order) => (
+                            <div key={order.orderId} className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                              <div className="min-w-0">
+                                <div className="font-semibold text-slate-900">
+                                  <span className="font-mono">{order.orderRef}</span> · {order.buyerName || '—'} ({order.buyerPhoneE164 || '—'})
+                                </div>
+                                <div className="text-slate-600 mt-0.5">
+                                  {isSw ? 'Hali' : 'Status'}: {order.status} · {isSw ? 'Vifurushi' : 'Packages'}: {order.packages} · {isSw ? 'Uthibitisho' : 'Verification'}: {order.verificationStatus || '—'}
+                                </div>
+                              </div>
+                              <div className="text-right font-mono font-bold text-slate-900 whitespace-nowrap">
+                                TZS {Number(order.expectedTotalTzs).toLocaleString('en-US')}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </section>

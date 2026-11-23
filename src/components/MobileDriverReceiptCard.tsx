@@ -1,668 +1,605 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Crosshair,
+  ExternalLink,
+  LoaderCircle,
   Lock,
   MapPin,
+  Navigation,
   Phone,
-  QrCode,
   RefreshCw,
+  Route as RouteIcon,
   ShieldCheck,
   Truck,
 } from 'lucide-react';
+import L from 'leaflet';
+import {
+  CircleMarker,
+  MapContainer,
+  Marker,
+  Polyline,
+  Popup,
+  TileLayer,
+  useMap,
+} from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
 import type { Locale } from '../data/i18n';
 import { formatOrderStatusLabel } from '../lib/sokoManagedState';
-import {
-  SokoApiClient,
-  SokoHttpError,
-  isSokoNetworkError,
-} from '../services/sokoApiClient';
+import { SokoApiClient, SokoHttpError, isSokoNetworkError } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 import { IsolatedQrVerificationTerminal } from './IsolatedQrVerificationTerminal';
 
-export interface DriverDeliveryTask {
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
+
+interface WaypointMarker {
+  step: number;
+  label: string;
+  hint: string;
+  lat: number | null;
+  lng: number | null;
+}
+
+interface ActiveDeliveryStop {
+  stop: number;
   orderId: string;
   orderRef: string;
-  dukaName: string;
-  dukaAddress: string;
-  dukaWard: string;
-  ownerPhone: string;
-  recipientName?: string;
-  recipientPhone?: string;
-  sellerName?: string;
-  sellerPhone?: string;
-  itemsSummarySw: string;
-  itemsSummaryEn: string;
+  status: 'DISPATCHED';
   expectedCashTzs: number;
-  status: 'PLACED' | 'DISPATCHED' | 'IN_TRANSIT' | 'DELIVERED' | 'DISPUTED';
+  paymentMethod: string;
+  customer: { name: string | null; phoneE164: string | null };
+  pickup: {
+    latitude: number;
+    longitude: number;
+    name: string;
+    ward: string | null;
+    streetAddress: string | null;
+    streetLandmark: string | null;
+    phoneE164?: string | null;
+  };
+  dropoff: {
+    latitude: number;
+    longitude: number;
+    name: string;
+    ward: string | null;
+    streetAddress: string | null;
+    streetLandmark: string | null;
+  };
+  routeWaypoints: WaypointMarker[];
+  verification_status: string;
+  placedAt: string | null;
+  dispatchedAt: string | null;
 }
 
-interface BackendDriverQueueResponse {
-  count: number;
-  deliveries: Array<{
-    orderId: string;
-    orderRef: string;
-    sellerBusinessId: string;
-    buyerUserId: string;
-    buyerName?: string;
-    buyerPhoneE164?: string;
-    sellerName?: string;
-    sellerWard?: string;
-    sellerPhoneE164?: string;
-    status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'DISPUTED';
-    expectedTotalTzs: number;
-    paymentMethod: string;
-    placedAt: string;
-    dispatchedAt: string | null;
-    ledger?: {
-      verificationStatus: string;
-      expectedCashAmount: number;
-      isBuyerConfirmed: boolean;
-      isDriverConfirmed: boolean;
-      isQrTokenConsumed: boolean;
-    } | null;
-  }>;
+function formatTzs(value: number): string {
+  return `${Math.max(0, Math.round(value)).toLocaleString('en-US')} TZS`;
 }
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function isUuid(val?: string | null): val is string {
-  return Boolean(val && UUID_REGEX.test(val));
+function toRad(value: number) {
+  return (value * Math.PI) / 180;
 }
 
-export function MobileDriverReceiptCard({ locale = 'en' }: { locale?: Locale }) {
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function createNumberedIcon(step: number, color = '#0054A6') {
+  return L.divIcon({
+    className: 'soko-waypoint-icon',
+    html: `<div style="background:${color};color:#fff;width:28px;height:28px;border-radius:9999px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)">${step}</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+}
+
+function FitRouteBounds({
+  points,
+}: {
+  points: Array<[number, number]>;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!points.length) return;
+    const bounds = L.latLngBounds(points.map((p) => L.latLng(p[0], p[1])));
+    map.fitBounds(bounds.pad(0.2), { animate: true, maxZoom: 16 });
+  }, [map, points.map((p) => p.join(',')).join('|')]);
+  return null;
+}
+
+function LiveDriverMarker({ position }: { position: { lat: number; lng: number } | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (position) {
+      // keep driver visible softly without forcing refit every tick
+      map.panInside([position.lat, position.lng], { padding: [40, 40] });
+    }
+  }, [map, position?.lat, position?.lng]);
+  if (!position) return null;
+  return (
+    <>
+      <CircleMarker
+        center={[position.lat, position.lng]}
+        radius={10}
+        pathOptions={{ color: '#10B981', fillColor: '#10B981', fillOpacity: 0.95, weight: 3 }}
+      >
+        <Popup>Dereva yuko hapa sasa / Driver live location</Popup>
+      </CircleMarker>
+      <CircleMarker
+        center={[position.lat, position.lng]}
+        radius={22}
+        pathOptions={{ color: '#10B981', fillColor: '#10B981', fillOpacity: 0.12, weight: 1 }}
+      />
+    </>
+  );
+}
+
+export function MobileDriverReceiptCard({ locale = 'sw' }: { locale?: Locale }) {
   const isSw = locale === 'sw';
-  const [tasks, setTasks] = useState<DriverDeliveryTask[]>([]);
-  const [selectedRef, setSelectedRef] = useState<string>('');
-  const [driverPin, setDriverPin] = useState<string>('');
-  const [collectedCash, setCollectedCash] = useState<string>('');
-  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'M-PESA' | 'TIGO-PESA'>('CASH');
-  const [mobileMoneyRef, setMobileMoneyRef] = useState<string>('');
-  const [loadingQueue, setLoadingQueue] = useState<boolean>(false);
-  const [backendOffline, setBackendOffline] = useState<boolean>(false);
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const [startingTransit, setStartingTransit] = useState<boolean>(false);
-  const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(
-    null,
-  );
-  const [driverViewMode, setDriverViewMode] = useState<'QR_TERMINAL' | 'PIN_SHEET'>(
-    'QR_TERMINAL',
+  const [stops, setStops] = useState<ActiveDeliveryStop[]>([]);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [backendOffline, setBackendOffline] = useState(false);
+  const [driverPosition, setDriverPosition] = useState<{ lat: number; lng: number } | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
+  const [checkedWaypoints, setCheckedWaypoints] = useState<Record<string, boolean>>({});
+  const watchIdRef = useRef<number | null>(null);
+
+  const selectedStop = useMemo(
+    () => stops.find((s) => s.orderId === selectedOrderId) ?? stops[0] ?? null,
+    [stops, selectedOrderId],
   );
 
-  const loadDriverQueue = useCallback(async () => {
-    if (!navigator.onLine) {
-      setBackendOffline(true);
+  useEffect(() => {
+    if (!('geolocation' in navigator)) {
+      setGeoError(isSw ? 'Kifaa hakina GPS.' : 'Geolocation is unavailable on this device.');
       return;
     }
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setDriverPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoError(null);
+      },
+      () => {
+        setGeoError(
+          isSw
+            ? 'Imeshindikana kupata eneo la dereva kwa sasa.'
+            : 'Unable to read live driver location right now.',
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+    );
+    return () => {
+      if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, [isSw]);
 
-    setLoadingQueue(true);
-    setBackendOffline(false);
+  const loadDeliveries = useCallback(async (silent = false) => {
+    if (silent) setIsRefreshing(true);
+    else setIsLoading(true);
+    setError(null);
     try {
-      const res = await SokoApiClient.get<BackendDriverQueueResponse>('/dispatch/driver-queue');
-      const liveTasks: DriverDeliveryTask[] = (res?.deliveries ?? []).map((d) => ({
-        orderId: d.orderId,
-        orderRef: d.orderRef,
-        dukaName: d.sellerName
-          ? `${d.sellerName} · #${d.orderRef}`
-          : isSw
-            ? `Oda ya Mteja #${d.orderRef}`
-            : `Delivery Order #${d.orderRef}`,
-        dukaAddress: d.dispatchedAt
-          ? `${isSw ? 'Ilitumwa' : 'Dispatched'}: ${d.dispatchedAt.slice(0, 16).replace('T', ' ')}`
-          : isSw
-            ? 'Inasubiri Dispatch'
-            : 'Awaiting Dispatch',
-        dukaWard: d.sellerWard ?? d.paymentMethod,
-        ownerPhone: d.buyerPhoneE164 ?? d.ledger?.verificationStatus ?? 'PENDING',
-        recipientName: d.buyerName,
-        recipientPhone: d.buyerPhoneE164,
-        sellerName: d.sellerName,
-        sellerPhone: d.sellerPhoneE164,
-        itemsSummarySw: `Hali ya Uhakiki: ${d.ledger?.verificationStatus ?? d.status}`,
-        itemsSummaryEn: `Verification: ${d.ledger?.verificationStatus ?? d.status}`,
-        expectedCashTzs: Number(d.ledger?.expectedCashAmount ?? d.expectedTotalTzs),
-        status: d.status === 'DISPATCHED' ? 'IN_TRANSIT' : d.status,
-      }));
-      setTasks(liveTasks);
-      if (liveTasks.length > 0) {
-        setSelectedRef((prev) => {
-          const current = liveTasks.find((t) => t.orderRef === prev) ?? liveTasks[0];
-          setCollectedCash(String(current.expectedCashTzs));
-          return current.orderRef;
-        });
-      }
+      const res = await SokoApiClient.get<{
+        count?: number;
+        route?: ActiveDeliveryStop[];
+        deliveries?: ActiveDeliveryStop[];
+      }>('/driver/deliveries/active');
+      const list = (res.route || res.deliveries || []) as ActiveDeliveryStop[];
+      setStops(list);
+      setBackendOffline(false);
+      setSelectedOrderId((prev) => (prev && list.some((s) => s.orderId === prev) ? prev : list[0]?.orderId ?? null));
     } catch (err) {
       if (isSokoNetworkError(err)) {
         setBackendOffline(true);
+        setStops([]);
       } else {
-        setFeedback({
-          type: 'error',
-          text:
-            err instanceof SokoHttpError
+        setError(
+          err instanceof SokoHttpError
+            ? `HTTP ${err.status}: ${err.message}`
+            : err instanceof Error
               ? err.message
               : isSw
-                ? 'Imeshindikana kupakia orodha ya mizigo ya dereva.'
-                : 'Failed to load driver delivery queue.',
-        });
+                ? 'Imeshindikana kupakia oda za usafirishaji.'
+                : 'Failed to load active deliveries.',
+        );
       }
     } finally {
-      setLoadingQueue(false);
+      setIsLoading(false);
+      setIsRefreshing(false);
     }
   }, [isSw]);
 
   useEffect(() => {
-    void loadDriverQueue();
-  }, [loadDriverQueue]);
+    void loadDeliveries();
+  }, [loadDeliveries]);
 
-  const activeTask = tasks.find((t) => t.orderRef === selectedRef) ?? tasks[0] ?? null;
+  const origin = driverPosition
+    ? driverPosition
+    : selectedStop
+      ? { lat: selectedStop.pickup.latitude, lng: selectedStop.pickup.longitude }
+      : null;
+  const destination = selectedStop
+    ? { lat: selectedStop.dropoff.latitude, lng: selectedStop.dropoff.longitude }
+    : null;
 
-  const handleSelectTask = (task: DriverDeliveryTask) => {
-    setSelectedRef(task.orderRef);
-    setDriverPin('');
-    setMobileMoneyRef('');
-    setCollectedCash(String(task.expectedCashTzs));
-    setFeedback(null);
-  };
+  const distanceKm = useMemo(() => {
+    if (!origin || !destination) return null;
+    const km = haversineKm(origin, destination);
+    return Number.isFinite(km) ? km : null;
+  }, [origin?.lat, origin?.lng, destination?.lat, destination?.lng]);
 
-  const handleConfirmHandover = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeTask || activeTask.status === 'DELIVERED' || !isUuid(activeTask.orderId)) return;
-    setFeedback(null);
+  const etaMinutes = useMemo(() => {
+    if (distanceKm == null) return null;
+    // simple city-driving estimate
+    const minutes = Math.round((distanceKm / 22) * 60 + 6);
+    return Math.max(5, minutes);
+  }, [distanceKm]);
 
-    if (!navigator.onLine) {
-      setBackendOffline(true);
-      return;
-    }
-
-    const declaredTzs = Number(collectedCash.replace(/[^0-9]/g, ''));
-
-    setSubmitting(true);
-    setBackendOffline(false);
-    try {
-      if (declaredTzs < activeTask.expectedCashTzs) {
-        await SokoApiClient.post(`/financials/ledgers/${activeTask.orderId}/record-payment`, {
-          collectedAmountTzs: declaredTzs,
-          paymentMethod,
-          ...(mobileMoneyRef.trim() ? { mobileMoneyRef: mobileMoneyRef.trim() } : {}),
-        });
-        setFeedback({
-          type: 'success',
-          text: isSw
-            ? `Malipo ya awali TZS ${declaredTzs.toLocaleString('en-US')} yamehifadhiwa kwa ${activeTask.orderRef}.`
-            : `Partial payment of TZS ${declaredTzs.toLocaleString('en-US')} recorded on ${activeTask.orderRef}.`,
-        });
-        await loadDriverQueue();
-        return;
+  const polylinePositions = useMemo(() => {
+    if (!selectedStop) return [] as Array<[number, number]>;
+    const pts: Array<[number, number]> = [];
+    if (origin) pts.push([origin.lat, origin.lng]);
+    for (const wp of selectedStop.routeWaypoints || []) {
+      if (typeof wp.lat === 'number' && typeof wp.lng === 'number') {
+        pts.push([wp.lat, wp.lng]);
       }
-
-      const res = await SokoApiClient.post<{
-        reconciled: boolean;
-        verificationStatus: string;
-      }>('/orders/reconcile/driver-pin', {
-        orderId: activeTask.orderId,
-        driverPin: driverPin.trim(),
-        collectedCashTzs: declaredTzs,
-        paymentMethod,
-        ...(mobileMoneyRef.trim() ? { mobileMoneyRef: mobileMoneyRef.trim() } : {}),
-      });
-
-      setFeedback({
-        type: 'success',
-        text: res.reconciled
-          ? isSw
-            ? `Makabidhiano ya ${activeTask.orderRef} yamekamilika (DELIVERED).`
-            : `Handover ${activeTask.orderRef} reconciled and DELIVERED.`
-          : isSw
-            ? `PIN ya Dereva imethibitishwa (${res.verificationStatus}). Inasubiri uthibitisho wa mteja kwenye simu yake.`
-            : `Driver PIN confirmed (${res.verificationStatus}). Awaiting the buyer's own confirmation on their device.`,
-      });
-
-      await loadDriverQueue();
-    } catch (err) {
-      if (isSokoNetworkError(err)) {
-        setBackendOffline(true);
-      } else {
-        setFeedback({
-          type: 'error',
-          text:
-            err instanceof SokoHttpError
-              ? err.message
-              : isSw
-                ? 'Uhakiki wa makabidhiano umeshindikana.'
-                : 'Doorstep verification failed.',
-        });
-      }
-    } finally {
-      setSubmitting(false);
     }
-  };
+    pts.push([selectedStop.dropoff.latitude, selectedStop.dropoff.longitude]);
+    return pts;
+  }, [selectedStop, origin?.lat, origin?.lng]);
 
-  const handleStartTransit = async (task: DriverDeliveryTask) => {
-    if (!isUuid(task.orderId)) return;
-    setFeedback(null);
+  const googleMapsUrl = useMemo(() => {
+    if (!selectedStop) return 'https://google.com/maps';
+    const dest = `${selectedStop.dropoff.latitude},${selectedStop.dropoff.longitude}`;
+    const wpCoords = (selectedStop.routeWaypoints || [])
+      .filter((w) => typeof w.lat === 'number' && typeof w.lng === 'number')
+      .map((w) => `${w.lat},${w.lng}`)
+      .join('|');
+    const originParam = origin ? `${origin.lat},${origin.lng}` : '';
+    const params = new URLSearchParams({
+      api: '1',
+      destination: dest,
+      travelmode: 'driving',
+    });
+    if (originParam) params.set('origin', originParam);
+    if (wpCoords) params.set('waypoints', wpCoords);
+    return `https://www.google.com/maps/dir/?${params.toString()}`;
+  }, [selectedStop, origin?.lat, origin?.lng]);
 
-    if (!navigator.onLine) {
-      setBackendOffline(true);
-      return;
-    }
+  const fitPoints = useMemo(() => {
+    const pts = [...polylinePositions];
+    if (driverPosition) pts.push([driverPosition.lat, driverPosition.lng]);
+    return pts;
+  }, [polylinePositions, driverPosition?.lat, driverPosition?.lng]);
 
-    setStartingTransit(true);
-    setBackendOffline(false);
-    try {
-      await SokoApiClient.post(`/orders/${task.orderId}/dispatch`, {});
-      setFeedback({
-        type: 'success',
-        text: isSw
-          ? `Mzigo ${task.orderRef} umo njiani. Nenda kwa mteja na ukamilishe makabidhiano.`
-          : `Order ${task.orderRef} is now in transit. Proceed to the recipient for handover.`,
-      });
-      await loadDriverQueue();
-    } catch (err) {
-      if (isSokoNetworkError(err)) {
-        setBackendOffline(true);
-      } else {
-        setFeedback({
-          type: 'error',
-          text:
-            err instanceof SokoHttpError
-              ? err.message
-              : isSw
-                ? 'Imeshindikana kuanza usafirishaji wa mzigo.'
-                : 'Failed to start order transit.',
-        });
-      }
-    } finally {
-      setStartingTransit(false);
-    }
+  const toggleWaypoint = (key: string) => {
+    setCheckedWaypoints((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   return (
-    <div className="space-y-5">
-      {backendOffline && (
-        <BackendOfflineBanner
-          locale={locale}
-          retrying={loadingQueue}
-          onRetry={() => void loadDriverQueue()}
-        />
-      )}
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="bg-white border border-slate-200 rounded-xl p-1 inline-flex gap-1 shadow-xs">
-          <button
-            type="button"
-            onClick={() => setDriverViewMode('QR_TERMINAL')}
-            className={`px-3.5 py-2 text-xs font-bold rounded-lg inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
-              driverViewMode === 'QR_TERMINAL'
-                ? 'bg-emerald-600 text-white'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <QrCode className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Order Confirmation</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setDriverViewMode('PIN_SHEET')}
-            className={`px-3.5 py-2 text-xs font-bold rounded-lg inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
-              driverViewMode === 'PIN_SHEET'
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Truck className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{isSw ? 'Orodha ya Shusha Mzigo' : 'Delivery Queue Sheet'}</span>
-          </button>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => void loadDriverQueue()}
-          disabled={loadingQueue}
-          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50 cursor-pointer"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loadingQueue ? 'animate-spin' : ''}`} />
-          <span>{isSw ? 'Onyesha Upya' : 'Refresh Queue'}</span>
-        </button>
-      </div>
-
-      {tasks.length > 0 && (
-        <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
-            <h2 className="text-xs font-bold uppercase tracking-wide text-slate-700">
-              {isSw ? 'Oda Zinazosubiri Kuwasilishwa' : 'Pending Deliveries'}
+    <div className="min-h-[100dvh] w-full bg-slate-100 p-4 md:p-6">
+      <div className="max-w-3xl mx-auto space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg md:text-xl font-bold text-slate-900 flex items-center gap-2">
+              <Truck className="w-5 h-5 text-emerald-600" aria-hidden="true" />
+              {isSw ? 'Usafirishaji wa Dereva (Bolt Navigation)' : 'Driver Deliveries (Bolt Navigation)'}
             </h2>
-            <span className="text-[11px] font-mono font-bold text-slate-500">
-              {tasks.length}
-            </span>
+            <p className="text-xs text-slate-600 mt-0.5">
+              {isSw
+                ? 'Oda halisi kutoka mfumo wa SokoKuu, ramani ya njia, na alama za kufika kwa mteja.'
+                : 'Live SokoKuu deliveries with route map and step-by-step waypoint markers.'}
+            </p>
           </div>
-          <div className="divide-y divide-slate-100 max-h-56 overflow-y-auto">
-            {tasks.map((task) => {
-              const isSelected = task.orderRef === activeTask?.orderRef;
-              return (
-                <button
-                  key={task.orderRef}
-                  type="button"
-                  onClick={() => handleSelectTask(task)}
-                  className={`w-full px-4 py-2.5 text-left flex items-center justify-between gap-3 cursor-pointer transition-colors ${
-                    isSelected ? 'bg-emerald-50' : 'bg-white hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-slate-900 truncate">
-                      #{task.orderRef} · {task.sellerName ?? task.dukaName}
-                    </div>
-                    <div className="text-[11px] text-slate-500 font-mono truncate">
-                      {task.recipientName ?? (isSw ? 'Mteja' : 'Recipient')}
-                      {task.recipientPhone ? ` · ${task.recipientPhone}` : ''}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-xs font-bold font-mono text-slate-900">
-                      TZS {task.expectedCashTzs.toLocaleString('en-US')}
-                    </div>
-                    <div
-                      className={`text-[10px] font-bold uppercase ${
-                        task.status === 'IN_TRANSIT' ? 'text-sky-700' : 'text-amber-700'
-                      }`}
-                    >
-                      {formatOrderStatusLabel(task.status, locale)}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {loadingQueue && tasks.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-xs text-slate-500">
-          {isSw ? 'Inapakia orodha ya mizigo ya dereva...' : 'Loading driver delivery queue...'}
+          <button
+            type="button"
+            onClick={() => void loadDeliveries(true)}
+            className="min-h-[40px] px-3 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-semibold inline-flex items-center gap-2 hover:bg-slate-50 cursor-pointer"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {isSw ? 'Sasisha' : 'Refresh'}
+          </button>
         </div>
-      ) : !activeTask ? (
-        <EmptyStateCard
-          locale={locale}
-          titleSw="Hakuna rekodi bado"
-          titleEn="No records yet"
-          descriptionSw="Huna mizigo ya kushusha iliyopangwa kwako katika PostgreSQL kwa sasa."
-          descriptionEn="No active deliveries are assigned to your driver queue in PostgreSQL."
-        />
-      ) : driverViewMode === 'QR_TERMINAL' ? (
-        <IsolatedQrVerificationTerminal
-          locale={locale}
-          defaultDeviceOwner="DRIVER_PHONE"
-          orderId={activeTask.orderId}
-          orderRef8={activeTask.orderRef}
-          destinationLabel={`${activeTask.dukaName} · ${activeTask.dukaWard}`}
-          expectedCashTzs={activeTask.expectedCashTzs}
-          onVerifiedSuccess={() => {
-            setTasks((prev) =>
-              prev.map((t) =>
-                t.orderRef === activeTask.orderRef ? { ...t, status: 'DELIVERED' } : t,
-              ),
-            );
-            void loadDriverQueue();
-          }}
-        />
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left Queue Sheet */}
-          <section className="lg:col-span-5 border border-slate-200 bg-white rounded-lg overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200">
-              <h2 className="text-base font-semibold text-slate-900">
-                {isSw ? 'Orodha ya Shusha Mzigo Leo' : 'Active Delivery Queue'}
-              </h2>
-              <p className="text-xs text-slate-600 mt-0.5">
-                {isSw
-                  ? 'Chagua duka unalofikia kukamilisha makabidhiano ya taslimu.'
-                  : 'Select an active neighborhood drop to enter Dual-PIN cash verification.'}
-              </p>
-            </div>
 
-            <div className="divide-y divide-slate-200">
-              {tasks.map((task) => {
-                const isSelected = task.orderRef === activeTask.orderRef;
-                return (
-                  <button
-                    key={task.orderRef}
-                    type="button"
-                    onClick={() => handleSelectTask(task)}
-                    className={`w-full px-5 py-4 text-left transition-colors min-h-[56px] cursor-pointer ${
-                      isSelected ? 'bg-slate-100/80' : 'bg-white hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-slate-900">{task.dukaName}</span>
-                      <span
-                        className={`text-xs font-semibold whitespace-nowrap ${
-                          task.status === 'DELIVERED'
-                            ? 'text-emerald-800'
-                            : task.status === 'DISPUTED'
-                              ? 'text-red-700'
-                              : 'text-amber-800'
-                        }`}
-                      >
-                        {formatOrderStatusLabel(task.status, locale)}
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-600 mt-1">
-                      {task.dukaAddress} · {task.dukaWard}
-                    </div>
-                    <div className="flex items-center justify-between mt-2 text-xs font-mono tabular-nums">
-                      <span className="text-slate-500">{task.orderRef}</span>
-                      <span className="font-bold text-slate-900">
-                        TZS {task.expectedCashTzs.toLocaleString('en-US')}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
+        {backendOffline && (
+          <BackendOfflineBanner locale={locale} onRetry={() => void loadDeliveries()} retrying={isLoading} />
+        )}
+        {error && (
+          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 mt-0.5 text-red-600" aria-hidden="true" />
+            <span>{error}</span>
+          </div>
+        )}
 
-          {/* Right Card: High-Contrast Budget-Android Dual-PIN Receipt Card */}
-          <section className="lg:col-span-7 border border-slate-300 bg-white rounded-lg overflow-hidden">
-            <div className="px-5 py-5 bg-slate-900 text-white space-y-2">
-              <div className="flex items-center justify-between gap-4 text-xs font-mono text-slate-300">
-                <span>ODA: {activeTask.orderRef}</span>
-                <span className="font-sans font-semibold">
-                  {formatOrderStatusLabel(activeTask.status, locale)}
-                </span>
-              </div>
-              <div className="text-2xl sm:text-3xl font-bold font-mono tabular-nums tracking-tight text-white">
-                POKEA CASH: TZS {activeTask.expectedCashTzs.toLocaleString('en-US')}
-              </div>
-              <p className="text-xs text-slate-300">
-                {isSw ? activeTask.itemsSummarySw : activeTask.itemsSummaryEn}
-              </p>
-            </div>
-
-            <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold text-slate-900">{activeTask.dukaName}</span>
-                {activeTask.status === 'IN_TRANSIT' && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-100 border border-sky-300 text-[10px] font-bold uppercase tracking-wide text-sky-900">
-                    <Truck className="w-3 h-3" aria-hidden="true" />
-                    <span>{isSw ? 'Mzigo Upo Njiani' : 'In Transit'}</span>
+        {isLoading ? (
+          <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-600 inline-flex items-center justify-center gap-2 w-full">
+            <LoaderCircle className="w-4 h-4 animate-spin" aria-hidden="true" />
+            {isSw ? 'Inapakia oda za moja kwa moja...' : 'Loading live deliveries...'}
+          </div>
+        ) : stops.length === 0 ? (
+          <EmptyStateCard
+            locale={locale}
+            titleSw="Hakuna oda za usafirishaji kwa sasa"
+            titleEn="No active deliveries right now"
+            descriptionSw="Utakapo pangiwa oda hai (DISPATCHED) itaonekana hapa moja kwa moja kutoka mfumo."
+            descriptionEn="When you are assigned active DISPATCHED orders, they will appear here live from the system."
+          />
+        ) : (
+          <>
+            {/* Interactive Bolt-style map */}
+            <section className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+              <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                  <Navigation className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+                  {isSw ? 'Ramani ya Safari (Bolt-style)' : 'Live Route Map'}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-700">
+                  <span className="inline-flex items-center gap-1.5">
+                    <RouteIcon className="w-3.5 h-3.5 text-[#0054A6]" aria-hidden="true" />
+                    {distanceKm != null ? `${distanceKm.toFixed(distanceKm < 10 ? 1 : 0)} km` : '-- km'}
                   </span>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-700">
-                <span className="inline-flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
-                  <span>
-                    {activeTask.dukaAddress}, {activeTask.dukaWard}
-                  </span>
-                </span>
-                <a
-                  href={`tel:${activeTask.recipientPhone ?? activeTask.ownerPhone}`}
-                  className="inline-flex items-center gap-1.5 font-mono font-semibold text-emerald-800 hover:underline"
-                >
-                  <Phone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  <span>
-                    {isSw ? 'Mpokeaji' : 'Recipient'}
-                    {activeTask.recipientName ? ` · ${activeTask.recipientName}` : ''}:{' '}
-                    {activeTask.recipientPhone ?? activeTask.ownerPhone}
-                  </span>
-                </a>
-                {activeTask.sellerPhone && (
-                  <a
-                    href={`tel:${activeTask.sellerPhone}`}
-                    className="inline-flex items-center gap-1.5 font-mono font-semibold text-slate-700 hover:underline"
-                  >
-                    <Phone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                    <span>
-                      {isSw ? 'Muuzaji' : 'Seller'}
-                      {activeTask.sellerName ? ` · ${activeTask.sellerName}` : ''}:{' '}
-                      {activeTask.sellerPhone}
-                    </span>
-                  </a>
-                )}
-              </div>
-            </div>
-
-            {activeTask.status === 'PLACED' && (
-              <div className="px-5 py-4 border-b border-slate-200 bg-amber-50 flex flex-wrap items-center justify-between gap-3">
-                <p className="text-xs font-semibold text-amber-950">
-                  {isSw
-                    ? 'Mzigo bado haujaanza safari. Bonyeza kitufe kuanza usafirishaji.'
-                    : 'This delivery has not started yet. Start transit when you are ready to move.'}
-                </p>
-                <button
-                  type="button"
-                  disabled={startingTransit}
-                  onClick={() => void handleStartTransit(activeTask)}
-                  className="min-h-[42px] px-4 py-2 rounded-md bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  <Truck className="w-4 h-4" aria-hidden="true" />
-                  <span>
-                    {startingTransit
+                  <span className="inline-flex items-center gap-1.5">
+                    <Crosshair className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                    {etaMinutes != null
                       ? isSw
-                        ? 'Inaanza...'
-                        : 'Starting...'
+                        ? `ETA ~ dk ${etaMinutes}`
+                        : `ETA ~ ${etaMinutes} min`
                       : isSw
-                        ? 'Anza Usafirishaji (Mzigo Upo Njiani)'
-                        : 'Start Transit'}
+                        ? 'ETA --'
+                        : 'ETA --'}
                   </span>
-                </button>
+                  <span className="text-[11px] text-slate-500">
+                    {driverPosition
+                      ? isSw
+                        ? 'GPS ya dereva iko hai'
+                        : 'Driver GPS live'
+                      : geoError || (isSw ? 'Inasubiri GPS...' : 'Waiting for GPS...')}
+                  </span>
+                </div>
               </div>
-            )}
-
-            <form onSubmit={(e) => void handleConfirmHandover(e)} className="p-5 space-y-5">
-              <div className="space-y-4">
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
-                    <Lock className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
-                    <span>{isSw ? 'PIN yako ya Dereva (4-digit)' : 'Your Driver PIN (4-digit)'}</span>
-                  </span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={6}
-                    required
-                    disabled={activeTask.status === 'DELIVERED'}
-                    value={driverPin}
-                    onChange={(e) => setDriverPin(e.target.value)}
-                    placeholder="••••"
-                    className="w-full min-h-[48px] px-3.5 text-lg font-mono tracking-widest tabular-nums bg-white border-2 border-slate-300 rounded-md text-slate-900 focus:border-slate-900 focus:outline-none disabled:bg-slate-100"
-                  />
-                </label>
-                <p className="text-[11px] text-slate-600 flex items-start gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
-                  <span>
-                    {isSw
-                      ? 'Mteja anathibitisha PIN yake mwenyewe kwenye simu yake. Wewe unathibitisha PIN yako ya dereva pekee hapa.'
-                      : 'The buyer confirms their own PIN on their phone. You only confirm your driver PIN here.'}
-                  </span>
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-800">
-                    {isSw ? 'Taslimu Halisi Iliyopokelewa (TZS)' : 'Physical Cash Collected (TZS)'}
-                  </span>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    required
-                    disabled={activeTask.status === 'DELIVERED'}
-                    value={collectedCash}
-                    onChange={(e) => setCollectedCash(e.target.value)}
-                    className="w-full min-h-[48px] px-3.5 text-base font-bold font-mono tabular-nums bg-white border-2 border-slate-300 rounded-md text-slate-900 focus:border-slate-900 focus:outline-none disabled:bg-slate-100"
-                  />
-                </label>
-
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-800">
-                    {isSw ? 'Njia ya Malipo' : 'Payment Channel'}
-                  </span>
-                  <select
-                    value={paymentMethod}
-                    onChange={(e) =>
-                      setPaymentMethod(e.target.value as 'CASH' | 'M-PESA' | 'TIGO-PESA')
-                    }
-                    className="w-full min-h-[48px] px-3.5 text-sm font-medium bg-white border-2 border-slate-300 rounded-md text-slate-900 focus:border-slate-900 focus:outline-none"
-                  >
-                    <option value="CASH">CASH</option>
-                    <option value="M-PESA">M-PESA</option>
-                    <option value="TIGO-PESA">TIGO-PESA</option>
-                  </select>
-                </label>
-              </div>
-
-              {paymentMethod !== 'CASH' && (
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-800">
-                    {isSw ? 'Kumbukumbu ya Muamala wa Simu' : 'Mobile Money Reference'}
-                  </span>
-                  <input
-                    type="text"
-                    value={mobileMoneyRef}
-                    onChange={(e) => setMobileMoneyRef(e.target.value)}
-                    placeholder={isSw ? 'Namba ya muamala...' : 'Transaction reference ID'}
-                    className="w-full px-3.5 py-2.5 text-xs font-mono bg-white border border-slate-300 rounded-md"
-                  />
-                </label>
-              )}
-
-              {feedback && (
-                <div
-                  className={`px-4 py-3 rounded-md border text-xs flex items-start gap-2 ${
-                    feedback.type === 'success'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                      : 'bg-red-50 border-red-200 text-red-900'
-                  }`}
+              <div className="h-[320px] md:h-[380px]">
+                <MapContainer
+                  center={[destination?.lat ?? -6.7924, destination?.lng ?? 39.2083]}
+                  zoom={13}
+                  scrollWheelZoom
+                  style={{ height: '100%', width: '100%' }}
                 >
-                  {feedback.type === 'success' ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" aria-hidden="true" />
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  {fitPoints.length > 0 && <FitRouteBounds points={fitPoints} />}
+                  {polylinePositions.length >= 2 && (
+                    <Polyline
+                      positions={polylinePositions}
+                      pathOptions={{ color: '#0054A6', weight: 5, opacity: 0.85 }}
+                    />
                   )}
-                  <span>{feedback.text}</span>
+                  <LiveDriverMarker position={driverPosition} />
+                  {selectedStop && (
+                    <>
+                      <Marker position={[selectedStop.pickup.latitude, selectedStop.pickup.longitude]}>
+                        <Popup>
+                          <strong>{isSw ? 'Kuchukua (Mfanyabiashara)' : 'Pickup (Merchant)'}</strong>
+                          <br />
+                          {selectedStop.pickup.name}
+                        </Popup>
+                      </Marker>
+                      <Marker
+                        position={[selectedStop.dropoff.latitude, selectedStop.dropoff.longitude]}
+                        icon={createNumberedIcon(Math.max(1, (selectedStop.routeWaypoints?.length || 0) + 1), '#10B981')}
+                      >
+                        <Popup>
+                          <strong>{isSw ? 'Mteja (Mwisho)' : 'Customer (Drop-off)'}</strong>
+                          <br />
+                          {selectedStop.dropoff.name}
+                        </Popup>
+                      </Marker>
+                      {(selectedStop.routeWaypoints || []).map((wp, i) => {
+                        if (typeof wp.lat !== 'number' || typeof wp.lng !== 'number') return null;
+                        const step = wp.step || i + 1;
+                        return (
+                          <Marker key={`${selectedStop.orderId}-wp-${step}`} position={[wp.lat, wp.lng]} icon={createNumberedIcon(step)}>
+                            <Popup>
+                              <strong>
+                                {isSw ? 'Alama' : 'Waypoint'} {step}: {wp.label}
+                              </strong>
+                              <br />
+                              {wp.hint}
+                            </Popup>
+                          </Marker>
+                        );
+                      })}
+                    </>
+                  )}
+                </MapContainer>
+              </div>
+              {selectedStop && (
+                <div className="p-3 border-t border-slate-100 flex flex-wrap gap-2">
+                  <a
+                    href={selectedStop.customer.phoneE164 ? `tel:${selectedStop.customer.phoneE164}` : undefined}
+                    className={`min-h-[42px] px-4 rounded-lg text-sm font-semibold inline-flex items-center gap-2 ${
+                      selectedStop.customer.phoneE164
+                        ? 'bg-white border border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
+                        : 'bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed'
+                    }`}
+                    aria-disabled={!selectedStop.customer.phoneE164}
+                  >
+                    <Phone className="w-4 h-4" aria-hidden="true" />
+                    {isSw ? 'Piga Simu Mteja' : 'Call Customer'}
+                  </a>
+                  <a
+                    href={googleMapsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[42px] px-4 rounded-lg text-sm font-bold inline-flex items-center gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    <ExternalLink className="w-4 h-4" aria-hidden="true" />
+                    {isSw ? 'Anza Safari (Google Maps Navigation)' : 'Start Trip (Google Maps Navigation)'}
+                  </a>
                 </div>
               )}
+            </section>
 
-              <button
-                type="submit"
-                disabled={activeTask.status === 'DELIVERED' || submitting}
-                className="w-full min-h-[48px] px-5 py-3 text-sm font-semibold text-white bg-emerald-800 rounded-md hover:bg-emerald-900 disabled:bg-slate-300 disabled:text-slate-600 transition-colors cursor-pointer"
-              >
-                {submitting
-                  ? isSw
-                    ? 'Inahakiki...'
-                    : 'Verifying...'
-                  : activeTask.status === 'DELIVERED'
-                    ? isSw
-                      ? 'Malipo Yamethibitishwa (DELIVERED)'
-                      : 'Delivery Settled (DELIVERED)'
-                    : isSw
-                      ? 'Thibitisha Uwasilishaji (PIN ya Dereva)'
-                      : 'Confirm Delivery (Driver PIN)'}
-              </button>
-            </form>
-          </section>
-        </div>
-      )}
+            {/* Active route stops / queue */}
+            <section className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+              <h3 className="text-sm font-bold text-slate-900">
+                {isSw ? 'Foleni ya Usafirishaji Hai (Route Stops)' : 'Active Delivery Route'}
+              </h3>
+              <div className="space-y-2">
+                {stops.map((stop) => {
+                  const active = selectedStop?.orderId === stop.orderId;
+                  return (
+                    <button
+                      key={stop.orderId}
+                      type="button"
+                      onClick={() => setSelectedOrderId(stop.orderId)}
+                      className={`w-full text-left rounded-lg border p-3 transition-colors cursor-pointer ${
+                        active ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-[#0054A6] text-white text-xs font-bold">
+                              {stop.stop}
+                            </span>
+                            <span className="font-mono text-xs font-bold text-slate-900">{stop.orderRef}</span>
+                            <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                              {formatOrderStatusLabel(stop.status, locale)}
+                            </span>
+                          </div>
+                          <p className="text-sm font-semibold text-slate-900 mt-1 truncate">{stop.dropoff.name}</p>
+                          <p className="text-xs text-slate-600 truncate">
+                            <MapPin className="w-3 h-3 inline mr-1 text-slate-400" aria-hidden="true" />
+                            {stop.dropoff.ward || stop.dropoff.streetLandmark || stop.dropoff.streetAddress || (isSw ? 'Eneo la mteja' : 'Customer area')}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-sm font-bold text-slate-900">{formatTzs(stop.expectedCashTzs)}</div>
+                          <div className="text-[11px] text-slate-500">{stop.paymentMethod}</div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* Waypoint checklist + simplified PIN & cash confirmation */}
+            {selectedStop && (
+              <section className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <RouteIcon className="w-4 h-4 text-[#0054A6]" aria-hidden="true" />
+                    {isSw ? 'Alama za Njia ya Kufika Kwa Mteja' : 'Step-by-step Route Waypoints'}
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1">
+                    {isSw
+                      ? 'Fuata alama hizi za mfanyabiashara hadi ufike kwa mteja.'
+                      : 'Follow these merchant-saved markers to reach the customer easily.'}
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {(selectedStop.routeWaypoints && selectedStop.routeWaypoints.length > 0
+                      ? selectedStop.routeWaypoints
+                      : [
+                          {
+                            step: 1,
+                            label: isSw ? 'Fuata ramani hadi eneo la mteja' : 'Follow map to customer area',
+                            hint: isSw ? 'Tumia ramani na upigie mteja ukiwa karibu.' : 'Use the map and call the customer when nearby.',
+                            lat: null,
+                            lng: null,
+                          },
+                        ]
+                    ).map((wp, idx) => {
+                      const step = wp.step || idx + 1;
+                      const key = `${selectedStop.orderId}:${step}:${wp.label}`;
+                      const checked = !!checkedWaypoints[key];
+                      return (
+                        <label
+                          key={key}
+                          className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer ${
+                            checked ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleWaypoint(key)}
+                            className="mt-1 h-4 w-4 accent-emerald-600"
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-slate-900">
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#0054A6] text-white text-[11px] font-bold mr-2">
+                                {step}
+                              </span>
+                              {wp.label}
+                            </div>
+                            {wp.hint ? <p className="text-xs text-slate-600 mt-0.5">{wp.hint}</p> : null}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200 pt-4 space-y-3">
+                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+                    {isSw ? 'Uthibitisho wa Dereva (PIN & Fedha Taslimu)' : 'Driver Confirmation (PIN & Cash)'}
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[11px] text-slate-500 font-semibold">{isSw ? 'Kiasi cha Kukusanya' : 'Cash to Collect'}</div>
+                      <div className="font-bold text-slate-900">{formatTzs(selectedStop.expectedCashTzs)}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[11px] text-slate-500 font-semibold">{isSw ? 'Mteja' : 'Customer'}</div>
+                      <div className="font-semibold text-slate-900 truncate">{selectedStop.customer.name || '—'}</div>
+                      <div className="text-xs text-slate-600 font-mono">{selectedStop.customer.phoneE164 || '—'}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[11px] text-slate-500 font-semibold">{isSw ? 'Hali ya Uthibitisho' : 'Verification'}</div>
+                      <div className="font-semibold text-slate-900 flex items-center gap-1.5">
+                        {String(selectedStop.verification_status).toUpperCase().includes('VERIFIED') ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+                        ) : (
+                          <Lock className="w-4 h-4 text-amber-600" aria-hidden="true" />
+                        )}
+                        <span>{selectedStop.verification_status || 'PENDING'}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-600">
+                    {isSw
+                      ? 'Thibitisha kupokea fedha na uwasilishe PIN ya tarakimu 4 ya mteja/dereva kwenye hatua ya mwisho ya kukabidhi.'
+                      : 'Confirm cash received and complete the 4-digit buyer/driver PIN verification at final handover.'}
+                  </p>
+                  <IsolatedQrVerificationTerminal
+                    locale={locale}
+                    expectedCashTzs={Number(selectedStop.expectedCashTzs ?? 0)}
+                  />
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

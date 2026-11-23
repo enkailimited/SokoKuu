@@ -6,15 +6,21 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { OrderChannel, OrderOrigin, OrderStatus, Prisma } from '@prisma/client';
+import { OrderChannel, OrderMode, OrderOrigin, OrderStatus, Prisma } from '@prisma/client';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { Role } from '@common/security/roles.enum';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
 import { PricingRoutingEngine } from '@modules/07-pricing/pricing-routing.engine';
+import { DispatchService } from '@modules/12-dispatch/dispatch.service';
 import { RedisService } from '@redis/redis.service';
-import { CancelOrderDto, CreateOrderRequestDto } from './dto/orders.dto';
+import {
+  CancelOrderDto,
+  CreateOrderRequestDto,
+  OrderModeDto,
+  SubmitBatchOrdersDto,
+} from './dto/orders.dto';
 import { assertValidOrderTransition } from './order-state.policy';
 
 export interface OrderReceiptLineResponse {
@@ -35,6 +41,8 @@ export interface OrderReceiptResponse {
   status: OrderStatus;
   originChannel: OrderOrigin;
   orderChannel: OrderChannel;
+  orderMode: OrderMode;
+  scheduledDeliveryDate: string | null;
   routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
   targetPipeline: string;
   expectedTotalTzs: number;
@@ -82,6 +90,7 @@ export class OrdersService {
     private readonly outboxService: OutboxService,
     private readonly redisService: RedisService,
     private readonly pricingEngine: PricingRoutingEngine,
+    private readonly dispatchService: DispatchService,
   ) {}
 
   async createOrder(
@@ -97,12 +106,19 @@ export class OrdersService {
       );
     }
 
+    const { orderMode, scheduledDeliveryDate } = this.resolveAndValidateOrderMode(
+      dto.orderMode,
+      dto.scheduledDeliveryDate,
+    );
+
     const scopeKey = `ORDER_CREATE:${user.sub}:${idempotencyKey}`;
     const orderChannel = dto.orderChannel ?? OrderChannel.RETAIL_MARKETPLACE;
     const canonicalPayload = JSON.stringify({
       sellerBusinessId: dto.sellerBusinessId,
       originChannel: dto.originChannel ?? 'PWA_ONLINE',
       orderChannel,
+      orderMode,
+      scheduledDeliveryDate,
       paymentMethod: dto.paymentMethod ?? 'CASH',
       deliveryFeeTzs: dto.deliveryFeeTzs ?? 0,
       items: dto.items.map((item) => ({
@@ -269,6 +285,31 @@ export class OrdersService {
 
         const paymentMethod = dto.paymentMethod ?? 'CASH';
 
+        const sellerZone = await tx.businessProfile.findUnique({
+          where: { id: quote.sellerBusinessId },
+          select: { ward: true, wardName: true },
+        });
+        const deliveryZoneWard = (sellerZone as any)?.wardName || sellerZone?.ward || null;
+        const rawDateStr =
+          scheduledDeliveryDate ??
+          (!dto.orderMode && dto.scheduledDeliveryDate ? dto.scheduledDeliveryDate.trim() : null);
+        let scheduledDeliveryDateObj: Date | null = null;
+        if (rawDateStr) {
+          const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(rawDateStr);
+          if (m) {
+            scheduledDeliveryDateObj = new Date(
+              Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])),
+            );
+          } else {
+            const parsed = new Date(rawDateStr);
+            if (!Number.isNaN(parsed.getTime())) {
+              scheduledDeliveryDateObj = new Date(
+                Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()),
+              );
+            }
+          }
+        }
+
         const createdOrder = await tx.order.create({
           data: {
             id: orderId,
@@ -278,13 +319,16 @@ export class OrdersService {
             status: 'PLACED',
             originChannel,
             orderChannel,
+            orderMode,
+            scheduledDeliveryDate: scheduledDeliveryDateObj,
+            deliveryZoneWard,
             routingTargetPipeline: targetPipeline,
             rawSmsPayload: dto.rawSmsPayload ?? null,
             expectedTotalTzs: BigInt(quote.expectedTotalTzs),
             deliveryFeeTzs: BigInt(quote.deliveryFeeTzs),
             paymentMethod,
             paidAmountTzs: 0n,
-          },
+          } as any,
           select: {
             id: true,
             orderRef: true,
@@ -407,6 +451,8 @@ export class OrdersService {
           status: 'PLACED',
           originChannel,
           orderChannel,
+          orderMode,
+          scheduledDeliveryDate,
           routingOutputCode,
           targetPipeline,
           expectedTotalTzs: quote.expectedTotalTzs,
@@ -447,6 +493,92 @@ export class OrdersService {
     } finally {
       await this.releaseRedisLock(lockKey, lockToken);
     }
+  }
+
+  async submitBatchOrders(
+    dto: SubmitBatchOrdersDto,
+    idempotencyKeyHeader: string | undefined,
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    const idempotencyKey = idempotencyKeyHeader?.trim();
+    if (!idempotencyKey || idempotencyKey.length < 4 || idempotencyKey.length > 120) {
+      throw new BadRequestException(
+        'X-Idempotency-Key header (4–120 characters) is required for batch order submission.',
+      );
+    }
+
+    const { orderMode, scheduledDeliveryDate } = this.resolveAndValidateOrderMode(
+      dto.orderMode,
+      dto.scheduledDeliveryDate,
+    );
+
+    const receipts: OrderReceiptResponse[] = [];
+    const baseKey = idempotencyKey.slice(0, 80);
+
+    for (let idx = 0; idx < dto.orders.length; idx += 1) {
+      const entry = dto.orders[idx];
+      const perMerchantKey = `${baseKey}:${idx}:${entry.sellerBusinessId.slice(0, 8)}`;
+      const receipt = await this.createOrder(
+        {
+          sellerBusinessId: entry.sellerBusinessId,
+          originChannel: dto.originChannel,
+          orderChannel: entry.orderChannel,
+          orderMode: orderMode === OrderMode.SCHEDULED ? OrderModeDto.SCHEDULED : OrderModeDto.INSTANT,
+          scheduledDeliveryDate: scheduledDeliveryDate ?? undefined,
+          paymentMethod: entry.paymentMethod ?? dto.paymentMethod ?? 'CASH',
+          deliveryFeeTzs: entry.deliveryFeeTzs,
+          items: entry.items,
+        },
+        perMerchantKey,
+        user,
+        tenantContext,
+      );
+      receipts.push(receipt);
+    }
+
+    return {
+      batchCount: receipts.length,
+      orderMode,
+      scheduledDeliveryDate,
+      totalBatchTzs: receipts.reduce((sum, r) => sum + r.expectedTotalTzs, 0),
+      orders: receipts,
+    };
+  }
+
+  private resolveAndValidateOrderMode(
+    requestedMode?: OrderModeDto,
+    rawScheduledDate?: string,
+  ): { orderMode: OrderMode; scheduledDeliveryDate: string | null } {
+    if (requestedMode !== OrderModeDto.SCHEDULED) {
+      return { orderMode: OrderMode.INSTANT, scheduledDeliveryDate: null };
+    }
+
+    const trimmed = rawScheduledDate?.trim() ?? '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      throw new BadRequestException(
+        'scheduledDeliveryDate (YYYY-MM-DD) is required when orderMode is SCHEDULED.',
+      );
+    }
+
+    const parsed = new Date(`${trimmed}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== trimmed) {
+      throw new BadRequestException('scheduledDeliveryDate is not a valid calendar date.');
+    }
+
+    // Current date in East Africa Time (UTC+3)
+    const nowEat = new Date(Date.now() + 3 * 60 * 60 * 1000);
+    const todayEat = nowEat.toISOString().slice(0, 10);
+    if (trimmed < todayEat) {
+      throw new BadRequestException(
+        `scheduledDeliveryDate (${trimmed}) cannot be in the past (today EAT: ${todayEat}).`,
+      );
+    }
+
+    return {
+      orderMode: OrderMode.SCHEDULED,
+      scheduledDeliveryDate: trimmed,
+    };
   }
 
   async cancelOrder(
@@ -633,6 +765,10 @@ export class OrdersService {
       driverUserId: order.driverUserId,
       status: order.status,
       originChannel: order.originChannel,
+      orderMode: order.orderMode,
+      scheduledDeliveryDate: order.scheduledDeliveryDate
+        ? new Date(order.scheduledDeliveryDate).toISOString().slice(0, 10)
+        : null,
       routingTargetPipeline: order.routingTargetPipeline,
       expectedTotalTzs: Number(order.expectedTotalTzs),
       deliveryFeeTzs: Number(order.deliveryFeeTzs),
@@ -765,6 +901,10 @@ export class OrdersService {
         driverUserId: order.driverUserId,
         status: order.status,
         originChannel: order.originChannel,
+        orderMode: order.orderMode,
+        scheduledDeliveryDate: order.scheduledDeliveryDate
+          ? new Date(order.scheduledDeliveryDate).toISOString().slice(0, 10)
+          : null,
         routingTargetPipeline: order.routingTargetPipeline,
         expectedTotalTzs: Number(order.expectedTotalTzs),
         deliveryFeeTzs: Number(order.deliveryFeeTzs),
@@ -846,5 +986,171 @@ export class OrdersService {
     } catch {
       // Lock naturally expires by TTL
     }
+  }
+
+  async getZoneSchedule(
+    date: string,
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    let sellerBusinessId = tenantContext?.businessId ?? null;
+    if (user.role === Role.SUPER_ADMIN) {
+      // super admin can pass? not specified; default to tenant context if present
+      sellerBusinessId = tenantContext?.businessId ?? sellerBusinessId;
+    } else {
+      sellerBusinessId = tenantContext?.businessId ?? null;
+    }
+    if (!sellerBusinessId) {
+      const owned = await this.prismaService.businessProfile.findFirst({
+        where: { ownerUserId: user.sub },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      sellerBusinessId = owned?.id ?? null;
+    }
+    if (!sellerBusinessId) {
+      throw new ForbiddenException('Hakuna wasifu wa biashara uliopatikana kwa muuzaji huyu.');
+    }
+
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+
+    const orders = await this.prismaService.order.findMany({
+      where: {
+        sellerBusinessId,
+        status: { in: ['PLACED', 'DISPATCHED'] as any },
+        OR: [
+          { scheduledDeliveryDate: { gte: dayStart, lte: dayEnd } as any },
+          { scheduledDeliveryDate: null as any, placedAt: { gte: dayStart, lte: dayEnd } },
+        ],
+      } as any,
+      include: {
+        items: { select: { quantity: true, baseUnitsTotal: true } },
+        buyer: { select: { fullName: true, phoneE164: true } },
+        cashLedger: { select: { verificationStatus: true } },
+      },
+      orderBy: [{ deliveryZoneWard: 'asc' as any }, { placedAt: 'asc' }],
+    });
+
+    const groups = new Map<string, any>();
+    for (const o of orders as any[]) {
+      const zone = (o.deliveryZoneWard || 'Eneo Lisilojulikana').trim() || 'Eneo Lisilojulikana';
+      if (!groups.has(zone)) {
+        groups.set(zone, {
+          deliveryZoneWard: zone,
+          orderCount: 0,
+          totalTzs: 0,
+          totalPackages: 0,
+          orders: [],
+        });
+      }
+      const g = groups.get(zone);
+      g.orderCount += 1;
+      g.totalTzs += Number(o.expectedTotalTzs ?? 0n);
+      const packages = (o.items || []).reduce(
+        (sum: number, it: any) => sum + Number(it.quantity ?? 0),
+        0,
+      );
+      g.totalPackages += packages;
+      g.orders.push({
+        orderId: o.id,
+        orderRef: o.orderRef,
+        status: o.status,
+        expectedTotalTzs: Number(o.expectedTotalTzs ?? 0n),
+        deliveryFeeTzs: Number(o.deliveryFeeTzs ?? 0n),
+        scheduledDeliveryDate: o.scheduledDeliveryDate ? new Date(o.scheduledDeliveryDate).toISOString().slice(0, 10) : null,
+        deliveryZoneWard: o.deliveryZoneWard ?? zone,
+        buyerName: o.buyer?.fullName ?? null,
+        buyerPhoneE164: o.buyer?.phoneE164 ?? null,
+        verificationStatus: o.cashLedger?.verificationStatus ?? null,
+        packages,
+      });
+    }
+
+    const zones = Array.from(groups.values()).sort((a, b) => b.orderCount - a.orderCount || b.totalTzs - a.totalTzs);
+    return {
+      date,
+      sellerBusinessId,
+      zoneCount: zones.length,
+      totalOrders: orders.length,
+      zones,
+    };
+  }
+
+  async dispatchZoneBatch(
+    params: { date: string; deliveryZoneWard: string; driverUserId?: string },
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    let sellerBusinessId = tenantContext?.businessId ?? null;
+    if (!sellerBusinessId) {
+      const owned = await this.prismaService.businessProfile.findFirst({
+        where: { ownerUserId: user.sub },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      sellerBusinessId = owned?.id ?? null;
+    }
+    if (!sellerBusinessId) {
+      throw new ForbiddenException('Hakuna wasifu wa biashara uliopatikana kwa muuzaji huyu.');
+    }
+
+    const dayStart = new Date(`${params.date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${params.date}T23:59:59.999Z`);
+    const zone = params.deliveryZoneWard.trim();
+
+    const orders = await this.prismaService.order.findMany({
+      where: {
+        sellerBusinessId,
+        status: 'PLACED' as any,
+        deliveryZoneWard: zone as any,
+        OR: [
+          { scheduledDeliveryDate: { gte: dayStart, lte: dayEnd } as any },
+          { scheduledDeliveryDate: null as any, placedAt: { gte: dayStart, lte: dayEnd } },
+        ],
+      } as any,
+      select: { id: true, orderRef: true },
+      orderBy: { placedAt: 'asc' },
+    });
+
+    if (orders.length === 0) {
+      return {
+        date: params.date,
+        deliveryZoneWard: zone,
+        dispatchedCount: 0,
+        failed: [],
+        message: 'Hakuna oda za PLACED zilizopatikana kwa eneo na tarehe hii.',
+      };
+    }
+
+    const dispatched: Array<{ orderId: string; orderRef: string }> = [];
+    const failed: Array<{ orderId: string; orderRef: string; reason: string }> = [];
+
+    for (const o of orders) {
+      try {
+        await this.dispatchService.dispatchOrderAndAllocatePins(
+          o.id,
+          { driverUserId: params.driverUserId } as any,
+          user,
+          tenantContext,
+        );
+        dispatched.push({ orderId: o.id, orderRef: o.orderRef });
+      } catch (err) {
+        failed.push({
+          orderId: o.id,
+          orderRef: o.orderRef,
+          reason: err instanceof Error ? err.message : 'Imeshindikana kutuma oda.',
+        });
+      }
+    }
+
+    return {
+      date: params.date,
+      deliveryZoneWard: zone,
+      sellerBusinessId,
+      dispatchedCount: dispatched.length,
+      dispatched,
+      failed,
+    };
   }
 }

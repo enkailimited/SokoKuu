@@ -9,6 +9,7 @@ import { Prisma, StandardPricingProfileType, SystemUnitCategory } from '@prisma/
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
+import { syncLinkedProductFromClone } from './clone-product-sync.util';
 import { computeWeightedAvgPurchaseCost } from './costing.util';
 import {
   CreateStandardPricingProfileDto,
@@ -518,6 +519,8 @@ export class CentralizedUnitsPricingService {
         });
       }
 
+      await syncLinkedProductFromClone(tx, clonedProductId);
+
       return {
         overrideId: savedOverride.id,
         clonedProductId,
@@ -734,6 +737,8 @@ export class CentralizedUnitsPricingService {
         });
       }
 
+      await syncLinkedProductFromClone(tx, clonedProductId);
+
       return {
         overrideId: updated.id,
         clonedProductId,
@@ -756,6 +761,15 @@ export class CentralizedUnitsPricingService {
     tenantContext?: TenantContext,
   ) {
     const status = dto.receiptStatus ?? 'GOODS_RECEIVED';
+    const stockSource = dto.stockSource ?? 'EXTERNAL_SUPPLIER';
+    const rawSupplier = dto.supplierName?.trim() ?? '';
+    if (stockSource === 'EXTERNAL_SUPPLIER' && !rawSupplier) {
+      throw new BadRequestException(
+        'Supplier name is required for external supplier purchases. / Jina la msambazaji linahitajika kwa manunuzi ya nje.',
+      );
+    }
+    const resolvedSupplierName =
+      rawSupplier || 'Mzigo Uliokuwepo Dukani (Existing Store Stock)';
 
     return this.prismaService.runInTransaction('Serializable', async (tx) => {
       const lockedClones = await tx.$queryRaw<
@@ -832,7 +846,8 @@ export class CentralizedUnitsPricingService {
             businessId: cloned.retailer_business_id,
             clonedProductId: cloned.id,
             globalProductUnitId: dto.globalProductUnitId ?? null,
-            supplierName: dto.supplierName.trim(),
+            stockSource,
+            supplierName: resolvedSupplierName,
             supplierReference: dto.supplierReference?.trim() ?? null,
             receiptStatus: 'ORDER_CONFIRMED',
             quantityUnits: dto.quantityUnits,
@@ -857,6 +872,7 @@ export class CentralizedUnitsPricingService {
         return {
           receiptId: receipt.id,
           clonedProductId: cloned.id,
+          stockSource,
           receiptStatus: 'ORDER_CONFIRMED' as const,
           stockHydrated: false,
           availableQuantaStock: Number(cloned.available_quanta_stock),
@@ -878,7 +894,8 @@ export class CentralizedUnitsPricingService {
           businessId: cloned.retailer_business_id,
           clonedProductId: cloned.id,
           globalProductUnitId: dto.globalProductUnitId ?? null,
-          supplierName: dto.supplierName.trim(),
+          stockSource,
+          supplierName: resolvedSupplierName,
           supplierReference: dto.supplierReference?.trim() ?? null,
           receiptStatus: 'GOODS_RECEIVED',
           quantityUnits: dto.quantityUnits,
@@ -905,6 +922,8 @@ export class CentralizedUnitsPricingService {
          WHERE id = ${cloned.id}::uuid
       `;
 
+      await syncLinkedProductFromClone(tx, cloned.id);
+
       if (tx.financialAuditLog && typeof tx.financialAuditLog.create === 'function') {
         await tx.financialAuditLog.create({
           data: {
@@ -917,7 +936,8 @@ export class CentralizedUnitsPricingService {
             details: {
               receiptId: receipt.id,
               clonedProductId: cloned.id,
-              supplierName: dto.supplierName.trim(),
+              stockSource,
+              supplierName: resolvedSupplierName,
               receivedQuanta,
               newTotalQuanta: costing.newTotalQuanta,
               lastBuyingPricePerQuantumTzs: Number(costing.lastBuyingPricePerQuantumTzs),
@@ -940,6 +960,7 @@ export class CentralizedUnitsPricingService {
             receiptId: receipt.id,
             businessId: cloned.retailer_business_id,
             clonedProductId: cloned.id,
+            stockSource,
             receivedQuanta,
             newTotalQuanta: costing.newTotalQuanta,
             weightedAvgBuyingCostPerQuantumTzs: Number(costing.weightedAvgBuyingCostPerQuantumTzs),
@@ -951,6 +972,7 @@ export class CentralizedUnitsPricingService {
       return {
         receiptId: receipt.id,
         clonedProductId: cloned.id,
+        stockSource,
         receiptStatus: 'GOODS_RECEIVED' as const,
         stockHydrated: true,
         receivedQuanta,

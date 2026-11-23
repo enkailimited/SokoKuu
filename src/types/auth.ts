@@ -35,6 +35,7 @@ export interface UserProfile {
   role: PlatformRole;
   mode: AccountMode;
   preferredLocale?: Locale;
+  preferredLanguage?: Locale;
   smsAlertsEnabled: boolean;
   offlineSmsFallbackEnabled: boolean;
 }

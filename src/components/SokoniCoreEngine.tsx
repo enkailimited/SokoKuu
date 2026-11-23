@@ -3,23 +3,26 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  ClipboardList,
   KeyRound,
   Minus,
+  PackagePlus,
   Plus,
   RefreshCw,
   Search,
   ShoppingBag,
-  ShoppingCart,
+  Store,
+  Tag,
   Truck,
   Wifi,
   WifiOff,
   X,
-  Zap,
 } from 'lucide-react';
-import type { Locale } from '../data/i18n';
+import { t, type Locale } from '../i18n';
 import { useDataSaver } from '../context/DataSaverContext';
-import { listQueuedOrders, putQueuedOrder } from '../lib/indexedDbDemo';
-import { formatOrderStatusLabel, formatRoutingLabel } from '../lib/sokoManagedState';
+import { listQueuedOrders } from '../lib/indexedDbDemo';
+import { formatOrderStatusLabel } from '../lib/sokoManagedState';
+import { resolveBackendImageUrl } from '../lib/sokoProductImage';
 import {
   categoryFromSystemUnitCode,
   formatQuantaMeasurement,
@@ -31,153 +34,120 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
-import { SmartStoreCatalog } from './SmartStoreCatalog';
-import { SmartGridStoreCatalog } from './SmartGridStoreCatalog';
 import { IsolatedQrVerificationTerminal } from './IsolatedQrVerificationTerminal';
-import { resolveBackendImageUrl } from '../lib/sokoProductImage';
+import {
+  SokoniOrderDiscoveryView,
+  type SokoniSelectionItem,
+} from './SokoniOrderDiscoveryView';
 
-type ActiveScreen = 'HOME' | 'DIRECTORY' | 'CATALOG' | 'PIN_TERMINAL';
+export type SokoniSubView = 'BUY' | 'SELL' | 'ORDERS';
+type ActiveStage = 'BROWSE' | 'DISCOVERY' | 'PIN_TERMINAL';
 
-type MarketplaceAudience = 'SUPPLIERS' | 'WHOLESALE_MERCHANTS' | 'RETAIL_MERCHANTS';
-
-type PackagingUnit =
-  | 'CARTON'
-  | 'DOZEN'
-  | 'PACK'
-  | 'UNIT'
-  | 'SACK_50KG'
-  | 'SACK_25KG'
-  | 'QUARTER_KILO_LITRE'
-  | 'HALF_KILO_LITRE'
-  | 'THREE_QUARTER_KILO'
-  | 'SINGLE_KILO_LITRE';
-
-interface WholesaleHub {
-  businessId: string;
-  name: string;
-  initials: string;
-  brandRingColor: string;
-  ward: string;
-  tier?: string;
-  smsShortCode?: string;
-  logoUrl?: string;
-  distanceMeters: number;
-  deliveryFeeTzs: number;
-  /** Supplier hubs order through SUPPLIER_TO_WHOLESALER with server quotes. */
-  kind?: 'MERCHANT' | 'SUPPLIER';
-}
-
-interface CatalogProduct {
-  productId: string;
-  businessId: string;
-  sku: string;
+interface CatalogCategoryDto {
+  id: string;
+  categoryCode: string;
   nameSw: string;
   nameEn: string;
-  imageSrc: string;
-  orderUnitType: PackagingUnit;
-  quantaPerOrderUnit: number;
-  quantaUnitLabelSw: string;
-  quantaUnitLabelEn: string;
-  wholesaleThresholdUnits: number;
-  retailPricePerUnitTzs: number;
-  wholesalePricePerUnitTzs: number;
-  availableQuantaStock: number;
-  isLowStockInDuka?: boolean;
-  supplierListingId?: string;
-  minOrderUnits?: number;
+  imagekitFolderPath?: string;
+  isActive: boolean;
 }
 
-interface DispatchedOrderRecord {
-  orderId: string;
-  orderRef8: string;
-  sellerBusinessId: string;
-  sellerName: string;
-  subtotalTzs: number;
-  deliveryFeeTzs: number;
-  totalCashDueTzs: number;
-  itemsSummary: string;
-  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
-}
-
-interface BackendMerchantDto {
-  merchantId: string;
-  smsShortCode: string;
-  merchantName: string;
-  tier: string;
-  ward: string;
-  district: string;
-  isPlatformManaged: boolean;
-  offersFreeDelivery?: boolean;
-  activeSkusCount: number;
-  logoUrl?: string;
-}
-
-interface BackendSupplierListingDto {
-  listingId: string;
-  supplierBusinessId: string;
-  supplierName: string;
-  productId: string | null;
-  globalCatalogId: string;
-  canonicalSku: string;
-  nameSw: string;
-  nameEn: string;
-  imagekitCdnUrl: string;
+interface GlobalProductUnitDto {
+  id: string;
   systemUnitId: string;
-  systemUnitCode: string;
-  systemUnitLabelSw: string;
   quarterQuantaPerUnit: number;
-  supplierBulkPriceTzs: string;
-  minOrderQuantity: number;
-  availableQuantaStock: number;
-  maxOrderQuantity: number;
-  isFreeDeliveryEnabled: boolean;
-  freeDeliveryMinOrderTzs: string;
-  standardDeliveryFeeTzs: string;
-  deliveryCoverageRegions: string[];
-  isAvailable: boolean;
+  displayLabelSw: string | null;
+  displayLabelEn: string | null;
+  isWholesaleUnit: boolean;
+  systemUnit: {
+    id: string;
+    unitCode: string;
+    nameSw: string;
+    nameEn: string;
+    abbreviation: string;
+    category: string;
+  };
 }
 
-interface BackendProductDto {
+interface GlobalStandardPriceDto {
+  id: string;
+  globalProductUnitId: string;
+  profileType: string;
+  minQty: number;
+  maxQty: number | null;
+  standardPriceTzs: number;
+}
+
+interface GlobalCatalogItemDto {
+  id: string;
+  canonicalSku: string;
+  categoryCode: string;
+  fixedNameSw: string;
+  fixedNameEn: string;
+  imagekitCdnUrl?: string | null;
+  staticImageUrl?: string | null;
+  baseQuantumUnit: string;
+  clonedByStoresCount: number;
+  productUnits?: GlobalProductUnitDto[];
+  standardPrices?: GlobalStandardPriceDto[];
+}
+
+interface MerchantShelfProductDto {
   productId: string;
-  sellerBusinessId: string;
   sku: string;
   nameSw: string;
   nameEn: string;
   unitPriceTzs: number;
   cartonPriceTzs: number;
-  wholesaleThresholdUnits: number;
   availableQuarterQuanta: number;
   sealedBulkPackagesStock: number;
-  globalCatalogId?: string | null;
-  imagekitCdnUrl?: string;
-  staticImageUrl?: string;
-  priceTiers?: Array<{
-    id: string;
-    unitType: PackagingUnit;
+  quantaPerSealedPackage: number;
+  isPublishedToMarket?: boolean;
+}
+
+interface SupplierInventoryItemDto {
+  productId: string;
+  smsItemCode: string;
+  nameSw: string;
+  nameEn: string;
+  globalCatalogId: string | null;
+  canonicalSku: string | null;
+  availableQuantaStock: number;
+  unitConversions: Array<{
+    globalProductUnitId: string;
+    systemUnitId: string;
+    unitCode: string;
+    nameSw: string;
+    nameEn: string;
     quarterQuantaPerUnit: number;
-    priceTzs: number;
-    isWholesaleTier: boolean;
+    displayLabelSw: string | null;
+    displayLabelEn: string | null;
   }>;
 }
 
-interface BackendIntelligentItemDto {
-  productId: string;
-  sku: string;
-  requiresUrgentReorder: boolean;
+interface SupplierDeliverySettingsDto {
+  isFreeDeliveryEnabled: boolean;
+  freeDeliveryMinOrderTzs: string;
+  standardDeliveryFeeTzs: string;
+  deliveryCoverageRegions: string[];
 }
 
-interface BackendOrderDto {
+interface BuyingOrderDto {
   orderId: string;
   orderRef: string;
   sellerBusinessId: string;
   sellerBusinessName: string;
   expectedTotalTzs: number;
   deliveryFeeTzs: number;
-  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
+  status: 'PLACED' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED' | 'DISPUTED';
+  orderMode?: 'INSTANT' | 'SCHEDULED';
+  scheduledDeliveryDate?: string | null;
+  placedAt: string;
   items: Array<{
     sku?: string;
     smsItemCode?: string;
     nameSw?: string;
+    nameEn?: string;
     unitType: string;
     quantity: number;
     baseUnitsTotal: number;
@@ -189,236 +159,155 @@ function isUuid(val?: string | null): val is string {
   return Boolean(val && UUID_REGEX.test(val));
 }
 
-function supplierPackagingUnit(
-  unitCode: string,
-  quarterQuantaPerUnit: number,
-): PackagingUnit {
-  const code = unitCode.toUpperCase();
-  if (code.includes('GUNIA') || code.includes('SACK')) {
-    return quarterQuantaPerUnit >= 200 ? 'SACK_50KG' : 'SACK_25KG';
+function formatUnitOptionLabel(unit: GlobalProductUnitDto, isSw: boolean): string {
+  const custom = isSw ? unit.displayLabelSw : unit.displayLabelEn;
+  if (custom && custom.trim().length > 0) return custom;
+  const code = unit.systemUnit?.unitCode ?? 'UNIT';
+  const cat = categoryFromSystemUnitCode(code);
+  const baseName = isSw
+    ? unit.systemUnit?.nameSw || formatSystemUnitLabel(code, unit.quarterQuantaPerUnit, 'sw')
+    : unit.systemUnit?.nameEn || formatSystemUnitLabel(code, unit.quarterQuantaPerUnit, 'en');
+  if (cat === 'PACKAGING') {
+    return baseName;
   }
-  if (code.includes('DEBE') || code.includes('CARTON')) return 'CARTON';
-  if (code.includes('DOZEN')) return 'DOZEN';
-  if (code.includes('PACK')) return 'PACK';
-  if (quarterQuantaPerUnit >= 200) return 'SACK_50KG';
-  if (quarterQuantaPerUnit >= 100) return 'SACK_25KG';
-  if (quarterQuantaPerUnit >= 48) return 'CARTON';
-  if (quarterQuantaPerUnit >= 4) return 'UNIT';
-  return 'QUARTER_KILO_LITRE';
-}
-
-function formatUnitShortLabel(unit: PackagingUnit, quanta: number, isSw: boolean): string {
-  return formatSystemUnitLabel(unit, quanta, isSw ? 'sw' : 'en');
+  return `${baseName} (${formatQuantaMeasurement(unit.quarterQuantaPerUnit, cat, isSw ? 'sw' : 'en')})`;
 }
 
 export function SokoniCoreEngine({
-  locale = 'en',
+  locale = 'sw',
   userRole = 'RETAILER',
   userTier = null,
+  businessId = null,
+  initialView = 'BUY',
+  onBackToDashboard,
+  initialGlobalCatalogId = null,
+  onClearInitialCatalogFilter,
 }: {
   locale?: Locale;
-  userRole?: 'RETAILER' | 'WHOLESALER' | 'CONSUMER';
+  userRole?: 'RETAILER' | 'WHOLESALER' | 'SUPPLIER' | 'CONSUMER';
   userTier?: string | null;
   businessId?: string | null;
+  initialView?: SokoniSubView;
+  onBackToDashboard?: () => void;
+  initialGlobalCatalogId?: string | null;
+  onClearInitialCatalogFilter?: () => void;
 }) {
   const isSw = locale === 'sw';
-  const isSupplierBuyer =
-    userRole === 'WHOLESALER' || (userRole === 'RETAILER' && userTier === 'HYBRID_STORE');
-  const marketplaceAudience: MarketplaceAudience = isSupplierBuyer
-    ? 'SUPPLIERS'
-    : userRole === 'CONSUMER'
-      ? 'RETAIL_MERCHANTS'
-      : 'WHOLESALE_MERCHANTS';
-  const isSupplierAudience = marketplaceAudience === 'SUPPLIERS';
-  const buyerTerminalRoleLabel = userRole === 'WHOLESALER'
-    ? (isSw ? 'Muuzaji Jumla' : 'Wholesaler')
-    : userRole === 'CONSUMER'
-      ? (isSw ? 'Mteja' : 'Consumer')
-      : userTier === 'HYBRID_STORE'
-        ? 'Hybrid Store'
-        : (isSw ? 'Muuzaji Rejareja' : 'Retailer');
+  const isMerchantSeller =
+    userRole === 'RETAILER' || userRole === 'WHOLESALER' || userRole === 'SUPPLIER';
   const { isLowDataModeActive } = useDataSaver();
-  const visibleMerchantTiers = useMemo(
-    () =>
-      marketplaceAudience === 'RETAIL_MERCHANTS'
-        ? ['RETAIL_DUKA', 'HYBRID_STORE']
-        : ['WHOLESALE', 'HYBRID_STORE'],
-    [marketplaceAudience],
-  );
-  const directoryLabels =
-    marketplaceAudience === 'SUPPLIERS'
-      ? {
-          countSw: 'Wasambizaji',
-          countEn: 'Suppliers',
-          loadingSw: 'Inatafuta wasambizaji...',
-          loadingEn: 'Loading suppliers...',
-          emptyTitleSw: 'Hakuna wasambizaji bado',
-          emptyTitleEn: 'No suppliers yet',
-          emptySw:
-            'Hakuna wasambizaji waliopatikana kwenye PostgreSQL kwa sasa.',
-          emptyEn: 'No available suppliers found in PostgreSQL yet.',
-        }
-      : marketplaceAudience === 'RETAIL_MERCHANTS'
-        ? {
-            countSw: 'Maduka ya Rejareja',
-            countEn: 'Retail Merchants',
-            loadingSw: 'Inatafuta maduka ya rejareja...',
-            loadingEn: 'Loading retail merchants...',
-            emptyTitleSw: 'Hakuna duka bado',
-            emptyTitleEn: 'No merchants yet',
-            emptySw:
-              'Hakuna duka la rejareja au duka mseto lililosajiliwa katika PostgreSQL kwa sasa.',
-            emptyEn: 'No open retail or hybrid merchants found in PostgreSQL yet.',
-          }
-        : {
-            countSw: 'Maduka ya Jumla',
-            countEn: 'Wholesale Merchants',
-            loadingSw: 'Inatafuta maduka ya jumla...',
-            loadingEn: 'Loading wholesale merchants...',
-            emptyTitleSw: 'Hakuna duka bado',
-            emptyTitleEn: 'No merchants yet',
-            emptySw:
-              'Hakuna duka la jumla au duka mseto lililosajiliwa katika PostgreSQL kwa sasa.',
-            emptyEn: 'No open wholesale or hybrid merchants found in PostgreSQL yet.',
-          };
 
-  const [screen, setScreen] = useState<ActiveScreen>('HOME');
+  const [subView, setSubView] = useState<SokoniSubView>(
+    initialView === 'SELL' && !isMerchantSeller ? 'BUY' : initialView,
+  );
+  const [stage, setStage] = useState<ActiveStage>('BROWSE');
+
+  useEffect(() => {
+    setSubView(initialView === 'SELL' && !isMerchantSeller ? 'BUY' : initialView);
+    setStage('BROWSE');
+  }, [initialView, isMerchantSeller]);
+
   const [isOnline, setIsOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true,
   );
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
-  const [hubs, setHubs] = useState<WholesaleHub[]>([]);
-  const [selectedStore, setSelectedStore] = useState<WholesaleHub | null>(null);
-  const [liveStoreCatalog, setLiveStoreCatalog] = useState<CatalogProduct[]>([]);
-  const [loadingHubs, setLoadingHubs] = useState<boolean>(false);
-  const [loadingCatalog, setLoadingCatalog] = useState<boolean>(false);
-  const [submittingOrder, setSubmittingOrder] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [queuedOfflineCount, setQueuedOfflineCount] = useState<number>(0);
 
-  const [cartUnitsByProduct, setCartUnitsByProduct] = useState<Record<string, number>>({});
-  const [checkoutSheetOpen, setCheckoutSheetOpen] = useState<boolean>(false);
-  const [smartReorderMode, setSmartReorderMode] = useState<boolean>(false);
-  const [smartGridMode, setSmartGridMode] = useState<boolean>(false);
-  const [catalogSearchQuery, setCatalogSearchQuery] = useState<string>('');
+  // Screen 2 — Nunua Sokoni state
+  const [categories, setCategories] = useState<CatalogCategoryDto[]>([]);
+  const [selectedCategoryCodes, setSelectedCategoryCodes] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [catalogItems, setCatalogItems] = useState<GlobalCatalogItemDto[]>([]);
+  const [loadingCatalog, setLoadingCatalog] = useState<boolean>(true);
+  const [selectedQtyByCatalogId, setSelectedQtyByCatalogId] = useState<Record<string, number>>({});
+  const [selectedUnitByCatalogId, setSelectedUnitByCatalogId] = useState<
+    Record<string, string>
+  >({});
 
-  const [orders, setOrders] = useState<DispatchedOrderRecord[]>([]);
+  // Orders & PIN state
+  const [orders, setOrders] = useState<BuyingOrderDto[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState<boolean>(false);
   const [activePinOrderId, setActivePinOrderId] = useState<string | null>(null);
 
-  const [floatingToast, setFloatingToast] = useState<{
-    title: string;
-    detail: string;
-  } | null>(null);
+  useEffect(() => {
+    if (!initialGlobalCatalogId) return;
+    setSubView('BUY');
+    setStage('BROWSE');
+    setSelectedQtyByCatalogId((prev) =>
+      prev[initialGlobalCatalogId] ? prev : { ...prev, [initialGlobalCatalogId]: 1 },
+    );
+    onClearInitialCatalogFilter?.();
+  }, [initialGlobalCatalogId, onClearInitialCatalogFilter]);
+
+  // Uza Sokoni (Merchant / Supplier Sell state)
+  const [sellLoading, setSellLoading] = useState<boolean>(false);
+  const [offersFreeDelivery, setOffersFreeDelivery] = useState<boolean>(false);
+  const [savingFreeDelivery, setSavingFreeDelivery] = useState<boolean>(false);
+  const [merchantProducts, setMerchantProducts] = useState<MerchantShelfProductDto[]>([]);
+  const [publishQtyByProductId, setPublishQtyByProductId] = useState<Record<string, number>>({});
+  const [publishingStock, setPublishingStock] = useState<boolean>(false);
+
+  // Supplier Uza Sokoni state
+  const [supplierDelivery, setSupplierDelivery] = useState<SupplierDeliverySettingsDto | null>(
+    null,
+  );
+  const [supplierItems, setSupplierItems] = useState<SupplierInventoryItemDto[]>([]);
+  const [supplierPublishTarget, setSupplierPublishTarget] = useState<{
+    globalCatalogId: string;
+    systemUnitId: string;
+    bulkPriceTzs: string;
+    minOrderQty: string;
+  }>({
+    globalCatalogId: '',
+    systemUnitId: '',
+    bulkPriceTzs: '',
+    minOrderQty: '1',
+  });
 
   const refreshQueueCount = useCallback(async () => {
     const q = await listQueuedOrders().catch(() => []);
     setQueuedOfflineCount(q.filter((o) => o.syncStatus === 'QUEUED_OFFLINE').length);
   }, []);
 
-  const loadLiveHome = useCallback(async () => {
+  const loadCategories = useCallback(async () => {
+    try {
+      const res = await SokoApiClient.get<CatalogCategoryDto[]>(
+        '/admin/marketplace/catalog/categories',
+      );
+      setCategories(Array.isArray(res) ? res.filter((c) => c.isActive !== false) : []);
+    } catch {
+      // Categories list can remain empty if backend is offline
+    }
+  }, []);
+
+  const loadStandardCatalog = useCallback(async () => {
     await refreshQueueCount();
-    if (!navigator.onLine) {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
       setIsOnline(false);
       setBackendOffline(true);
+      setLoadingCatalog(false);
       return;
     }
 
-    setLoadingHubs(true);
-    setApiError(null);
+    setLoadingCatalog(true);
     setBackendOffline(false);
+    setApiError(null);
+
     try {
-      const [merchantsRes, ordersRes, supplierCatalogRes] = await Promise.all([
-        isSupplierAudience
-          ? Promise.resolve([] as BackendMerchantDto[])
-          : SokoApiClient.get<BackendMerchantDto[]>('/marketplace/merchants'),
-        SokoApiClient.hasAccessToken()
-          ? SokoApiClient.get<{ count: number; orders: BackendOrderDto[] }>(
-              '/orders/my-orders?scope=buying',
-            )
-          : Promise.resolve({ count: 0, orders: [] as BackendOrderDto[] }),
-        isSupplierAudience
-          ? SokoApiClient.get<{ items?: BackendSupplierListingDto[] }>(
-              '/marketplace/suppliers/catalog',
-            ).catch((err) => {
-              if (err instanceof SokoHttpError && (err.status === 401 || err.status === 403)) {
-                return { items: [] as BackendSupplierListingDto[] };
-              }
-              throw err;
-            })
-          : Promise.resolve({ items: [] as BackendSupplierListingDto[] }),
-      ]);
-
-      const visibleMerchants = (Array.isArray(merchantsRes) ? merchantsRes : []).filter((m) =>
-        visibleMerchantTiers.includes(m.tier),
-      );
-      const supplierHubs = new Map<string, WholesaleHub>();
-      for (const listing of supplierCatalogRes?.items ?? []) {
-        if (!listing.isAvailable || !isUuid(listing.supplierBusinessId)) continue;
-        if (supplierHubs.has(listing.supplierBusinessId)) continue;
-        supplierHubs.set(listing.supplierBusinessId, {
-          businessId: listing.supplierBusinessId,
-          name: listing.supplierName,
-          initials: listing.supplierName
-            .split(/\s+/)
-            .slice(0, 2)
-            .map((word) => word[0])
-            .join('')
-            .toUpperCase(),
-          brandRingColor: 'bg-amber-50 text-amber-800 border-amber-200',
-          ward: listing.deliveryCoverageRegions.join(', ') || 'Tanzania',
-          tier: 'MANUFACTURER_SUPPLIER',
-          distanceMeters: 400 + supplierHubs.size * 280,
-          deliveryFeeTzs: listing.isFreeDeliveryEnabled
-            ? 0
-            : Number(listing.standardDeliveryFeeTzs || 0),
-          kind: 'SUPPLIER',
-        });
+      const params = new URLSearchParams();
+      if (selectedCategoryCodes.length > 0) {
+        params.set('categoryCodes', selectedCategoryCodes.join(','));
       }
-
-      const merchantHubs = visibleMerchants.map((m, idx) => ({
-        businessId: m.merchantId,
-        name: m.merchantName,
-        initials:
-          m.smsShortCode ||
-          m.merchantName
-            .split(/\s+/)
-            .slice(0, 2)
-            .map((w) => w[0])
-            .join('')
-            .toUpperCase(),
-        brandRingColor:
-          idx % 2 === 0
-            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-            : 'bg-slate-100 text-slate-800 border-slate-200',
-        ward: `${m.ward}, ${m.district}`,
-        tier: m.tier,
-        smsShortCode: m.smsShortCode,
-        logoUrl: m.logoUrl,
-        distanceMeters: 250 + idx * 310,
-        deliveryFeeTzs: m.offersFreeDelivery ? 0 : m.tier === 'WHOLESALE' ? 3_500 : 2_500,
-        kind: 'MERCHANT' as const,
-      }));
-
-      setHubs(isSupplierAudience ? [...supplierHubs.values()] : merchantHubs);
-
-      const liveOrders: DispatchedOrderRecord[] = (ordersRes?.orders ?? []).map((o) => {
-        const fee = Number(o.deliveryFeeTzs ?? 0);
-        const total = Number(o.expectedTotalTzs ?? 0);
-        return {
-          orderId: o.orderId,
-          orderRef8: o.orderRef,
-          sellerBusinessId: o.sellerBusinessId,
-          sellerName: o.sellerBusinessName,
-          subtotalTzs: Math.max(0, total - fee),
-          deliveryFeeTzs: fee,
-          totalCashDueTzs: total,
-          itemsSummary: o.items
-            .map((i) => `${i.smsItemCode ?? i.nameSw ?? 'SKU'} (${i.quantity} × ${i.unitType})`)
-            .join(' + '),
-          status: o.status,
-        };
-      });
-      setOrders(liveOrders);
+      if (searchQuery.trim().length > 0) {
+        params.set('q', searchQuery.trim());
+      }
+      const query = params.toString();
+      const rows = await SokoApiClient.get<GlobalCatalogItemDto[]>(
+        `/marketplace/catalog${query ? `?${query}` : ''}`,
+      );
+      setCatalogItems(Array.isArray(rows) ? rows : []);
     } catch (err) {
       if (isSokoNetworkError(err)) {
         setBackendOffline(true);
@@ -427,19 +316,115 @@ export function SokoniCoreEngine({
           err instanceof SokoHttpError
             ? err.message
             : isSw
-              ? 'Imeshindikana kupakia data kutoka seva.'
-              : 'Failed to load marketplace data from backend.',
+              ? 'Imeshindikana kupakia orodha ya bidhaa za Sokoni.'
+              : 'Failed to load Sokoni standard catalog.',
         );
       }
     } finally {
-      setLoadingHubs(false);
+      setLoadingCatalog(false);
     }
-  }, [isSupplierAudience, isSw, refreshQueueCount, visibleMerchantTiers]);
+  }, [isSw, refreshQueueCount, searchQuery, selectedCategoryCodes]);
+
+  const loadOrders = useCallback(async () => {
+    if (!SokoApiClient.hasAccessToken()) {
+      setOrders([]);
+      return;
+    }
+    setLoadingOrders(true);
+    try {
+      const res = await SokoApiClient.get<{ orders?: BuyingOrderDto[] }>(
+        '/orders/my-orders?scope=buying',
+      );
+      setOrders(Array.isArray(res?.orders) ? res.orders : []);
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      }
+    } finally {
+      setLoadingOrders(false);
+    }
+  }, []);
+
+  const loadSellData = useCallback(async () => {
+    if (!isMerchantSeller || !SokoApiClient.hasAccessToken()) return;
+    setSellLoading(true);
+    setApiError(null);
+    setBackendOffline(false);
+    try {
+      if (userRole === 'SUPPLIER') {
+        const [deliveryRes, invRes] = await Promise.all([
+          SokoApiClient.get<SupplierDeliverySettingsDto>('/supplier/delivery-settings'),
+          SokoApiClient.get<{ items?: SupplierInventoryItemDto[] }>('/supplier/inventory'),
+        ]);
+        setSupplierDelivery(deliveryRes);
+        setOffersFreeDelivery(Boolean(deliveryRes.isFreeDeliveryEnabled));
+        const items = Array.isArray(invRes?.items) ? invRes.items : [];
+        setSupplierItems(items);
+        const firstCatalogItem = items.find(
+          (i) => i.globalCatalogId && i.unitConversions && i.unitConversions.length > 0,
+        );
+        if (firstCatalogItem && !supplierPublishTarget.globalCatalogId) {
+          setSupplierPublishTarget((prev) => ({
+            ...prev,
+            globalCatalogId: firstCatalogItem.globalCatalogId ?? '',
+            systemUnitId: firstCatalogItem.unitConversions[0]?.systemUnitId ?? '',
+          }));
+        }
+      } else {
+        const bizQuery = isUuid(businessId)
+          ? `?businessId=${encodeURIComponent(businessId)}`
+          : '';
+        const [settingsRes, productsRes] = await Promise.all([
+          SokoApiClient.get<{ offersFreeDelivery: boolean }>(
+            `/merchant/market-settings${bizQuery}`,
+          ),
+          SokoApiClient.get<MerchantShelfProductDto[]>(`/products/active${bizQuery}`),
+        ]);
+        setOffersFreeDelivery(Boolean(settingsRes?.offersFreeDelivery));
+        setMerchantProducts(Array.isArray(productsRes) ? productsRes : []);
+      }
+    } catch (err) {
+      if (isSokoNetworkError(err)) {
+        setBackendOffline(true);
+      } else {
+        setApiError(
+          err instanceof SokoHttpError
+            ? err.message
+            : isSw
+              ? 'Imeshindikana kupakia mipangilio ya kuuza sokoni.'
+              : 'Failed to load Uza Sokoni seller workspace.',
+        );
+      }
+    } finally {
+      setSellLoading(false);
+    }
+  }, [businessId, isMerchantSeller, isSw, supplierPublishTarget.globalCatalogId, userRole]);
+
+  useEffect(() => {
+    void loadCategories();
+    void loadOrders();
+  }, [loadCategories, loadOrders]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadStandardCatalog();
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [loadStandardCatalog]);
+
+  useEffect(() => {
+    if (subView === 'SELL') {
+      void loadSellData();
+    } else if (subView === 'ORDERS') {
+      void loadOrders();
+    }
+  }, [loadOrders, loadSellData, subView]);
 
   useEffect(() => {
     const goOnline = () => {
       setIsOnline(true);
-      void loadLiveHome();
+      void loadStandardCatalog();
+      void loadOrders();
     };
     const goOffline = () => {
       setIsOnline(false);
@@ -451,463 +436,427 @@ export function SokoniCoreEngine({
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
     };
-  }, [loadLiveHome]);
+  }, [loadOrders, loadStandardCatalog]);
 
+  const toggleCategory = (code: string) => {
+    setSelectedCategoryCodes((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code],
+    );
+  };
+
+  const getActiveUnitForItem = useCallback(
+    (item: GlobalCatalogItemDto): GlobalProductUnitDto | null => {
+      const units = item.productUnits ?? [];
+      if (units.length === 0) return null;
+      const chosenId = selectedUnitByCatalogId[item.id];
+      if (chosenId) {
+        const match = units.find((u) => u.systemUnitId === chosenId);
+        if (match) return match;
+      }
+      const prefersWholesale = userRole === 'WHOLESALER' || userRole === 'RETAILER';
+      if (prefersWholesale) {
+        return units.find((u) => u.isWholesaleUnit) ?? units[units.length - 1] ?? units[0];
+      }
+      return units[0];
+    },
+    [selectedUnitByCatalogId, userRole],
+  );
+
+  const adjustItemQty = (catalogId: string, delta: 1 | -1) => {
+    setSelectedQtyByCatalogId((prev) => {
+      const next = Math.max(0, Math.min(999, (prev[catalogId] ?? 0) + delta));
+      if (next === 0) {
+        const copy = { ...prev };
+        delete copy[catalogId];
+        return copy;
+      }
+      return { ...prev, [catalogId]: next };
+    });
+  };
+
+  // Cache item snapshots so category switches preserve chosen items seamlessly
+  const [selectedSnapshots, setSelectedSnapshots] = useState<Record<string, GlobalCatalogItemDto>>(
+    {},
+  );
   useEffect(() => {
-    void loadLiveHome();
-  }, [loadLiveHome]);
-
-  const cashNeededTodayTzs = useMemo(
-    () =>
-      orders
-        .filter((o) => o.status === 'DISPATCHED' || o.status === 'PLACED')
-        .reduce((sum, o) => sum + o.totalCashDueTzs, 0),
-    [orders],
-  );
-
-  const settledTodayTzs = useMemo(
-    () =>
-      orders
-        .filter((o) => o.status === 'DELIVERED')
-        .reduce((sum, o) => sum + o.totalCashDueTzs, 0),
-    [orders],
-  );
-
-  const handleOpenStore = async (hub: WholesaleHub) => {
-    setSelectedStore(hub);
-    setCartUnitsByProduct({});
-    setCheckoutSheetOpen(false);
-    setSmartReorderMode(false);
-    setSmartGridMode(false);
-    setCatalogSearchQuery('');
-    setApiError(null);
-    setScreen('CATALOG');
-
-    if (!navigator.onLine || !isUuid(hub.businessId)) {
-      setBackendOffline(true);
-      setLiveStoreCatalog([]);
-      return;
-    }
-
-    setLoadingCatalog(true);
-    setBackendOffline(false);
-    try {
-      if (hub.kind === 'SUPPLIER') {
-        const res = await SokoApiClient.get<{ items?: BackendSupplierListingDto[] }>(
-          '/marketplace/suppliers/catalog',
-        );
-        const mapped: CatalogProduct[] = (res.items ?? [])
-          .filter(
-            (listing) =>
-              listing.supplierBusinessId === hub.businessId &&
-              listing.isAvailable &&
-              listing.productId,
-          )
-          .map((listing) => {
-            const orderUnitType = supplierPackagingUnit(
-              listing.systemUnitCode,
-              listing.quarterQuantaPerUnit,
-            );
-            const price = Number(listing.supplierBulkPriceTzs || 0);
-            const quantaPerOrderUnit = Math.max(1, listing.quarterQuantaPerUnit);
-            return {
-              productId: listing.productId as string,
-              businessId: listing.supplierBusinessId,
-              sku: listing.canonicalSku,
-              nameSw: listing.nameSw,
-              nameEn: listing.nameEn,
-              imageSrc: resolveBackendImageUrl(listing.imagekitCdnUrl),
-              orderUnitType,
-              quantaPerOrderUnit,
-              quantaUnitLabelSw: formatUnitShortLabel(orderUnitType, quantaPerOrderUnit, true),
-              quantaUnitLabelEn: formatUnitShortLabel(orderUnitType, quantaPerOrderUnit, false),
-              wholesaleThresholdUnits: 1,
-              retailPricePerUnitTzs: price,
-              wholesalePricePerUnitTzs: price,
-              availableQuantaStock:
-                Math.max(0, listing.maxOrderQuantity) * quantaPerOrderUnit,
-              isLowStockInDuka: false,
-              supplierListingId: listing.listingId,
-              minOrderUnits: Math.max(1, listing.minOrderQuantity),
-            };
-          });
-        setLiveStoreCatalog(mapped);
-        return;
+    setSelectedSnapshots((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const item of catalogItems) {
+        if (selectedQtyByCatalogId[item.id] && next[item.id] !== item) {
+          next[item.id] = item;
+          changed = true;
+        }
       }
-
-      const [activeProducts, intelligentItems] = await Promise.all([
-        SokoApiClient.get<BackendProductDto[]>(
-          `/products/active?businessId=${encodeURIComponent(hub.businessId)}`,
-        ),
-        SokoApiClient.hasAccessToken()
-          ? SokoApiClient.get<BackendIntelligentItemDto[]>(
-              `/marketplace/catalog/intelligent-view?wholesalerId=${encodeURIComponent(hub.businessId)}`,
-            ).catch((err) => {
-              // Urgent-reorder intelligence is optional for consumers and for
-              // role-restricted calls, but real backend failures must surface.
-              if (err instanceof SokoHttpError && (err.status === 401 || err.status === 403)) {
-                return [] as BackendIntelligentItemDto[];
-              }
-              throw err;
-            })
-          : Promise.resolve([] as BackendIntelligentItemDto[]),
-      ]);
-
-      const urgentIds = new Set(
-        (Array.isArray(intelligentItems) ? intelligentItems : [])
-          .filter((i) => i.requiresUrgentReorder)
-          .map((i) => i.productId),
-      );
-
-      const mapped: CatalogProduct[] = (Array.isArray(activeProducts) ? activeProducts : []).map(
-        (p) => {
-          const tiers = p.priceTiers ?? [];
-          const wholesaleTier = tiers.find((t) => t.isWholesaleTier);
-          const primaryTier =
-            wholesaleTier ?? tiers[tiers.length - 1] ?? tiers[0] ?? null;
-
-          const orderUnitType: PackagingUnit = primaryTier
-            ? primaryTier.unitType
-            : 'SACK_50KG';
-          const quantaPerOrderUnit = primaryTier ? primaryTier.quarterQuantaPerUnit : 200;
-          const wholesalePricePerUnitTzs = wholesaleTier
-            ? wholesaleTier.priceTzs
-            : primaryTier
-              ? primaryTier.priceTzs
-              : Number(p.cartonPriceTzs || p.unitPriceTzs);
-          const retailTier = tiers.find((t) => !t.isWholesaleTier);
-          const retailPricePerUnitTzs = retailTier
-            ? retailTier.priceTzs
-            : wholesalePricePerUnitTzs;
-
-          return {
-            productId: p.productId,
-            businessId: p.sellerBusinessId,
-            sku: p.sku,
-            nameSw: p.nameSw,
-            nameEn: p.nameEn,
-            imageSrc: resolveBackendImageUrl(p.imagekitCdnUrl, p.staticImageUrl),
-            orderUnitType,
-            quantaPerOrderUnit,
-            quantaUnitLabelSw: formatUnitShortLabel(orderUnitType, quantaPerOrderUnit, true),
-            quantaUnitLabelEn: formatUnitShortLabel(orderUnitType, quantaPerOrderUnit, false),
-            wholesaleThresholdUnits: Math.max(1, Number(p.wholesaleThresholdUnits || 2)),
-            retailPricePerUnitTzs,
-            wholesalePricePerUnitTzs,
-            availableQuantaStock: Number(p.availableQuarterQuanta ?? 0),
-            isLowStockInDuka: urgentIds.has(p.productId),
-          };
-        },
-      );
-      setLiveStoreCatalog(mapped);
-    } catch (err) {
-      if (isSokoNetworkError(err)) {
-        setBackendOffline(true);
-        setLiveStoreCatalog([]);
-      } else {
-        setLiveStoreCatalog([]);
-        setApiError(
-          err instanceof SokoHttpError
-            ? err.message
-            : isSw
-              ? 'Imeshindikana kupakia bidhaa za muuzaji.'
-              : 'Failed to load seller catalog.',
-        );
-      }
-    } finally {
-      setLoadingCatalog(false);
-    }
-  };
-
-  const activeCatalog = useMemo(() => {
-    if (!selectedStore) return [];
-    const items = liveStoreCatalog.filter(
-      (item) => item.businessId === selectedStore.businessId,
-    );
-    return [...items].sort((a, b) => {
-      const aLow = a.isLowStockInDuka ? 1 : 0;
-      const bLow = b.isLowStockInDuka ? 1 : 0;
-      if (aLow !== bLow) return bLow - aLow;
-      return a.nameSw.localeCompare(b.nameSw);
+      return changed ? next : prev;
     });
-  }, [selectedStore, liveStoreCatalog]);
+  }, [catalogItems, selectedQtyByCatalogId]);
 
-  const lowStockCarouselItems = useMemo(
-    () => activeCatalog.filter((item) => item.isLowStockInDuka),
-    [activeCatalog],
+  const selectedItemsForDiscovery: SokoniSelectionItem[] = useMemo(() => {
+    const out: SokoniSelectionItem[] = [];
+    for (const [catalogId, qty] of Object.entries(selectedQtyByCatalogId)) {
+      if (qty <= 0) continue;
+      const item = catalogItems.find((i) => i.id === catalogId) ?? selectedSnapshots[catalogId];
+      if (!item) continue;
+      const unit = getActiveUnitForItem(item);
+      out.push({
+        globalCatalogId: item.id,
+        canonicalSku: item.canonicalSku,
+        fixedNameSw: item.fixedNameSw,
+        fixedNameEn: item.fixedNameEn,
+        imageUrl: resolveBackendImageUrl(item.imagekitCdnUrl, item.staticImageUrl),
+        ...(unit ? { systemUnitId: unit.systemUnitId } : {}),
+        unitLabelSw: unit ? formatUnitOptionLabel(unit, true) : item.baseQuantumUnit,
+        unitLabelEn: unit ? formatUnitOptionLabel(unit, false) : item.baseQuantumUnit,
+        quantity: qty,
+      });
+    }
+    return out;
+  }, [catalogItems, getActiveUnitForItem, selectedQtyByCatalogId, selectedSnapshots]);
+
+  const totalSelectedUnits = useMemo(
+    () => Object.values(selectedQtyByCatalogId).reduce((sum, q) => sum + (q > 0 ? q : 0), 0),
+    [selectedQtyByCatalogId],
   );
 
-  const filteredActiveCatalog = useMemo(() => {
-    const q = catalogSearchQuery.trim().toLowerCase();
-    if (!q) return activeCatalog;
-    return activeCatalog.filter(
-      (item) =>
-        item.nameSw.toLowerCase().includes(q) ||
-        item.nameEn.toLowerCase().includes(q) ||
-        item.sku.toLowerCase().includes(q),
-    );
-  }, [activeCatalog, catalogSearchQuery]);
-
-  const adjustProductUnits = (item: CatalogProduct, direction: 1 | -1) => {
-    setCartUnitsByProduct((prev) => {
-      const current = prev[item.productId] ?? 0;
-      const maxUnits = Math.max(0, Math.floor(item.availableQuantaStock / item.quantaPerOrderUnit));
-      const next = Math.max(0, Math.min(maxUnits > 0 ? maxUnits : 999, current + direction));
-      return { ...prev, [item.productId]: next };
-    });
-  };
-
-  const cartBreakdown = useMemo(() => {
-    if (!selectedStore) {
-      return { lines: [], subtotalTzs: 0, deliveryFeeTzs: 0, totalTzs: 0, totalQuanta: 0 };
-    }
-
-    const lines: Array<{
-      item: CatalogProduct;
-      units: number;
-      quanta: number;
-      unitPriceTzs: number;
-      lineTotalTzs: number;
-      wholesaleApplied: boolean;
-    }> = [];
-    let subtotalTzs = 0;
-    let totalQuanta = 0;
-
-    for (const item of activeCatalog) {
-      const units = cartUnitsByProduct[item.productId] ?? 0;
-      if (units <= 0) continue;
-      const wholesaleApplied = units >= item.wholesaleThresholdUnits;
-      const unitPriceTzs = wholesaleApplied
-        ? item.wholesalePricePerUnitTzs
-        : item.retailPricePerUnitTzs;
-      const lineTotalTzs = units * unitPriceTzs;
-      const quanta = units * item.quantaPerOrderUnit;
-
-      subtotalTzs += lineTotalTzs;
-      totalQuanta += quanta;
-      lines.push({ item, units, quanta, unitPriceTzs, lineTotalTzs, wholesaleApplied });
-    }
-
-    const deliveryFeeTzs = lines.length > 0 ? selectedStore.deliveryFeeTzs : 0;
-    return {
-      lines,
-      subtotalTzs,
-      deliveryFeeTzs,
-      totalTzs: subtotalTzs + deliveryFeeTzs,
-      totalQuanta,
-    };
-  }, [selectedStore, activeCatalog, cartUnitsByProduct]);
-
-  const queueRealOfflineOrder = async () => {
-    if (!selectedStore || cartBreakdown.lines.length === 0) return;
-    const idempotencyKey = crypto.randomUUID();
-    const orderChannel = selectedStore.kind === 'SUPPLIER' ? 'SUPPLIER_TO_WHOLESALER' : undefined;
-    const compactItems = cartBreakdown.lines
-      .map((l) => `${l.item.sku}:${l.units}`)
-      .join(',');
-
-    await putQueuedOrder({
-      idempotencyKey,
-      sellerBusinessId: selectedStore.businessId,
-      sellerHub: selectedStore.name,
-      compactSmsBody: compactItems,
-      totalTzs: cartBreakdown.totalTzs,
-      ...(orderChannel ? { orderChannel } : {}),
-      deliveryFeeTzs: cartBreakdown.deliveryFeeTzs,
-      items: cartBreakdown.lines.map((l) => ({
-        productId: l.item.productId,
-        unitType: l.item.orderUnitType,
-        quantity: l.units,
-        ...(l.item.supplierListingId
-          ? { supplierListingId: l.item.supplierListingId }
-          : {}),
-      })),
-      clientCreatedAt: new Date().toISOString(),
-      syncStatus: 'QUEUED_OFFLINE',
-      retryCount: 0,
-    });
-
-    await refreshQueueCount();
-    setFloatingToast({
-      title: isSw
-        ? `Oda Imewekwa Foleni (QUEUED_OFFLINE · ${selectedStore.name})`
-        : `Order Queued for Sync (QUEUED_OFFLINE · ${selectedStore.name})`,
-      detail: `${compactItems} · TZS ${cartBreakdown.totalTzs.toLocaleString('en-US')}`,
-    });
-    setCartUnitsByProduct({});
-    setCheckoutSheetOpen(false);
-    setScreen('HOME');
-  };
-
-  const handlePlaceOrder = async () => {
-    if (!selectedStore || cartBreakdown.lines.length === 0) return;
+  const handleToggleFreeDelivery = async () => {
     setApiError(null);
-
-    if (!navigator.onLine) {
-      setBackendOffline(true);
-      await queueRealOfflineOrder();
-      return;
-    }
-
-    setSubmittingOrder(true);
+    setStatusNotice(null);
+    setSavingFreeDelivery(true);
     try {
-      const isSupplierOrder = selectedStore.kind === 'SUPPLIER';
-      const orderChannel = isSupplierOrder ? 'SUPPLIER_TO_WHOLESALER' : undefined;
-      const orderItems = cartBreakdown.lines.map((l) => ({
-        productId: l.item.productId,
-        unitType: l.item.orderUnitType,
-        quantity: l.units,
-        ...(l.item.supplierListingId
-          ? { supplierListingId: l.item.supplierListingId }
-          : {}),
-      }));
-
-      let deliveryFeeTzs = cartBreakdown.deliveryFeeTzs;
-      if (isSupplierOrder) {
-        // Supplier B2B delivery is server-authoritative: quote first, then submit
-        // the exact fee returned by the pricing engine.
-        const quote = await SokoApiClient.post<{ deliveryFeeTzs: number }>(
-          '/pricing/calculate-quote',
+      if (userRole === 'SUPPLIER') {
+        if (!supplierDelivery) return;
+        const res = await SokoApiClient.patch<SupplierDeliverySettingsDto>(
+          '/supplier/delivery-settings',
           {
-            sellerBusinessId: selectedStore.businessId,
-            orderChannel,
-            deliveryFeeTzs: 0,
-            items: orderItems,
+            isFreeDeliveryEnabled: !offersFreeDelivery,
+            freeDeliveryMinOrderTzs: supplierDelivery.freeDeliveryMinOrderTzs,
+            standardDeliveryFeeTzs: supplierDelivery.standardDeliveryFeeTzs,
+            deliveryCoverageRegions: supplierDelivery.deliveryCoverageRegions,
           },
         );
-        deliveryFeeTzs = Number(quote.deliveryFeeTzs ?? 0);
-      }
-
-      const resp = await SokoApiClient.post<{
-        orderId: string;
-        orderRef: string;
-        status: 'PLACED' | 'DISPATCHED';
-        routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
-        expectedTotalTzs: number;
-      }>('/marketplace/orders/submit-request', {
-        sellerBusinessId: selectedStore.businessId,
-        originChannel: 'PWA_ONLINE',
-        paymentMethod: 'CASH',
-        ...(orderChannel ? { orderChannel } : {}),
-        deliveryFeeTzs,
-        items: orderItems,
-      });
-
-      setFloatingToast({
-        title: isSw
-          ? `Oda yako imepokelewa (${selectedStore.name})!`
-          : `Order placed with ${selectedStore.name}!`,
-        detail: `Oda #${resp.orderRef} · ${formatRoutingLabel(resp.routingOutputCode, locale)} · TZS ${Number(resp.expectedTotalTzs).toLocaleString('en-US')}`,
-      });
-
-      setCartUnitsByProduct({});
-      setCheckoutSheetOpen(false);
-      setScreen('HOME');
-      await loadLiveHome();
-    } catch (err) {
-      if (isSokoNetworkError(err)) {
-        setBackendOffline(true);
-        await queueRealOfflineOrder();
+        setSupplierDelivery(res);
+        setOffersFreeDelivery(Boolean(res.isFreeDeliveryEnabled));
       } else {
-        setApiError(
-          err instanceof SokoHttpError
-            ? err.message
-            : isSw
-              ? 'Oda imekataliwa na mfumo.'
-              : 'Backend rejected order submission.',
+        const res = await SokoApiClient.patch<{ offersFreeDelivery: boolean }>(
+          '/merchant/market-settings/free-delivery',
+          { offersFreeDelivery: !offersFreeDelivery },
         );
+        setOffersFreeDelivery(Boolean(res.offersFreeDelivery));
       }
+      window.dispatchEvent(new CustomEvent('sokokuu:free-delivery-updated'));
+      setStatusNotice(
+        isSw
+          ? 'Mpangilio wa Usafiri wa Bure umehifadhiwa.'
+          : 'Free Delivery setting saved to PostgreSQL.',
+      );
+    } catch (err) {
+      setApiError(
+        err instanceof SokoHttpError
+          ? err.message
+          : isSw
+            ? 'Imeshindikana kuhifadhi Usafiri wa Bure.'
+            : 'Failed to update Free Delivery setting.',
+      );
     } finally {
-      setSubmittingOrder(false);
+      setSavingFreeDelivery(false);
     }
   };
 
-  const handleCancelOrder = async (order: DispatchedOrderRecord) => {
-    setApiError(null);
-    if (!navigator.onLine || !isUuid(order.orderId)) {
-      setBackendOffline(true);
-      return;
-    }
+  const handlePublishMerchantMarketStock = async () => {
+    const items = Object.entries(publishQtyByProductId)
+      .filter(([, q]) => q > 0)
+      .map(([productId, quantityQuanta]) => ({
+        productId,
+        quantityQuanta: Math.max(1, Math.trunc(quantityQuanta)),
+      }));
+    if (items.length === 0) return;
 
+    setApiError(null);
+    setStatusNotice(null);
+    setPublishingStock(true);
+    try {
+      const res = await SokoApiClient.post<{ publishedCount: number }>(
+        '/merchant/market-stock',
+        { items },
+      );
+      setStatusNotice(
+        isSw
+          ? `Bidhaa ${res?.publishedCount ?? items.length} zimechapishwa Sokoni.`
+          : `${res?.publishedCount ?? items.length} product(s) published to Sokoni.`,
+      );
+      setPublishQtyByProductId({});
+      await loadSellData();
+    } catch (err) {
+      setApiError(
+        err instanceof SokoHttpError
+          ? err.message
+          : isSw
+            ? 'Imeshindikana kuchapisha stock sokoni.'
+            : 'Failed to publish market stock.',
+      );
+    } finally {
+      setPublishingStock(false);
+    }
+  };
+
+  const handlePublishSupplierListing = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supplierPublishTarget.globalCatalogId || !supplierPublishTarget.systemUnitId) return;
+    setApiError(null);
+    setStatusNotice(null);
+    setPublishingStock(true);
+    try {
+      await SokoApiClient.post('/supplier/catalog/publish', {
+        globalCatalogId: supplierPublishTarget.globalCatalogId,
+        systemUnitId: supplierPublishTarget.systemUnitId,
+        supplierBulkPriceTzs: String(
+          Math.max(1, Math.trunc(Number(supplierPublishTarget.bulkPriceTzs || 0))),
+        ),
+        minOrderQuantity: Math.max(1, Math.trunc(Number(supplierPublishTarget.minOrderQty || 1))),
+        isPublishedToMarket: true,
+      });
+      setStatusNotice(
+        isSw
+          ? 'Orodha ya Supplier imechapishwa Sokoni.'
+          : 'Supplier bulk listing published to Sokoni.',
+      );
+      await loadSellData();
+    } catch (err) {
+      setApiError(
+        err instanceof SokoHttpError
+          ? err.message
+          : isSw
+            ? 'Imeshindikana kuchapisha orodha ya supplier.'
+            : 'Failed to publish supplier listing.',
+      );
+    } finally {
+      setPublishingStock(false);
+    }
+  };
+
+  const handleCancelOrder = async (order: BuyingOrderDto) => {
+    setApiError(null);
     try {
       await SokoApiClient.post(`/orders/${order.orderId}/cancel`, {
         reason: 'Cancelled by buyer from Sokoni workspace',
       });
-      setFloatingToast({
-        title: isSw ? `Oda ${order.orderRef8} Imeghairiwa` : `Order ${order.orderRef8} Cancelled`,
-        detail: isSw ? 'Hisa zimerejeshwa kwa muuzaji.' : 'Reserved Quarter-Quanta restored.',
-      });
-      await loadLiveHome();
+      setStatusNotice(
+        isSw
+          ? `Oda ${order.orderRef} imeghairiwa na hisa zimerejeshwa.`
+          : `Order ${order.orderRef} cancelled and stock restored.`,
+      );
+      await loadOrders();
     } catch (err) {
-      if (isSokoNetworkError(err)) {
-        setBackendOffline(true);
-      } else {
-        setApiError(
-          err instanceof SokoHttpError
-            ? err.message
-            : isSw
-              ? 'Imeshindikana kughairi oda.'
-              : 'Failed to cancel order.',
-        );
-      }
+      setApiError(
+        err instanceof SokoHttpError
+          ? err.message
+          : isSw
+            ? 'Imeshindikana kughairi oda.'
+            : 'Failed to cancel order.',
+      );
     }
   };
 
+  const buyerTerminalRoleLabel =
+    userRole === 'WHOLESALER'
+      ? isSw
+        ? 'Muuzaji Jumla'
+        : 'Wholesaler'
+      : userRole === 'SUPPLIER'
+        ? isSw
+          ? 'Msambizaji'
+          : 'Supplier'
+        : userRole === 'CONSUMER'
+          ? isSw
+            ? 'Mteja'
+            : 'Consumer'
+          : userTier === 'HYBRID_STORE'
+            ? 'Hybrid Store'
+            : isSw
+              ? 'Muuzaji Rejareja'
+              : 'Retailer';
+
   const activePinOrder = orders.find((o) => o.orderId === activePinOrderId) ?? null;
 
-  return (
-    <div className="max-w-2xl mx-auto space-y-5">
-      {/* Top Status Banner */}
-      <div className="bg-white border border-slate-100 rounded-lg px-4 py-3 shadow-sm flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-xs font-medium">
-          {isOnline && !backendOffline ? (
-            <>
-              <Wifi className="w-4 h-4 text-emerald-600" aria-hidden="true" />
-              <span className="text-slate-900">
-                {isSw ? 'Mtandao Uko Sawa.' : 'Connected to SokoKuu.'}
-              </span>
-            </>
-          ) : (
-            <>
-              <WifiOff className="w-4 h-4 text-amber-600" aria-hidden="true" />
-              <span className="text-amber-800">
-                {isSw ? 'Nje ya Mtandao — Foleni ya IndexedDB' : 'Offline — Local Queue Active'}
-              </span>
-            </>
-          )}
-          {queuedOfflineCount > 0 && (
-            <span className="text-[11px] font-mono bg-amber-50 border border-amber-200 text-amber-900 px-2 py-0.5 rounded">
-              {queuedOfflineCount} QUEUED_OFFLINE
-            </span>
-          )}
+  // Screen 3: Searching & Merchant Found
+  if (stage === 'DISCOVERY') {
+    return (
+      <SokoniOrderDiscoveryView
+        locale={locale}
+        selectedItems={selectedItemsForDiscovery}
+        onBackToSokoni={() => setStage('BROWSE')}
+        onViewMyOrders={() => {
+          setSelectedQtyByCatalogId({});
+          setStage('BROWSE');
+          setSubView('ORDERS');
+          void loadOrders();
+        }}
+        onBackToDashboard={() => {
+          setSelectedQtyByCatalogId({});
+          setStage('BROWSE');
+          onBackToDashboard?.();
+        }}
+      />
+    );
+  }
+
+  // Dual-PIN Doorstep Verification Terminal
+  if (stage === 'PIN_TERMINAL' && activePinOrder) {
+    return (
+      <section className="max-w-md mx-auto space-y-3 pb-24">
+        <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-900">
+            {isSw ? 'Uthibitisho wa Oda (PIN)' : 'Order Confirmation'}
+          </span>
+          <span className="text-xs font-mono font-bold text-[#15AC49]">
+            #{activePinOrder.orderRef}
+          </span>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void loadLiveHome()}
-          disabled={loadingHubs}
-          className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 cursor-pointer inline-flex items-center gap-1"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loadingHubs ? 'animate-spin' : ''}`} />
-          <span>{isSw ? 'Onyesha Upya' : 'Refresh'}</span>
-        </button>
+        <IsolatedQrVerificationTerminal
+          locale={locale}
+          defaultDeviceOwner="RETAILER_PHONE"
+          orderId={activePinOrder.orderId}
+          orderRef8={activePinOrder.orderRef}
+          destinationLabel={activePinOrder.sellerBusinessName}
+          expectedCashTzs={Number(activePinOrder.expectedTotalTzs)}
+          buyerRoleLabel={buyerTerminalRoleLabel}
+          onBack={() => {
+            setStage('BROWSE');
+            setSubView('ORDERS');
+          }}
+          onVerifiedSuccess={(consumedToken) => {
+            setStatusNotice(
+              isSw
+                ? `Oda #${activePinOrder.orderRef} imethibitishwa (${consumedToken}).`
+                : `Order #${activePinOrder.orderRef} confirmed (${consumedToken}).`,
+            );
+            setStage('BROWSE');
+            setSubView('ORDERS');
+            void loadOrders();
+          }}
+        />
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-4 pb-28 md:pb-12">
+      {/* Top Bar: Network status + Mode Switch (Nunua Sokoni | Uza Sokoni | Oda Zangu) */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-3 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {onBackToDashboard && (
+              <button
+                type="button"
+                onClick={onBackToDashboard}
+                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4 text-[#0054A6]" aria-hidden="true" />
+                <span className="hidden sm:inline">{t(locale, 'nav.dashboard')}</span>
+              </button>
+            )}
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              {isOnline && !backendOffline ? (
+                <>
+                  <Wifi className="w-4 h-4 text-[#15AC49]" aria-hidden="true" />
+                  <span className="text-slate-800 font-semibold">Sokoni</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-4 h-4 text-amber-600" aria-hidden="true" />
+                  <span className="text-amber-800">Offline</span>
+                </>
+              )}
+              {queuedOfflineCount > 0 && (
+                <span className="text-[11px] font-mono bg-amber-50 border border-amber-200 text-amber-900 px-2 py-0.5 rounded-md tabular-nums">
+                  {queuedOfflineCount} QUEUED
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSubView((prev) => (prev === 'ORDERS' ? 'BUY' : 'ORDERS'))}
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                subView === 'ORDERS'
+                  ? 'bg-[#0054A6] border-[#0054A6] text-white'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <ClipboardList className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{t(locale, 'sokoni.myOrders')}</span>
+              <span className="font-mono tabular-nums text-[11px] opacity-90">
+                ({orders.length})
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (subView === 'BUY') void loadStandardCatalog();
+                else if (subView === 'SELL') void loadSellData();
+                else void loadOrders();
+              }}
+              aria-label={isSw ? 'Onyesha upya' : 'Refresh'}
+              className="min-h-[40px] min-w-[40px] p-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 inline-flex items-center justify-center cursor-pointer"
+            >
+              <RefreshCw
+                className={`w-4 h-4 ${loadingCatalog || sellLoading || loadingOrders ? 'animate-spin' : ''}`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Wireframe 2 Mode Switch: Nunua Sokoni | Uza Sokoni */}
+        {isMerchantSeller && subView !== 'ORDERS' && (
+          <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setSubView('BUY')}
+              className={`min-h-[44px] px-3 py-2 rounded-lg text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                subView === 'BUY'
+                  ? 'bg-[#15AC49] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ShoppingBag className="w-4 h-4" aria-hidden="true" />
+              <span>{t(locale, 'sokoni.buyMode')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubView('SELL')}
+              className={`min-h-[44px] px-3 py-2 rounded-lg text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                subView === 'SELL'
+                  ? 'bg-[#0054A6] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Store className="w-4 h-4" aria-hidden="true" />
+              <span>{t(locale, 'sokoni.sellMode')}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {backendOffline && (
         <BackendOfflineBanner
           locale={locale}
-          retrying={loadingHubs}
-          onRetry={() => void loadLiveHome()}
+          retrying={loadingCatalog}
+          onRetry={() => void loadStandardCatalog()}
         />
       )}
 
       {apiError && (
         <div
           role="alert"
-          className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs text-red-900 flex items-start justify-between gap-3"
+          className="border border-red-200 bg-red-50 rounded-xl p-3.5 text-xs text-red-900 flex items-start justify-between gap-3"
         >
           <div className="flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" aria-hidden="true" />
             <span>{apiError}</span>
           </div>
           <button
@@ -920,729 +869,661 @@ export function SokoniCoreEngine({
         </div>
       )}
 
-      {floatingToast && (
+      {statusNotice && (
         <div
           role="status"
-          className="border border-emerald-200 bg-emerald-50 rounded-lg p-4 shadow-sm flex items-start justify-between gap-4"
+          className="border border-[#15AC49]/30 bg-[#15AC49]/10 rounded-xl p-3.5 flex items-center justify-between gap-3 text-xs font-semibold text-slate-900"
         >
-          <div className="flex items-start gap-2.5">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" aria-hidden="true" />
-            <div className="space-y-0.5">
-              <div className="text-sm font-semibold text-slate-900">{floatingToast.title}</div>
-              <div className="text-xs font-mono text-slate-700 break-all">{floatingToast.detail}</div>
-            </div>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-[#15AC49] shrink-0" aria-hidden="true" />
+            <span>{statusNotice}</span>
           </div>
           <button
             type="button"
-            onClick={() => setFloatingToast(null)}
-            className="p-1 text-slate-500 hover:text-slate-900 cursor-pointer"
-            aria-label="Close notification"
+            onClick={() => setStatusNotice(null)}
+            className="text-slate-500 hover:text-slate-900 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* SCREEN 1: DASHBOARD HOME VIEW */}
-      {screen === 'HOME' && (
-        <div className="space-y-6">
-          <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-white border border-slate-100 rounded-lg p-5 shadow-sm space-y-1.5">
-              <div className="text-xs font-medium text-slate-500">Cash Inayohitajika Leo</div>
-              <div className="text-3xl font-bold font-mono tabular-nums text-emerald-600">
-                TZS {cashNeededTodayTzs.toLocaleString('en-US')}
-              </div>
-              <div className="text-xs text-slate-500">
-                {isSw
-                  ? 'Jumla ya oda zilizo njiani (PLACED / DISPATCHED) zinazosubiri malipo ya mlangoni'
-                  : 'Total cash required today for active orders awaiting CoD settlement'}
-              </div>
-            </div>
-
-            <div className="bg-white border border-slate-100 rounded-lg p-5 shadow-sm space-y-1.5">
-              <div className="text-xs font-medium text-slate-500">
-                {isSw ? 'Oda Zilizokamilika Leo (DELIVERED)' : 'Settled Cash Today (DELIVERED)'}
-              </div>
-              <div className="text-3xl font-bold font-mono tabular-nums text-slate-900">
-                TZS {settledTodayTzs.toLocaleString('en-US')}
-              </div>
-              <div className="text-xs text-slate-500">
-                {isSw
-                  ? 'Zimethibitishwa kwa PIN ya Mnunuzi mlangoni'
-                  : 'Reconciled via Doorstep Buyer PIN'}
-              </div>
-            </div>
-          </section>
-
-          <button
-            type="button"
-            onClick={() => setScreen('DIRECTORY')}
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg p-6 text-left flex items-center justify-between gap-4 transition-colors cursor-pointer shadow-sm"
-          >
-            <div className="space-y-1">
-              <div className="text-xl font-bold">Nenda Sokoni 🛒</div>
-              <div className="text-xs text-emerald-50">
-                {isSw
-                  ? 'Gundua maduka ya jumla yaliyo karibu nawe na agiza kwa Bei ya Jumla.'
-                  : 'Discover nearby wholesale hubs and place store-isolated CoD orders.'}
-              </div>
-            </div>
-            <ShoppingBag className="w-8 h-8 text-white shrink-0" aria-hidden="true" />
-          </button>
-
-          <section className="bg-white border border-slate-100 rounded-lg shadow-sm overflow-hidden">
-            <div className="shrink-0 px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-900">
-                {isSw
-                  ? 'Oda Zako & Mizigo Inayokuja (Doorstep PIN)'
-                  : 'Your Orders & Active Deliveries'}
-              </h2>
-              <span className="text-xs font-mono text-slate-500">
-                {orders.filter((o) => o.status === 'DISPATCHED' || o.status === 'PLACED').length}{' '}
-                active
-              </span>
-            </div>
-
-            {loadingHubs && orders.length === 0 ? (
-              <div className="p-6 text-center text-xs text-slate-500">
-                {isSw ? 'Inapakia oda zako...' : 'Loading orders...'}
-              </div>
-            ) : orders.length === 0 ? (
-              <div className="p-4">
-                <EmptyStateCard
-                  locale={locale}
-                  titleSw="Hakuna rekodi bado"
-                  titleEn="No records yet"
-                  descriptionSw='Huna oda iliyorekodiwa kwenye PostgreSQL bado. Bofya "Nenda Sokoni" kuanza.'
-                  descriptionEn='No orders exist in PostgreSQL yet. Click "Nenda Sokoni" to start sourcing.'
-                />
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {orders.map((order) => (
-                  <div
-                    key={order.orderId}
-                    className="p-4 sm:px-5 flex flex-wrap items-center justify-between gap-4"
-                  >
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="font-mono font-bold text-slate-900">
-                          {order.orderRef8}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-medium text-slate-700">{order.sellerName}</span>
-                        <span aria-hidden="true">·</span>
-                        <span
-                          className={`font-semibold ${
-                            order.status === 'DELIVERED'
-                              ? 'text-emerald-600'
-                              : order.status === 'CANCELLED'
-                                ? 'text-slate-400'
-                                : 'text-amber-700'
-                          }`}
-                        >
-                          {order.status === 'DISPATCHED'
-                            ? isSw
-                              ? 'Mzigo Upo Njiani'
-                              : 'In Transit'
-                            : formatOrderStatusLabel(order.status, locale)}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-500">{order.itemsSummary}</div>
-                      <div className="text-xs font-mono text-slate-700">
-                        <span className="font-bold text-emerald-600">
-                          TZS {order.totalCashDueTzs.toLocaleString('en-US')}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {order.status === 'PLACED' && (
-                        <button
-                          type="button"
-                          onClick={() => void handleCancelOrder(order)}
-                          className="min-h-[36px] px-3 py-1.5 text-xs font-medium text-red-700 border border-red-200 rounded-md hover:bg-red-50 cursor-pointer"
-                        >
-                          {isSw ? 'Ghairi Oda' : 'Cancel Order'}
-                        </button>
-                      )}
-                      {order.status === 'DISPATCHED' ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActivePinOrderId(order.orderId);
-                            setScreen('PIN_TERMINAL');
-                          }}
-                          className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
-                        >
-                          <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
-                          <span>{isSw ? 'Pokea Mzigo (PIN Yangu)' : 'Receive Order (My PIN)'}</span>
-                        </button>
-                      ) : order.status === 'DELIVERED' ? (
-                        <span className="text-xs font-semibold text-emerald-600">
-                          {formatOrderStatusLabel('SETTLED', locale)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* SCREEN 2: SOKONI DIRECTORY VIEW */}
-      {screen === 'DIRECTORY' && (
-        <section className="space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <button
-              type="button"
-              onClick={() => setScreen('HOME')}
-              className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-900 hover:text-emerald-600 cursor-pointer"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span>{isSw ? 'Rudi Nyumbani' : 'Dashboard Home'}</span>
-            </button>
-            <span className="text-xs font-mono text-emerald-600 font-semibold">
-              {hubs.length} {isSw ? directoryLabels.countSw : directoryLabels.countEn}
-            </span>
-          </div>
-
-          {loadingHubs && hubs.length === 0 ? (
-            <div className="bg-white border border-slate-200 rounded-lg p-6 text-center text-xs text-slate-500">
-              {isSw ? directoryLabels.loadingSw : directoryLabels.loadingEn}
-            </div>
-          ) : hubs.length === 0 ? (
-            <EmptyStateCard
-              locale={locale}
-              titleSw={directoryLabels.emptyTitleSw}
-              titleEn={directoryLabels.emptyTitleEn}
-              descriptionSw={directoryLabels.emptySw}
-              descriptionEn={directoryLabels.emptyEn}
-            />
-          ) : (
-            <div className="space-y-3">
-              {hubs.map((hub) => (
-                <article
-                  key={hub.businessId}
-                  className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4"
-                >
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    <div
-                      className={`w-12 h-12 rounded-full border flex items-center justify-center shrink-0 font-mono font-bold text-sm overflow-hidden ${hub.brandRingColor}`}
-                    >
-                      {hub.logoUrl ? (
-                        <img src={hub.logoUrl} alt={hub.name} className="w-full h-full object-cover" />
-                      ) : (
-                        hub.initials
-                      )}
-                    </div>
-                    <div className="min-w-0 space-y-1">
-                      <h3 className="text-sm font-bold text-slate-900 truncate">
-                        {hub.name}
-                        {hub.kind === 'SUPPLIER' && (
-                          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-[10px] font-semibold text-amber-800 align-middle">
-                            {isSw ? 'MSAMBIZAJI' : 'SUPPLIER'}
-                          </span>
-                        )}
-                      </h3>
-                      <div className="text-xs text-slate-500 truncate">{hub.ward}</div>
-                      <div className="text-xs font-mono font-semibold text-emerald-600 tabular-nums">
-                        📍 Mita {hub.distanceMeters} karibu
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenStore(hub)}
-                    className="min-h-[40px] px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
-                  >
-                    Fungua Duka
-                  </button>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* SCREEN 3: ISOLATED STORE CATALOG */}
-      {screen === 'CATALOG' && selectedStore && (
-        <section className="space-y-4 pb-20">
-          <div className="bg-white border border-slate-100 rounded-lg p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedStore(null);
-                setCartUnitsByProduct({});
-                setScreen('DIRECTORY');
-              }}
-              className="inline-flex items-center gap-2 text-sm font-bold text-slate-900 hover:text-emerald-600 cursor-pointer truncate"
-            >
-              <ArrowLeft className="w-4 h-4 shrink-0" />
-              <span className="truncate">{selectedStore.name}</span>
-            </button>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setSmartGridMode((prev) => !prev);
-                  setSmartReorderMode(false);
-                }}
-                className={`min-h-[40px] px-3 py-2 text-xs font-semibold rounded-md border whitespace-nowrap cursor-pointer transition-colors ${
-                  smartGridMode
-                    ? 'bg-slate-900 border-slate-900 text-white'
-                    : 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
-                }`}
+      {/* ====================================================================
+          NUNUA SOKONI — Multi-Category Standard Catalog & Stepper Grid
+         ==================================================================== */}
+      {subView === 'BUY' && (
+        <div className="space-y-4">
+          {/* Category Multi-Select Bar */}
+          <section className="space-y-2" aria-labelledby="sokoni-category-heading">
+            <div className="flex items-center justify-between">
+              <h2
+                id="sokoni-category-heading"
+                className="text-sm font-bold text-slate-900 flex items-center gap-1.5"
               >
-                {smartGridMode
-                  ? isSw
-                    ? 'Mwonekano wa Kawaida'
-                    : 'Standard Grid'
-                  : 'Smart Grid View'}
-              </button>
+                <Tag className="w-4 h-4 text-[#0054A6]" aria-hidden="true" />
+                <span>{t(locale, 'sokoni.selectCategory')}</span>
+              </h2>
+              {selectedCategoryCodes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedCategoryCodes([])}
+                  className="text-xs font-semibold text-[#0054A6] hover:underline cursor-pointer"
+                >
+                  {t(locale, 'sokoni.allCategories')}
+                </button>
+              )}
+            </div>
 
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setSmartReorderMode((prev) => !prev);
-                  setSmartGridMode(false);
-                }}
-                className={`min-h-[40px] px-3 py-2 text-xs font-semibold rounded-md border whitespace-nowrap cursor-pointer transition-colors ${
-                  smartReorderMode
-                    ? 'bg-slate-900 border-slate-900 text-white'
+                onClick={() => setSelectedCategoryCodes([])}
+                className={`min-h-[38px] px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                  selectedCategoryCodes.length === 0
+                    ? 'bg-[#0054A6] border-[#0054A6] text-white'
                     : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
                 }`}
               >
-                {smartReorderMode
-                  ? isSw
-                    ? 'Mwonekano wa Kawaida'
-                    : 'Standard Grid'
-                  : 'Smart Re-Order View'}
+                {t(locale, 'sokoni.allCategories')}
               </button>
 
+              {categories.map((cat) => {
+                const active = selectedCategoryCodes.includes(cat.categoryCode);
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => toggleCategory(cat.categoryCode)}
+                    aria-pressed={active}
+                    className={`min-h-[38px] px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-[#15AC49] border-[#15AC49] text-white'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {isSw ? cat.nameSw : cat.nameEn}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Search input */}
+          <div className="relative flex items-center">
+            <Search
+              className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none"
+              aria-hidden="true"
+            />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t(locale, 'sokoni.searchPlaceholder')}
+              className="w-full min-h-[44px] pl-10 pr-10 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:border-[#0054A6] focus:outline-none"
+            />
+            {searchQuery && (
               <button
                 type="button"
-                onClick={() => setCheckoutSheetOpen(true)}
-                disabled={cartBreakdown.lines.length === 0}
-                className="inline-flex items-center gap-2 min-h-[40px] px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-500 whitespace-nowrap cursor-pointer shadow-xs"
+                onClick={() => setSearchQuery('')}
+                aria-label={isSw ? 'Futa utafutaji' : 'Clear search'}
+                className="absolute right-3 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
               >
-                <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
-                <span className="font-mono tabular-nums">
-                  TZS {cartBreakdown.totalTzs.toLocaleString('en-US')}
-                </span>
+                <X className="w-4 h-4" />
               </button>
-            </div>
+            )}
           </div>
 
-          {smartGridMode && (
-            <SmartGridStoreCatalog
-              storeName={selectedStore.name}
-              sellerBusinessId={selectedStore.businessId}
-              locale={locale}
-              onClose={() => setSmartGridMode(false)}
-            />
-          )}
-
-          {smartReorderMode && !smartGridMode && (
-            <SmartStoreCatalog
-              storeName={selectedStore.name}
-              sellerBusinessId={selectedStore.businessId}
-              locale={locale}
-              onClose={() => setSmartReorderMode(false)}
-            />
-          )}
-
-          {!smartReorderMode && !smartGridMode && (
-            <>
-              <div className="bg-white border border-slate-100 rounded-lg p-3 shadow-sm">
-                <label htmlFor="sokoni-catalog-search" className="sr-only">
-                  {isSw ? 'Tafuta bidhaa kwa jina au SKU' : 'Search products by title or SKU'}
-                </label>
-                <div className="relative flex items-center">
-                  <Search
-                    className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none"
-                    aria-hidden="true"
-                  />
-                  <input
-                    id="sokoni-catalog-search"
-                    type="text"
-                    value={catalogSearchQuery}
-                    onChange={(e) => setCatalogSearchQuery(e.target.value)}
-                    className="w-full py-2.5 pl-9 pr-9 border border-slate-200 rounded-md text-xs bg-slate-50 text-slate-900 font-medium focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
-                    placeholder={
-                      isSw
-                        ? 'Tafuta bidhaa mtaani (e.g. Unga, Mafuta, SKU)...'
-                        : 'Search store catalog (e.g. Flour, Oil, SKU)...'
-                    }
-                  />
-                  {catalogSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setCatalogSearchQuery('')}
-                      aria-label={isSw ? 'Futa utafutaji' : 'Clear search'}
-                      className="absolute right-2.5 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" aria-hidden="true" />
-                    </button>
-                  )}
+          {/* Standard Product Grid (Wireframe 2: 2-column mobile grid with +/- steppers) */}
+          {loadingCatalog && catalogItems.length === 0 ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {[1, 2, 3, 4].map((n) => (
+                <div
+                  key={n}
+                  className="bg-white border border-slate-200 rounded-2xl p-3 space-y-3 animate-pulse"
+                >
+                  <div className="h-28 bg-slate-100 rounded-xl" />
+                  <div className="h-4 bg-slate-100 rounded w-3/4" />
+                  <div className="h-9 bg-slate-100 rounded-lg" />
                 </div>
-              </div>
+              ))}
+            </div>
+          ) : catalogItems.length === 0 ? (
+            <EmptyStateCard
+              locale={locale}
+              titleSw={t('sw', 'sokoni.noCatalogTitle')}
+              titleEn={t('en', 'sokoni.noCatalogTitle')}
+              descriptionSw={t('sw', 'sokoni.noCatalogDesc')}
+              descriptionEn={t('en', 'sokoni.noCatalogDesc')}
+            />
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {catalogItems.map((item) => {
+                const qty = selectedQtyByCatalogId[item.id] ?? 0;
+                const activeUnit = getActiveUnitForItem(item);
+                const units = item.productUnits ?? [];
+                const priceHint = activeUnit
+                  ? item.standardPrices?.find(
+                      (sp) => sp.globalProductUnitId === activeUnit.id,
+                    )?.standardPriceTzs
+                  : item.standardPrices?.[0]?.standardPriceTzs;
+                const imgSrc = resolveBackendImageUrl(
+                  item.imagekitCdnUrl,
+                  item.staticImageUrl,
+                );
 
-              {lowStockCarouselItems.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between px-1">
-                    <div className="flex items-center gap-1.5 text-emerald-700 font-bold text-xs uppercase tracking-wider">
-                      <Zap className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
-                      <h3>
-                        {isSw
-                          ? 'Inashauriwa Ununue (Duka Lako Limeshaisha)'
-                          : 'Recommended Re-Order (Low Shelf Stock)'}
-                      </h3>
+                return (
+                  <article
+                    key={item.id}
+                    className={`bg-white border rounded-2xl p-3 flex flex-col justify-between gap-2.5 transition-colors ${
+                      qty > 0
+                        ? 'border-[#15AC49] ring-1 ring-[#15AC49]/40'
+                        : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="space-y-2">
+                      {!isLowDataModeActive ? (
+                        <div className="h-28 w-full rounded-xl bg-slate-50 border border-slate-100 overflow-hidden flex items-center justify-center p-2">
+                          <img
+                            src={imgSrc}
+                            alt={isSw ? item.fixedNameSw : item.fixedNameEn}
+                            referrerPolicy="no-referrer"
+                            className="h-full w-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="h-14 w-full rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center text-[11px] font-mono text-slate-500">
+                          {item.canonicalSku}
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <h3 className="text-xs sm:text-sm font-bold text-slate-900 line-clamp-2 leading-snug">
+                          {isSw ? item.fixedNameSw : item.fixedNameEn}
+                        </h3>
+                        <div className="text-[11px] font-mono text-slate-500 truncate">
+                          {item.canonicalSku}
+                        </div>
+                      </div>
+
+                      {units.length > 1 ? (
+                        <select
+                          aria-label={isSw ? 'Chagua kipimo' : 'Select unit'}
+                          value={activeUnit?.systemUnitId ?? ''}
+                          onChange={(e) =>
+                            setSelectedUnitByCatalogId((prev) => ({
+                              ...prev,
+                              [item.id]: e.target.value,
+                            }))
+                          }
+                          className="w-full min-h-[34px] px-2 py-1 text-[11px] font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded-lg focus:border-[#0054A6] focus:outline-none"
+                        >
+                          {units.map((u) => (
+                            <option key={u.id} value={u.systemUnitId}>
+                              {formatUnitOptionLabel(u, isSw)}
+                            </option>
+                          ))}
+                        </select>
+                      ) : activeUnit ? (
+                        <div className="text-[11px] font-semibold text-[#0054A6] truncate">
+                          {formatUnitOptionLabel(activeUnit, isSw)}
+                        </div>
+                      ) : null}
+
+                      {priceHint !== undefined && priceHint > 0 && (
+                        <div className="text-xs font-mono font-bold text-slate-700 tabular-nums">
+                          ~TZS {Number(priceHint).toLocaleString('en-US')}
+                        </div>
+                      )}
                     </div>
-                    {catalogSearchQuery && (
+
+                    {/* Quantity Stepper (- [qty] +) */}
+                    <div className="flex items-center justify-between border border-slate-200 rounded-xl bg-slate-50 overflow-hidden">
                       <button
                         type="button"
-                        onClick={() => setCatalogSearchQuery('')}
-                        className="text-[11px] font-semibold text-emerald-700 hover:underline cursor-pointer"
+                        onClick={() => adjustItemQty(item.id, -1)}
+                        disabled={qty === 0}
+                        aria-label={`Decrease ${item.canonicalSku}`}
+                        className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-200/70 disabled:opacity-40 cursor-pointer"
                       >
-                        {isSw ? 'Onyesha zote' : 'Show all'}
+                        <Minus className="w-4 h-4" aria-hidden="true" />
                       </button>
-                    )}
-                  </div>
 
-                  <div className="sk-scroll-x gap-2.5 pb-1 max-w-full">
-                    {lowStockCarouselItems.map((suggest) => {
-                      const active =
-                        catalogSearchQuery.toLowerCase() === suggest.sku.toLowerCase();
-                      return (
-                        <button
-                          type="button"
-                          key={suggest.productId}
-                          onClick={() =>
-                            setCatalogSearchQuery((prev) =>
-                              prev.toLowerCase() === suggest.sku.toLowerCase() ? '' : suggest.sku,
-                            )
-                          }
-                          className={`flex-shrink-0 border p-3 rounded-lg flex items-center gap-3 cursor-pointer transition-colors text-left shadow-xs ${
-                            active
-                              ? 'bg-emerald-100 border-emerald-500 ring-1 ring-emerald-500'
-                              : 'bg-emerald-50 border-emerald-200 hover:bg-emerald-100/70'
-                          }`}
-                        >
-                          <div className="w-8 h-8 rounded-md bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                            <AlertTriangle className="w-4 h-4" aria-hidden="true" />
-                          </div>
-                          <div>
-                            <div className="font-bold text-slate-900 text-xs max-w-[160px] truncate">
-                              {isSw ? suggest.nameSw : suggest.nameEn}
-                            </div>
-                            <div className="text-[10px] font-mono text-emerald-700 font-semibold uppercase mt-0.5">
-                              {suggest.sku} · {isSw ? 'Low Stock katika Rafu' : 'Low Shelf Stock'}
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
+                      <span className="px-1 text-sm font-mono font-bold tabular-nums text-slate-900">
+                        {qty}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => adjustItemQty(item.id, 1)}
+                        aria-label={`Increase ${item.canonicalSku}`}
+                        className="min-w-[40px] min-h-[40px] flex items-center justify-center bg-[#15AC49] text-white hover:bg-emerald-700 cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Sticky Bottom Checkout CTA above Mobile Fixed Bottom Nav */}
+          {totalSelectedUnits > 0 && (
+            <div className="sticky bottom-20 md:bottom-4 z-30 pt-2">
+              <div className="bg-white/95 backdrop-blur-md border border-[#15AC49]/30 rounded-2xl p-2.5 shadow-lg flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedQtyByCatalogId({})}
+                  className="min-h-[46px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer shrink-0"
+                >
+                  {t(locale, 'sokoni.clearSelection')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStage('DISCOVERY')}
+                  className="flex-1 min-h-[46px] px-4 py-2.5 rounded-xl bg-[#15AC49] hover:bg-emerald-700 text-white text-sm font-bold inline-flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+                >
+                  <ShoppingBag className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    {t(locale, 'sokoni.proceedToOrder')} ({totalSelectedUnits})
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ====================================================================
+          UZA SOKONI — Free Delivery & Live Market Stock Publishing
+         ==================================================================== */}
+      {subView === 'SELL' && isMerchantSeller && (
+        <div className="space-y-4">
+          {/* Free Delivery Card */}
+          <section className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#15AC49]/10 text-[#15AC49] flex items-center justify-center shrink-0">
+                <Truck className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div className="space-y-0.5">
+                <h2 className="text-sm font-bold text-slate-900">
+                  {t(locale, 'sokoni.freeDeliveryTitle')}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {t(locale, 'sokoni.freeDeliveryDesc')}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={savingFreeDelivery || sellLoading}
+              onClick={() => void handleToggleFreeDelivery()}
+              className={`min-h-[44px] px-4 py-2 rounded-xl border text-xs font-bold cursor-pointer transition-colors disabled:opacity-50 ${
+                offersFreeDelivery
+                  ? 'bg-[#15AC49] border-[#15AC49] text-white'
+                  : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              {offersFreeDelivery
+                ? isSw
+                  ? 'IMEWASHWA'
+                  : 'ENABLED'
+                : isSw
+                  ? 'IMEZIMWA'
+                  : 'DISABLED'}
+            </button>
+          </section>
+
+          {userRole === 'SUPPLIER' ? (
+            <form
+              onSubmit={handlePublishSupplierListing}
+              className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4"
+            >
+              <div className="flex items-center gap-2">
+                <PackagePlus className="w-4 h-4 text-[#0054A6]" aria-hidden="true" />
+                <h3 className="text-sm font-bold text-slate-900">
+                  {t(locale, 'sokoni.publishStockTitle')}
+                </h3>
+              </div>
+
+              {supplierItems.filter((i) => i.globalCatalogId).length === 0 ? (
+                <EmptyStateCard
+                  locale={locale}
+                  titleSw="Hakuna bidhaa za ghala zilizounganishwa bado"
+                  titleEn="No linked warehouse products yet"
+                  descriptionSw="Ongeza bidhaa kutoka Ghala & Stock kwanza ili kuchapisha orodha ya jumla Sokoni."
+                  descriptionEn="Add products in Warehouse & Stock first to publish Supplier bulk listings."
+                />
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-semibold text-slate-700">
+                      {isSw ? 'Bidhaa ya Ghala' : 'Warehouse Product'}
+                    </span>
+                    <select
+                      value={supplierPublishTarget.globalCatalogId}
+                      onChange={(e) => {
+                        const chosen = supplierItems.find(
+                          (item) => item.globalCatalogId === e.target.value,
+                        );
+                        setSupplierPublishTarget((prev) => ({
+                          ...prev,
+                          globalCatalogId: e.target.value,
+                          systemUnitId: chosen?.unitConversions[0]?.systemUnitId ?? '',
+                        }));
+                      }}
+                      className="w-full min-h-[44px] px-3 text-xs bg-white border border-slate-300 rounded-xl"
+                    >
+                      {supplierItems
+                        .filter((i) => i.globalCatalogId)
+                        .map((item) => (
+                          <option
+                            key={item.productId}
+                            value={item.globalCatalogId ?? ''}
+                          >
+                            {isSw ? item.nameSw : item.nameEn} ({item.smsItemCode})
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-xs font-semibold text-slate-700">
+                      {isSw ? 'Kipimo cha Jumla' : 'Bulk Unit'}
+                    </span>
+                    <select
+                      value={supplierPublishTarget.systemUnitId}
+                      onChange={(e) =>
+                        setSupplierPublishTarget((prev) => ({
+                          ...prev,
+                          systemUnitId: e.target.value,
+                        }))
+                      }
+                      className="w-full min-h-[44px] px-3 text-xs bg-white border border-slate-300 rounded-xl"
+                    >
+                      {(
+                        supplierItems.find(
+                          (i) =>
+                            i.globalCatalogId === supplierPublishTarget.globalCatalogId,
+                        )?.unitConversions ?? []
+                      ).map((u) => (
+                        <option key={u.systemUnitId} value={u.systemUnitId}>
+                          {isSw
+                            ? u.displayLabelSw || u.nameSw
+                            : u.displayLabelEn || u.nameEn}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-xs font-semibold text-slate-700">
+                      {isSw ? 'Bei ya Jumla (TZS)' : 'Bulk Price (TZS)'}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={supplierPublishTarget.bulkPriceTzs}
+                      onChange={(e) =>
+                        setSupplierPublishTarget((prev) => ({
+                          ...prev,
+                          bulkPriceTzs: e.target.value,
+                        }))
+                      }
+                      className="w-full min-h-[44px] px-3 text-xs font-mono font-bold border border-slate-300 rounded-xl"
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-xs font-semibold text-slate-700">
+                      {isSw ? 'Kiwango cha Chini (MOQ)' : 'Min Order Qty (MOQ)'}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={supplierPublishTarget.minOrderQty}
+                      onChange={(e) =>
+                        setSupplierPublishTarget((prev) => ({
+                          ...prev,
+                          minOrderQty: e.target.value,
+                        }))
+                      }
+                      className="w-full min-h-[44px] px-3 text-xs font-mono font-bold border border-slate-300 rounded-xl"
+                    />
+                  </label>
+
+                  <div className="sm:col-span-2 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={publishingStock}
+                      className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#0054A6] hover:bg-blue-900 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                    >
+                      {t(locale, 'sokoni.publishBtn')}
+                    </button>
                   </div>
                 </div>
               )}
-
-              {loadingCatalog ? (
-                <div className="bg-white border border-slate-200 rounded-lg p-6 text-center text-xs text-slate-500">
-                  {isSw ? 'Inapakia orodha ya bidhaa...' : 'Loading store catalog...'}
+            </form>
+          ) : (
+            <section className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-4 py-3.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {t(locale, 'sokoni.publishStockTitle')}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {isSw
+                      ? 'Chagua bidhaa za rafu yako na weka idadi ya kuonekana Sokoni.'
+                      : 'Select shelf products and enter quantities to publish live on Sokoni.'}
+                  </p>
                 </div>
-              ) : filteredActiveCatalog.length === 0 ? (
-                <EmptyStateCard
-                  locale={locale}
-                  titleSw="Hakuna rekodi bado"
-                  titleEn="No records yet"
-                  descriptionSw="Duka hili halijaweka bidhaa zinazouzwa katika PostgreSQL bado."
-                  descriptionEn="No active catalog items exist in PostgreSQL for this merchant yet."
-                />
+
+                <button
+                  type="button"
+                  disabled={
+                    publishingStock ||
+                    Object.values(publishQtyByProductId).filter((q) => q > 0).length === 0
+                  }
+                  onClick={() => void handlePublishMerchantMarketStock()}
+                  className="min-h-[42px] px-4 py-2 rounded-xl bg-[#0054A6] hover:bg-blue-900 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <PackagePlus className="w-4 h-4" aria-hidden="true" />
+                  <span>{t(locale, 'sokoni.publishBtn')}</span>
+                </button>
+              </div>
+
+              {sellLoading && merchantProducts.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-500">
+                  {isSw ? 'Inapakia bidhaa zako...' : 'Loading your inventory...'}
+                </div>
+              ) : merchantProducts.length === 0 ? (
+                <div className="p-4">
+                  <EmptyStateCard
+                    locale={locale}
+                    titleSw="Hakuna bidhaa kwenye hifadhi bado"
+                    titleEn="No products in inventory yet"
+                    descriptionSw="Nenda kwenye Hifadhi kuongeza bidhaa kabla ya kuziuza Sokoni."
+                    descriptionEn="Add products in Inventory first before publishing them to Sokoni."
+                  />
+                </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {filteredActiveCatalog.map((item) => {
-                    const units = cartUnitsByProduct[item.productId] ?? 0;
-                    const quanta = units * item.quantaPerOrderUnit;
-                    const wholesaleApplied = units >= item.wholesaleThresholdUnits;
-                    const unitPriceTzs = wholesaleApplied
-                      ? item.wholesalePricePerUnitTzs
-                      : item.retailPricePerUnitTzs;
-
+                <div className="divide-y divide-slate-100">
+                  {merchantProducts.map((product) => {
+                    const qty = publishQtyByProductId[product.productId] ?? 0;
+                    const checked = qty > 0;
                     return (
-                      <article
-                        key={item.productId}
-                        className="bg-white border border-slate-100 rounded-lg shadow-sm overflow-hidden flex flex-col justify-between relative"
+                      <div
+                        key={product.productId}
+                        className={`px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
+                          checked ? 'bg-[#15AC49]/5' : 'bg-white'
+                        }`}
                       >
-                        {item.isLowStockInDuka && (
-                          <span className="absolute top-2.5 left-2.5 z-10 inline-flex items-center gap-1 bg-rose-500 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase tracking-wider shadow-xs">
-                            <AlertTriangle className="w-3 h-3" aria-hidden="true" />
-                            <span>Re-Order</span>
-                          </span>
-                        )}
-                        <div className="p-4 space-y-3">
-                          {!isLowDataModeActive ? (
-                            <div className="h-32 w-full rounded-md bg-white border border-slate-100 overflow-hidden flex items-center justify-center p-2">
-                              <img
-                                src={item.imageSrc}
-                                alt={isSw ? item.nameSw : item.nameEn}
-                                referrerPolicy="no-referrer"
-                                className="h-full w-full object-contain"
-                              />
-                            </div>
-                          ) : (
-                            <div className="h-16 rounded-md bg-slate-50 border border-slate-100 flex items-center justify-center text-xs font-mono text-slate-500">
-                              {item.sku} · LOW-DATA ASSET
-                            </div>
-                          )}
-
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-2 text-xs">
-                              <span className="font-mono text-slate-500">
-                                {item.sku} ·{' '}
-                                {isSw ? item.quantaUnitLabelSw : item.quantaUnitLabelEn}
-                              </span>
-                              {wholesaleApplied && (
-                                <span className="font-semibold text-emerald-600">
-                                  Bei ya Jumla 🎉
-                                </span>
-                              )}
-                            </div>
-                            <h3 className="text-sm font-semibold text-slate-900 leading-snug">
-                              {isSw ? item.nameSw : item.nameEn}
-                            </h3>
-                          </div>
-                        </div>
-
-                        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between gap-3">
-                          <div>
-                            <div
-                              className={`text-sm font-bold font-mono tabular-nums ${
-                                wholesaleApplied ? 'text-emerald-600' : 'text-slate-900'
-                              }`}
-                            >
-                              TZS {unitPriceTzs.toLocaleString('en-US')}
+                        <label className="flex items-start gap-3 min-w-0 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setPublishQtyByProductId((prev) => {
+                                if (prev[product.productId]) {
+                                  const next = { ...prev };
+                                  delete next[product.productId];
+                                  return next;
+                                }
+                                return { ...prev, [product.productId]: 24 };
+                              })
+                            }
+                            className="mt-1 w-4 h-4 accent-[#15AC49]"
+                          />
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="text-xs sm:text-sm font-bold text-slate-900 truncate">
+                              {isSw ? product.nameSw : product.nameEn}
                             </div>
                             <div className="text-[11px] font-mono text-slate-500 tabular-nums">
-                              {units} × {item.orderUnitType} (
-                              {formatQuantaMeasurement(
-                                quanta,
-                                categoryFromSystemUnitCode(item.orderUnitType),
-                                isSw ? 'sw' : 'en',
+                              {product.sku} ·{' '}
+                              {isSw ? 'Stock' : 'On hand'}:{' '}
+                              {product.availableQuarterQuanta} Q · TZS{' '}
+                              {Number(product.cartonPriceTzs || product.unitPriceTzs).toLocaleString(
+                                'en-US',
                               )}
-                              )
                             </div>
                           </div>
+                        </label>
 
-                          <div className="inline-flex items-center border border-slate-200 rounded-md bg-white">
-                            <button
-                              type="button"
-                              aria-label={`Decrease ${item.sku}`}
-                              onClick={() => adjustProductUnits(item, -1)}
-                              className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
-                            >
-                              <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-                            </button>
-                            <span className="w-8 text-center text-sm font-bold font-mono tabular-nums text-slate-900">
-                              {units}
-                            </span>
-                            <button
-                              type="button"
-                              aria-label={`Increase ${item.sku}`}
-                              onClick={() => adjustProductUnits(item, 1)}
-                              className="min-w-[40px] min-h-[40px] flex items-center justify-center bg-emerald-600 text-white hover:bg-emerald-700 rounded-r-md cursor-pointer"
-                            >
-                              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                            </button>
-                          </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            disabled={!checked}
+                            value={checked ? qty : ''}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const val = Math.max(1, Math.trunc(Number(e.target.value) || 1));
+                              setPublishQtyByProductId((prev) => ({
+                                ...prev,
+                                [product.productId]: val,
+                              }));
+                            }}
+                            className="w-24 min-h-[40px] px-2.5 py-1.5 text-xs font-mono font-bold text-right border border-slate-300 rounded-xl disabled:bg-slate-100"
+                          />
                         </div>
-                      </article>
+                      </div>
                     );
                   })}
                 </div>
               )}
-
-              {cartBreakdown.lines.length > 0 && (
-                <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs text-slate-500">
-                      {cartBreakdown.totalQuanta} Quanta · {selectedStore.name}
-                    </div>
-                    <div className="text-lg font-bold font-mono tabular-nums text-emerald-600">
-                      TZS {cartBreakdown.totalTzs.toLocaleString('en-US')}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setCheckoutSheetOpen(true)}
-                    className="min-h-[44px] px-5 py-2.5 text-sm font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 whitespace-nowrap cursor-pointer shadow-xs"
-                  >
-                    {isSw ? 'Fungua Kikapu' : 'Review Checkout Sheet'}
-                  </button>
-                </div>
-              )}
-            </>
+            </section>
           )}
-        </section>
-      )}
-
-      {/* SCREEN 4: SLIDE-UP CHECKOUT SHEET */}
-      {checkoutSheetOpen && selectedStore && (
-        <div
-          className="sk-dialog-overlay"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="sk-dialog-panel">
-            <div className="shrink-0 px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  {isSw ? 'Kikapu cha Oda' : 'Slide-Up Checkout Sheet'}
-                </h3>
-                <p className="text-xs text-slate-500">{selectedStore.name}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCheckoutSheetOpen(false)}
-                className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-500 hover:text-slate-900 cursor-pointer"
-                aria-label="Close drawer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="sk-dialog-body p-5 space-y-4 sk-safe-bottom">
-              <div className="divide-y divide-slate-100">
-                {cartBreakdown.lines.map(({ item, units, quanta, lineTotalTzs, wholesaleApplied }) => (
-                  <div
-                    key={item.productId}
-                    className="py-2.5 flex items-center justify-between gap-3 text-xs"
-                  >
-                    <div>
-                      <div className="font-semibold text-slate-900">
-                        {isSw ? item.nameSw : item.nameEn}
-                      </div>
-                      <div className="text-slate-500 font-mono">
-                        {units} × {item.orderUnitType} ({quanta} Quanta ·{' '}
-                        {formatQuantaMeasurement(
-                          quanta,
-                          categoryFromSystemUnitCode(item.orderUnitType),
-                          isSw ? 'sw' : 'en',
-                        )}
-                        )
-                        {wholesaleApplied && (
-                          <span className="text-emerald-600 font-semibold"> · Bei ya Jumla 🎉</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="font-mono font-bold tabular-nums text-slate-900 whitespace-nowrap">
-                      TZS {lineTotalTzs.toLocaleString('en-US')}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="border-t border-slate-100 pt-3 space-y-2 text-xs">
-                <div className="flex items-center justify-between text-slate-600">
-                  <span>{isSw ? 'Jumla Ndogo (CoD)' : 'CoD Merchandise Subtotal'}</span>
-                  <span className="font-mono font-semibold tabular-nums">
-                    TZS {cartBreakdown.subtotalTzs.toLocaleString('en-US')}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-slate-600">
-                  <span className="inline-flex items-center gap-1.5">
-                    <Truck className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-                    <span>
-                      {cartBreakdown.deliveryFeeTzs === 0
-                        ? isSw
-                          ? 'Usafiri Bure'
-                          : 'FREE DELIVERY'
-                        : isSupplierAudience
-                          ? isSw
-                            ? 'Ada ya Usafiri (Muuzaji)'
-                            : 'Supplier Delivery Fee'
-                          : isSw
-                            ? 'Usafiri wa Dereva'
-                            : 'Independent Driver Fee'}
-                    </span>
-                  </span>
-                  <span className="font-mono font-semibold tabular-nums">
-                    {cartBreakdown.deliveryFeeTzs === 0
-                      ? isSw
-                        ? 'BURE'
-                        : 'TZS 0'
-                      : `TZS ${cartBreakdown.deliveryFeeTzs.toLocaleString('en-US')}`}
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between pt-2 border-t border-slate-100">
-                  <span className="text-sm font-bold text-slate-900">
-                    {isSw ? 'Taslimu ya Kulipa Mlangoni' : 'Total Cash on Delivery'}
-                  </span>
-                  <span className="text-xl font-bold font-mono tabular-nums text-emerald-600">
-                    TZS {cartBreakdown.totalTzs.toLocaleString('en-US')}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                disabled={submittingOrder}
-                onClick={() => void handlePlaceOrder()}
-                className="w-full min-h-[48px] px-4 py-3 text-sm font-semibold text-white rounded-md transition-colors cursor-pointer shadow-xs disabled:opacity-60 bg-emerald-600 hover:bg-emerald-700"
-              >
-                {submittingOrder
-                  ? isSw
-                    ? 'Inatuma Oda...'
-                    : 'Submitting Order...'
-                  : isSw
-                    ? 'Thibitisha & Agiza (CoD)'
-                    : 'Confirm & Dispatch CoD Order'}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
-      {/* SCREEN 5: ORDER CONFIRMATION */}
-      {screen === 'PIN_TERMINAL' && activePinOrder && (
-        <section className="max-w-md mx-auto space-y-3">
-          <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-xs flex items-center justify-between">
-            <span className="text-xs font-black uppercase tracking-wider text-slate-900">
-              Order Confirmation
-            </span>
-            <span className="text-[11px] font-mono font-bold text-emerald-700">
-              {activePinOrder.orderRef8}
-            </span>
+      {/* ====================================================================
+          ODA ZANGU & PIN — Buying Orders, Cancel & Doorstep PIN Verification
+         ==================================================================== */}
+      {subView === 'ORDERS' && (
+        <section className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+          <div className="px-4 py-3.5 border-b border-slate-100 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-bold text-slate-900">
+              {t(locale, 'sokoni.myOrders')}
+            </h2>
+            <button
+              type="button"
+              onClick={() => setSubView('BUY')}
+              className="text-xs font-semibold text-[#15AC49] hover:underline cursor-pointer"
+            >
+              {t(locale, 'sokoni.buyMode')}
+            </button>
           </div>
 
-          <IsolatedQrVerificationTerminal
-            locale={locale}
-            defaultDeviceOwner="RETAILER_PHONE"
-            orderId={activePinOrder.orderId}
-            orderRef8={activePinOrder.orderRef8}
-            destinationLabel={activePinOrder.sellerName}
-            expectedCashTzs={activePinOrder.totalCashDueTzs}
-            buyerRoleLabel={buyerTerminalRoleLabel}
-            onBack={() => setScreen('HOME')}
-            onVerifiedSuccess={(consumedToken) => {
-              setOrders((prev) =>
-                prev.map((o) =>
-                  o.orderId === activePinOrder.orderId ? { ...o, status: 'DELIVERED' } : o,
-                ),
-              );
-              setFloatingToast({
-                title: isSw
-                  ? `Order Confirmation ya ${activePinOrder.orderRef8} Imekamilika`
-                  : `Order Confirmation ${activePinOrder.orderRef8} Settled`,
-                detail: `QR ${consumedToken} consumed · TZS ${activePinOrder.totalCashDueTzs.toLocaleString('en-US')} settled.`,
-              });
-              void loadLiveHome();
-            }}
-          />
+          {loadingOrders && orders.length === 0 ? (
+            <div className="p-6 text-center text-xs text-slate-500">
+              {isSw ? 'Inapakia oda zako...' : 'Loading your orders...'}
+            </div>
+          ) : orders.length === 0 ? (
+            <div className="p-4">
+              <EmptyStateCard
+                locale={locale}
+                titleSw="Hakuna oda za manunuzi bado"
+                titleEn="No buying orders yet"
+                descriptionSw="Chagua bidhaa kutoka Nunua Sokoni ili kutafuta wauzaji waliothibitishwa."
+                descriptionEn="Select products in Nunua Sokoni to discover matched verified Merchants."
+              />
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {orders.map((order) => (
+                <div
+                  key={order.orderId}
+                  className="p-4 flex flex-wrap items-center justify-between gap-3"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-mono font-bold text-slate-900">
+                        #{order.orderRef}
+                      </span>
+                      <span className="font-semibold text-slate-700 truncate">
+                        {order.sellerBusinessName}
+                      </span>
+                      {order.orderMode === 'SCHEDULED' && order.scheduledDeliveryDate && (
+                        <span className="text-[11px] font-semibold text-[#0054A6]">
+                          · {t(locale, 'dashboard.scheduledFor')} {order.scheduledDeliveryDate}
+                        </span>
+                      )}
+                      <span
+                        className={`text-[11px] font-bold ${
+                          order.status === 'DELIVERED'
+                            ? 'text-[#15AC49]'
+                            : order.status === 'CANCELLED'
+                              ? 'text-slate-400'
+                              : 'text-amber-700'
+                        }`}
+                      >
+                        · {formatOrderStatusLabel(order.status, locale)}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">
+                      {order.items
+                        .map(
+                          (i) =>
+                            `${isSw ? i.nameSw ?? i.smsItemCode ?? 'SKU' : i.nameEn ?? i.smsItemCode ?? 'SKU'} (${i.quantity} × ${i.unitType})`,
+                        )
+                        .join(' + ')}
+                    </div>
+                    <div className="text-xs font-mono font-bold text-[#15AC49] tabular-nums">
+                      TZS {Number(order.expectedTotalTzs).toLocaleString('en-US')}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {order.status === 'PLACED' && (
+                      <button
+                        type="button"
+                        onClick={() => void handleCancelOrder(order)}
+                        className="min-h-[40px] px-3 py-1.5 text-xs font-semibold text-red-700 border border-red-200 rounded-xl hover:bg-red-50 cursor-pointer"
+                      >
+                        {isSw ? 'Ghairi Oda' : 'Cancel'}
+                      </button>
+                    )}
+                    {order.status === 'DISPATCHED' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActivePinOrderId(order.orderId);
+                          setStage('PIN_TERMINAL');
+                        }}
+                        className="min-h-[40px] px-3.5 py-2 text-xs font-bold text-white bg-slate-900 rounded-xl hover:bg-slate-800 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{isSw ? 'PIN ya Kupokea' : 'Receive (PIN)'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
     </div>
