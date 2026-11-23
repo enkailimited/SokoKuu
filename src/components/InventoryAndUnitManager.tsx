@@ -40,7 +40,6 @@ import {
   categoryFromSystemUnitCode,
   formatContextAwareStock,
   formatQuantaMeasurement,
-  formatQuantumDefinition,
   isWholesaleOnly,
   type UnitCategory,
 } from '../utils/formatProductUnit';
@@ -88,6 +87,8 @@ export interface DukaInventoryItem {
   lowStockThresholdQuanta: number;
   unitType: string;
   unitCategory?: UnitCategory;
+  /** Quanta contained in one sealed bulk package (from the wholesale price tier). */
+  packageQuanta?: number;
   lastRestockedEat: string;
 }
 
@@ -544,22 +545,28 @@ export function InventoryAndUnitManager({
       }
 
       const mappedShelf: DukaInventoryItem[] = Array.isArray(liveProducts)
-        ? liveProducts.map((p) => ({
-            itemId: p.productId,
-            sku: p.sku,
-            productNameSw: p.nameSw,
-            productNameEn: p.nameEn,
-            availableQuanta: p.availableQuarterQuanta,
-            sealedBulkPackagesStock: p.sealedBulkPackagesStock,
-            unitPriceTzs: p.unitPriceTzs,
-            cartonPriceTzs: p.cartonPriceTzs,
-            imagekitCdnUrl: resolveBackendImageUrl(p.imagekitCdnUrl),
-            globalCatalogId: p.globalCatalogId,
-            lowStockThresholdQuanta: 20,
-            unitType: p.priceTiers?.[0]?.unitType ?? 'UNIT',
-            unitCategory: p.unitCategory,
-            lastRestockedEat: new Date().toLocaleDateString(),
-          }))
+        ? liveProducts.map((p) => {
+            const packageTier =
+              p.priceTiers?.find((t) => t.isWholesaleTier || t.quarterQuantaPerUnit >= 24) ??
+              p.priceTiers?.find((t) => /CARTON|CRATE|SACK|GUNIA|DEBE|DOZEN|PACK/.test(t.unitType));
+            return {
+              itemId: p.productId,
+              sku: p.sku,
+              productNameSw: p.nameSw,
+              productNameEn: p.nameEn,
+              availableQuanta: p.availableQuarterQuanta,
+              sealedBulkPackagesStock: p.sealedBulkPackagesStock,
+              unitPriceTzs: p.unitPriceTzs,
+              cartonPriceTzs: p.cartonPriceTzs,
+              imagekitCdnUrl: resolveBackendImageUrl(p.imagekitCdnUrl),
+              globalCatalogId: p.globalCatalogId,
+              lowStockThresholdQuanta: 20,
+              unitType: p.priceTiers?.[0]?.unitType ?? 'UNIT',
+              unitCategory: p.unitCategory,
+              packageQuanta: packageTier?.quarterQuantaPerUnit,
+              lastRestockedEat: new Date().toLocaleDateString(),
+            };
+          })
         : [];
 
       setShelfItems(mappedShelf);
@@ -1566,9 +1573,41 @@ export function InventoryAndUnitManager({
   const maxPosQuanta = selectedItemForSale
     ? Math.max(
         1,
-        selectedItemForSale.availableQuanta + (selectedItemForSale.sealedBulkPackagesStock ?? 0) * 100,
+        selectedItemForSale.availableQuanta +
+          (selectedItemForSale.sealedBulkPackagesStock ?? 0) *
+            (selectedItemForSale.packageQuanta ?? 100),
       )
     : 100;
+
+  // Plain, category-aware POS modal labels (no technical "Quanta" jargon).
+  const saleCategory: UnitCategory = selectedItemForSale
+    ? selectedItemForSale.unitCategory ?? categoryFromSystemUnitCode(selectedItemForSale.unitType)
+    : 'WEIGHT';
+  const salePackageLabel =
+    selectedItemForSale && /CARTON|CRATE|SACK|GUNIA|DEBE|DOZEN|PACK/.test(selectedItemForSale.unitType.toUpperCase())
+      ? formatUnitTypeLabel(selectedItemForSale.unitType, locale, saleCategory)
+      : null;
+  const saleUnitSubtitle = (() => {
+    if (!selectedItemForSale) return '';
+    const base =
+      saleCategory === 'VOLUME'
+        ? isSw ? 'Inauzwa kwa ujazo (mL / L)' : 'Sold by volume (mL / L)'
+        : saleCategory === 'WEIGHT'
+          ? isSw ? 'Inauzwa kwa uzito (g / KG)' : 'Sold by weight (g / KG)'
+          : salePackageLabel ?? (isSw ? 'Inauzwa kwa kifungashio' : 'Sold per package');
+    return salePackageLabel && saleCategory !== 'PACKAGING'
+      ? `${salePackageLabel} · ${base}`
+      : base;
+  })();
+  const saleSealedPackageWord =
+    saleCategory === 'VOLUME'
+      ? isSw ? 'Katoni' : 'cartons'
+      : saleCategory === 'WEIGHT'
+        ? isSw ? 'Magunia' : 'sacks'
+        : salePackageLabel ?? (isSw ? 'vifungashio' : 'packages');
+  const posTotalTzs = selectedItemForSale
+    ? Math.round((promptQuantity * selectedItemForSale.unitPriceTzs) / 4)
+    : 0;
 
   const containerMaxClass =
     activeSection === 'inventory_shelf' ? 'max-w-5xl mx-auto space-y-5' : 'max-w-2xl mx-auto space-y-6';
@@ -1668,15 +1707,7 @@ export function InventoryAndUnitManager({
             <div className="bg-white border border-slate-100 rounded-xl shadow-xs px-4 py-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-xs font-medium text-emerald-700">
                 <Wifi className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>
-                  {loadingLive
-                    ? isSw
-                      ? 'Inapakia Hifadhidata...'
-                      : 'Syncing...'
-                    : isSw
-                      ? 'POS Tayari · Imeunganishwa na PostgreSQL'
-                      : 'POS Live · PostgreSQL Connected'}
-                </span>
+                
               </div>
               <button
                 type="button"
@@ -3360,9 +3391,16 @@ export function InventoryAndUnitManager({
       {/* DYNAMIC POS QUANTITY PROMPT MODAL OVERLAY                      */}
       {/* ============================================================== */}
       {selectedItemForSale && (
-        <div className="sk-dialog-overlay backdrop-blur-sm">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto sk-safe-bottom overscroll-contain">
-            <div className="flex items-start gap-3 border-b border-slate-100 p-5">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setSelectedItemForSale(null);
+          }}
+        >
+          <div className="bg-white w-full max-w-md max-h-[85vh] my-auto rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
+            <div className="flex items-start gap-3 border-b border-slate-100 p-5 shrink-0">
               <div className="w-16 h-16 shrink-0 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center">
                 {selectedItemForSale.imagekitCdnUrl ? (
                   <img
@@ -3379,18 +3417,7 @@ export function InventoryAndUnitManager({
                 <h3 className="text-base font-bold text-slate-950 mt-0.5 leading-tight">
                   {isSw ? selectedItemForSale.productNameSw : selectedItemForSale.productNameEn}
                 </h3>
-                <div className="text-[11px] text-slate-500 mt-1">
-                  {formatUnitTypeLabel(
-                    selectedItemForSale.unitType,
-                    locale,
-                    selectedItemForSale.unitCategory ?? categoryFromSystemUnitCode(selectedItemForSale.unitType),
-                  )}{' '}
-                  ·{' '}
-                  {formatQuantumDefinition(
-                    selectedItemForSale.unitCategory ?? categoryFromSystemUnitCode(selectedItemForSale.unitType),
-                    locale,
-                  )}
-                </div>
+                <div className="text-[11px] text-slate-500 mt-1">{saleUnitSubtitle}</div>
               </div>
               <button
                 type="button"
@@ -3402,7 +3429,8 @@ export function InventoryAndUnitManager({
               </button>
             </div>
 
-            <form onSubmit={handleExecutePosSale} className="p-5 space-y-4">
+            <form onSubmit={handleExecutePosSale} className="flex flex-col min-h-0 flex-1">
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 space-y-4">
               <div
                 className={`rounded-xl p-3 border flex items-center justify-between text-xs ${
                   selectedItemForSale.availableQuanta <= selectedItemForSale.lowStockThresholdQuanta
@@ -3416,15 +3444,22 @@ export function InventoryAndUnitManager({
                   <strong className="font-mono">
                     {formatQuantaMeasurement(
                       selectedItemForSale.availableQuanta,
-                      selectedItemForSale.unitCategory ?? categoryFromSystemUnitCode(selectedItemForSale.unitType),
+                      saleCategory,
                       isSw ? 'sw' : 'en',
                     )}
                   </strong>
                   {typeof selectedItemForSale.sealedBulkPackagesStock === 'number' &&
                     selectedItemForSale.sealedBulkPackagesStock > 0 && (
                       <span className="font-mono opacity-80">
-                        (+{selectedItemForSale.sealedBulkPackagesStock}{' '}
-                        {isSw ? 'mifuko' : 'sealed'})
+                        (+{selectedItemForSale.sealedBulkPackagesStock} {saleSealedPackageWord}
+                        {selectedItemForSale.packageQuanta && saleCategory !== 'PACKAGING'
+                          ? ` · ${formatQuantaMeasurement(
+                              selectedItemForSale.sealedBulkPackagesStock * selectedItemForSale.packageQuanta,
+                              saleCategory,
+                              isSw ? 'sw' : 'en',
+                            )}`
+                          : ''}
+                        )
                       </span>
                     )}
                 </span>
@@ -3520,12 +3555,13 @@ export function InventoryAndUnitManager({
                     {isSw ? 'Jumla ya Mauzo:' : 'POS Total:'}
                   </span>
                   <span className="font-mono font-bold text-emerald-800 text-lg tabular-nums">
-                    TZS {Math.round((promptQuantity * selectedItemForSale.unitPriceTzs) / 4).toLocaleString('en-US')}
+                    TZS {posTotalTzs.toLocaleString('en-US')}
                   </span>
                 </div>
               </div>
+              </div>
 
-              <div className="flex items-center gap-3 pt-1">
+              <div className="flex items-center gap-3 px-5 pt-3 pb-6 border-t border-slate-100 shrink-0 sk-safe-bottom">
                 <button
                   type="button"
                   onClick={() => setSelectedItemForSale(null)}
@@ -3545,8 +3581,8 @@ export function InventoryAndUnitManager({
                         ? 'Inakata...'
                         : 'Processing...'
                       : isSw
-                        ? 'Thibitisha Mauzo'
-                        : 'Confirm Sale'}
+                        ? `Thibitisha Mauzo — TZS ${posTotalTzs.toLocaleString('en-US')}`
+                        : `Confirm Sale — TZS ${posTotalTzs.toLocaleString('en-US')}`}
                   </span>
                 </button>
               </div>
