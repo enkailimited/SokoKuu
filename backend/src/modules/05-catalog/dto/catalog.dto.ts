@@ -461,3 +461,41 @@ export class BulkUpdateClonePublishStatusDto {
   @IsBoolean()
   isPublishedToMarket!: boolean;
 }
+
+export class DiscoverMerchantItemDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  globalCatalogId!: string;
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  systemUnitId?: string;
+
+  @ApiProperty({ example: 5, minimum: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quantity!: number;
+}
+
+export class DiscoverMerchantsDto {
+  @ApiProperty({ type: [DiscoverMerchantItemDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => DiscoverMerchantItemDto)
+  items!: DiscoverMerchantItemDto[];
+
+  @ApiPropertyOptional({ example: -6.816 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 39.28 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  longitude?: number;
+}

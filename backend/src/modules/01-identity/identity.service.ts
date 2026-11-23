@@ -53,6 +53,7 @@ export interface AuthTokenResponse {
     businessId: string | null;
     tier: MerchantTier | null;
     preferredLocale: string;
+    preferredLanguage: string;
   };
 }
 
@@ -228,6 +229,8 @@ export class IdentityService {
     let createdBusinessId: string | null = null;
     let createdTier: string | null = null;
 
+    const initialLang = dto.preferredLanguage ?? dto.preferredLocale ?? 'sw';
+
     const user = await this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
       const created = await tx.user.create({
         data: {
@@ -235,7 +238,8 @@ export class IdentityService {
           fullName: dto.fullName.trim(),
           passwordHash,
           role: dto.role as unknown as Role,
-          preferredLocale: dto.preferredLocale ?? 'sw',
+          preferredLocale: initialLang,
+          preferredLanguage: initialLang,
           smsHmacSecret,
         },
       });
@@ -326,7 +330,8 @@ export class IdentityService {
         role: user.role as unknown as Role,
         businessId: createdBusinessId,
         tier: createdTier as MerchantTier | null,
-        preferredLocale: user.preferredLocale,
+        preferredLocale: user.preferredLocale ?? initialLang,
+        preferredLanguage: (user as { preferredLanguage?: string }).preferredLanguage ?? user.preferredLocale ?? initialLang,
       },
     };
   }
@@ -407,7 +412,8 @@ export class IdentityService {
         role: user.role as unknown as Role,
         businessId,
         tier,
-        preferredLocale: user.preferredLocale,
+        preferredLocale: user.preferredLocale ?? 'sw',
+        preferredLanguage: (user as { preferredLanguage?: string }).preferredLanguage ?? user.preferredLocale ?? 'sw',
       },
     };
   }
@@ -541,7 +547,11 @@ export class IdentityService {
         role: session.user.role as unknown as Role,
         businessId,
         tier,
-        preferredLocale: session.user.preferredLocale,
+        preferredLocale: session.user.preferredLocale ?? 'sw',
+        preferredLanguage:
+          (session.user as { preferredLanguage?: string }).preferredLanguage ??
+          session.user.preferredLocale ??
+          'sw',
       },
     };
   }
@@ -580,6 +590,7 @@ export class IdentityService {
         fullName: true,
         role: true,
         preferredLocale: true,
+        preferredLanguage: true,
         isActive: true,
         createdAt: true,
         ownedMerchants: {
@@ -607,9 +618,14 @@ export class IdentityService {
 
     const { ownedMerchants, ...userSummary } = user;
     const businessProfile = ownedMerchants?.[0] ?? null;
+    const resolvedLanguage = userSummary.preferredLanguage ?? userSummary.preferredLocale ?? 'sw';
 
     return {
-      user: userSummary,
+      user: {
+        ...userSummary,
+        preferredLocale: userSummary.preferredLocale ?? resolvedLanguage,
+        preferredLanguage: resolvedLanguage,
+      },
       businessProfile,
       tenantContext: tenantContext ?? null,
     };
@@ -640,11 +656,33 @@ export class IdentityService {
     };
   }
 
+  async updatePreferences(userId: string, preferredLanguage: 'sw' | 'en') {
+    const updated = await this.prismaService.user.update({
+      where: { id: userId },
+      data: {
+        preferredLanguage,
+        preferredLocale: preferredLanguage,
+      },
+      select: {
+        id: true,
+        preferredLocale: true,
+        preferredLanguage: true,
+      },
+    });
+
+    return {
+      userId: updated.id,
+      preferredLocale: updated.preferredLocale,
+      preferredLanguage: updated.preferredLanguage,
+    };
+  }
+
   async updateProfile(
     userId: string,
     dto: {
       fullName?: string;
       preferredLocale?: 'sw' | 'en';
+      preferredLanguage?: 'sw' | 'en';
       businessName?: string;
       ward?: string;
       district?: string;
@@ -653,9 +691,13 @@ export class IdentityService {
     tenantContext?: TenantContext,
   ) {
     await this.prismaService.runInTransaction('ReadCommitted', async (tx) => {
-      const userData: { fullName?: string; preferredLocale?: string } = {};
+      const userData: { fullName?: string; preferredLocale?: string; preferredLanguage?: string } = {};
       if (dto.fullName?.trim()) userData.fullName = dto.fullName.trim();
-      if (dto.preferredLocale) userData.preferredLocale = dto.preferredLocale;
+      const nextLang = dto.preferredLanguage ?? dto.preferredLocale;
+      if (nextLang) {
+        userData.preferredLocale = nextLang;
+        userData.preferredLanguage = nextLang;
+      }
 
       if (Object.keys(userData).length > 0) {
         await tx.user.update({ where: { id: userId }, data: userData });

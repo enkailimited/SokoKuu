@@ -31,7 +31,7 @@ import { WholesalerEodReconciliation } from './WholesalerEodReconciliation';
 import { HybridAnalyticsDashboard } from './HybridAnalyticsDashboard';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
 
-type WholesalerTab = 'riders' | 'schedule' | 'eod' | 'analytics' | 'market' | 'restock';
+export type WholesalerTab = 'riders' | 'schedule' | 'eod' | 'analytics' | 'market' | 'restock';
 
 type SupplierPackagingUnit =
   | 'CARTON'
@@ -215,14 +215,20 @@ export function WholesalerOperationsView({
   locale = 'en',
   businessId,
   focusOrder,
+  initialTab = 'riders',
 }: {
   locale?: Locale;
   businessId?: string | null;
   focusOrder?: FocusOrderTarget | null;
+  initialTab?: WholesalerTab;
 }) {
   const isSw = locale === 'sw';
   useFocusOrderScroll(focusOrder, true);
-  const [subTab, setSubTab] = useState<WholesalerTab>('riders');
+  const [subTab, setSubTab] = useState<WholesalerTab>(initialTab);
+
+  useEffect(() => {
+    setSubTab(initialTab);
+  }, [initialTab]);
   const [wardFilter, setWardFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 

@@ -41,6 +41,7 @@ interface AuthTokenResponsePayload {
     businessId: string | null;
     tier: string | null;
     preferredLocale: string;
+    preferredLanguage?: string;
   };
 }
 
@@ -123,6 +124,8 @@ export function AuthPortalView({
       streetAddress: '',
       role,
       mode: mapTierToAccountMode(role, resp.user.tier),
+      preferredLocale: (resp.user.preferredLanguage ?? resp.user.preferredLocale ?? 'sw') as Locale,
+      preferredLanguage: (resp.user.preferredLanguage ?? resp.user.preferredLocale ?? 'sw') as Locale,
       smsAlertsEnabled: true,
       offlineSmsFallbackEnabled: true,
     };
@@ -134,6 +137,8 @@ export function AuthPortalView({
           phoneE164: string;
           fullName: string;
           role: PlatformRole;
+          preferredLocale?: string;
+          preferredLanguage?: string;
         };
         businessProfile?: {
           id: string;
@@ -145,12 +150,22 @@ export function AuthPortalView({
           streetAddress: string;
           geospatialMapEnabled: boolean;
           isPlatformManaged: boolean;
+          logoCdnUrl?: string | null;
         } | null;
         tenantContext?: {
           businessId?: string | null;
           tier?: string | null;
         } | null;
       }>('/auth/me');
+
+      if (me?.user) {
+        const lang = (me.user.preferredLanguage ?? me.user.preferredLocale ?? profile.preferredLanguage ?? 'sw') as Locale;
+        profile = {
+          ...profile,
+          preferredLocale: lang,
+          preferredLanguage: lang,
+        };
+      }
 
       if (me?.businessProfile) {
         profile = {
@@ -163,6 +178,7 @@ export function AuthPortalView({
           businessLabel: me.businessProfile.businessName,
           ward: me.businessProfile.ward,
           streetAddress: me.businessProfile.streetAddress,
+          shopImageUrl: me.businessProfile.logoCdnUrl ?? profile.shopImageUrl ?? null,
           mode: mapTierToAccountMode(role, me.businessProfile.tier),
         };
       }
@@ -394,6 +410,7 @@ export function AuthPortalView({
             password: passwordInput,
             role: registerRole,
             preferredLocale: locale,
+            preferredLanguage: locale,
           },
           false
         );

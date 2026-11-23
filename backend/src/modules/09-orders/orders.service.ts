@@ -6,7 +6,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { OrderChannel, OrderOrigin, OrderStatus, Prisma } from '@prisma/client';
+import { OrderChannel, OrderMode, OrderOrigin, OrderStatus, Prisma } from '@prisma/client';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { Role } from '@common/security/roles.enum';
@@ -15,7 +15,12 @@ import { PrismaService } from '@database/prisma.service';
 import { PricingRoutingEngine } from '@modules/07-pricing/pricing-routing.engine';
 import { DispatchService } from '@modules/12-dispatch/dispatch.service';
 import { RedisService } from '@redis/redis.service';
-import { CancelOrderDto, CreateOrderRequestDto } from './dto/orders.dto';
+import {
+  CancelOrderDto,
+  CreateOrderRequestDto,
+  OrderModeDto,
+  SubmitBatchOrdersDto,
+} from './dto/orders.dto';
 import { assertValidOrderTransition } from './order-state.policy';
 
 export interface OrderReceiptLineResponse {
@@ -36,6 +41,8 @@ export interface OrderReceiptResponse {
   status: OrderStatus;
   originChannel: OrderOrigin;
   orderChannel: OrderChannel;
+  orderMode: OrderMode;
+  scheduledDeliveryDate: string | null;
   routingOutputCode: 'ROUTED_PLATFORM_MANAGED_HELPDESK' | 'ROUTED_DIRECT_MERCHANT_DB';
   targetPipeline: string;
   expectedTotalTzs: number;
@@ -99,12 +106,19 @@ export class OrdersService {
       );
     }
 
+    const { orderMode, scheduledDeliveryDate } = this.resolveAndValidateOrderMode(
+      dto.orderMode,
+      dto.scheduledDeliveryDate,
+    );
+
     const scopeKey = `ORDER_CREATE:${user.sub}:${idempotencyKey}`;
     const orderChannel = dto.orderChannel ?? OrderChannel.RETAIL_MARKETPLACE;
     const canonicalPayload = JSON.stringify({
       sellerBusinessId: dto.sellerBusinessId,
       originChannel: dto.originChannel ?? 'PWA_ONLINE',
       orderChannel,
+      orderMode,
+      scheduledDeliveryDate,
       paymentMethod: dto.paymentMethod ?? 'CASH',
       deliveryFeeTzs: dto.deliveryFeeTzs ?? 0,
       items: dto.items.map((item) => ({
@@ -276,16 +290,22 @@ export class OrdersService {
           select: { ward: true, wardName: true },
         });
         const deliveryZoneWard = (sellerZone as any)?.wardName || sellerZone?.ward || null;
-        let scheduledDeliveryDate: Date | null = null;
-        if (dto.scheduledDeliveryDate) {
-          const raw = dto.scheduledDeliveryDate.trim();
-          const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+        const rawDateStr =
+          scheduledDeliveryDate ??
+          (!dto.orderMode && dto.scheduledDeliveryDate ? dto.scheduledDeliveryDate.trim() : null);
+        let scheduledDeliveryDateObj: Date | null = null;
+        if (rawDateStr) {
+          const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(rawDateStr);
           if (m) {
-            scheduledDeliveryDate = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+            scheduledDeliveryDateObj = new Date(
+              Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])),
+            );
           } else {
-            const parsed = new Date(raw);
+            const parsed = new Date(rawDateStr);
             if (!Number.isNaN(parsed.getTime())) {
-              scheduledDeliveryDate = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+              scheduledDeliveryDateObj = new Date(
+                Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()),
+              );
             }
           }
         }
@@ -299,14 +319,15 @@ export class OrdersService {
             status: 'PLACED',
             originChannel,
             orderChannel,
+            orderMode,
+            scheduledDeliveryDate: scheduledDeliveryDateObj,
+            deliveryZoneWard,
             routingTargetPipeline: targetPipeline,
             rawSmsPayload: dto.rawSmsPayload ?? null,
             expectedTotalTzs: BigInt(quote.expectedTotalTzs),
             deliveryFeeTzs: BigInt(quote.deliveryFeeTzs),
             paymentMethod,
             paidAmountTzs: 0n,
-            scheduledDeliveryDate: scheduledDeliveryDate as any,
-            deliveryZoneWard: deliveryZoneWard as any,
           } as any,
           select: {
             id: true,
@@ -430,6 +451,8 @@ export class OrdersService {
           status: 'PLACED',
           originChannel,
           orderChannel,
+          orderMode,
+          scheduledDeliveryDate,
           routingOutputCode,
           targetPipeline,
           expectedTotalTzs: quote.expectedTotalTzs,
@@ -470,6 +493,92 @@ export class OrdersService {
     } finally {
       await this.releaseRedisLock(lockKey, lockToken);
     }
+  }
+
+  async submitBatchOrders(
+    dto: SubmitBatchOrdersDto,
+    idempotencyKeyHeader: string | undefined,
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    const idempotencyKey = idempotencyKeyHeader?.trim();
+    if (!idempotencyKey || idempotencyKey.length < 4 || idempotencyKey.length > 120) {
+      throw new BadRequestException(
+        'X-Idempotency-Key header (4–120 characters) is required for batch order submission.',
+      );
+    }
+
+    const { orderMode, scheduledDeliveryDate } = this.resolveAndValidateOrderMode(
+      dto.orderMode,
+      dto.scheduledDeliveryDate,
+    );
+
+    const receipts: OrderReceiptResponse[] = [];
+    const baseKey = idempotencyKey.slice(0, 80);
+
+    for (let idx = 0; idx < dto.orders.length; idx += 1) {
+      const entry = dto.orders[idx];
+      const perMerchantKey = `${baseKey}:${idx}:${entry.sellerBusinessId.slice(0, 8)}`;
+      const receipt = await this.createOrder(
+        {
+          sellerBusinessId: entry.sellerBusinessId,
+          originChannel: dto.originChannel,
+          orderChannel: entry.orderChannel,
+          orderMode: orderMode === OrderMode.SCHEDULED ? OrderModeDto.SCHEDULED : OrderModeDto.INSTANT,
+          scheduledDeliveryDate: scheduledDeliveryDate ?? undefined,
+          paymentMethod: entry.paymentMethod ?? dto.paymentMethod ?? 'CASH',
+          deliveryFeeTzs: entry.deliveryFeeTzs,
+          items: entry.items,
+        },
+        perMerchantKey,
+        user,
+        tenantContext,
+      );
+      receipts.push(receipt);
+    }
+
+    return {
+      batchCount: receipts.length,
+      orderMode,
+      scheduledDeliveryDate,
+      totalBatchTzs: receipts.reduce((sum, r) => sum + r.expectedTotalTzs, 0),
+      orders: receipts,
+    };
+  }
+
+  private resolveAndValidateOrderMode(
+    requestedMode?: OrderModeDto,
+    rawScheduledDate?: string,
+  ): { orderMode: OrderMode; scheduledDeliveryDate: string | null } {
+    if (requestedMode !== OrderModeDto.SCHEDULED) {
+      return { orderMode: OrderMode.INSTANT, scheduledDeliveryDate: null };
+    }
+
+    const trimmed = rawScheduledDate?.trim() ?? '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      throw new BadRequestException(
+        'scheduledDeliveryDate (YYYY-MM-DD) is required when orderMode is SCHEDULED.',
+      );
+    }
+
+    const parsed = new Date(`${trimmed}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== trimmed) {
+      throw new BadRequestException('scheduledDeliveryDate is not a valid calendar date.');
+    }
+
+    // Current date in East Africa Time (UTC+3)
+    const nowEat = new Date(Date.now() + 3 * 60 * 60 * 1000);
+    const todayEat = nowEat.toISOString().slice(0, 10);
+    if (trimmed < todayEat) {
+      throw new BadRequestException(
+        `scheduledDeliveryDate (${trimmed}) cannot be in the past (today EAT: ${todayEat}).`,
+      );
+    }
+
+    return {
+      orderMode: OrderMode.SCHEDULED,
+      scheduledDeliveryDate: trimmed,
+    };
   }
 
   async cancelOrder(
@@ -656,6 +765,10 @@ export class OrdersService {
       driverUserId: order.driverUserId,
       status: order.status,
       originChannel: order.originChannel,
+      orderMode: order.orderMode,
+      scheduledDeliveryDate: order.scheduledDeliveryDate
+        ? new Date(order.scheduledDeliveryDate).toISOString().slice(0, 10)
+        : null,
       routingTargetPipeline: order.routingTargetPipeline,
       expectedTotalTzs: Number(order.expectedTotalTzs),
       deliveryFeeTzs: Number(order.deliveryFeeTzs),
@@ -788,6 +901,10 @@ export class OrdersService {
         driverUserId: order.driverUserId,
         status: order.status,
         originChannel: order.originChannel,
+        orderMode: order.orderMode,
+        scheduledDeliveryDate: order.scheduledDeliveryDate
+          ? new Date(order.scheduledDeliveryDate).toISOString().slice(0, 10)
+          : null,
         routingTargetPipeline: order.routingTargetPipeline,
         expectedTotalTzs: Number(order.expectedTotalTzs),
         deliveryFeeTzs: Number(order.deliveryFeeTzs),

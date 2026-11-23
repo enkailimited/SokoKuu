@@ -15,6 +15,7 @@ import {
   Save,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   Trash2,
   Truck,
   User,
@@ -32,6 +33,8 @@ L.Icon.Default.mergeOptions({
 });
 import type { Locale } from '../data/i18n';
 import { useDataSaver } from '../context/DataSaverContext';
+import { usePWAInstall } from '../hooks/usePWAInstall';
+import { PWAInstallButton } from './PWAInstallButton';
 import {
   MODE_LABELS,
   ROLE_LABELS,
@@ -359,6 +362,7 @@ export function ProfileEditView({
           fullName?: string;
           role?: UserProfile['role'];
           preferredLocale?: string;
+          preferredLanguage?: string;
         };
         businessProfile?: {
           id?: string;
@@ -405,7 +409,11 @@ export function ProfileEditView({
         role,
         mode: mapTierToAccountMode(role, tier),
         preferredLocale:
-          (res.user?.preferredLocale as Locale | undefined) ??
+          ((res.user?.preferredLanguage ?? res.user?.preferredLocale) as Locale | undefined) ??
+          (form.preferredLocale as Locale | undefined) ??
+          locale,
+        preferredLanguage:
+          ((res.user?.preferredLanguage ?? res.user?.preferredLocale) as Locale | undefined) ??
           (form.preferredLocale as Locale | undefined) ??
           locale,
       };
@@ -1084,6 +1092,7 @@ export function SettingsView({
 }) {
   const isSw = locale === 'sw';
   const { isLowDataModeActive, toggleLowDataMode } = useDataSaver();
+  const { isInstalled: isPwaInstalled } = usePWAInstall();
   const [savedFlag, setSavedFlag] = useState(false);
 
   const togglePref = (field: 'smsAlertsEnabled' | 'offlineSmsFallbackEnabled') => {
@@ -1281,7 +1290,10 @@ export function SettingsView({
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
             <button
               type="button"
-              onClick={() => onSetLocale('sw')}
+              onClick={() => {
+                onSetLocale('sw');
+                setSavedFlag(true);
+              }}
               className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
                 locale === 'sw' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
               }`}
@@ -1290,7 +1302,10 @@ export function SettingsView({
             </button>
             <button
               type="button"
-              onClick={() => onSetLocale('en')}
+              onClick={() => {
+                onSetLocale('en');
+                setSavedFlag(true);
+              }}
               className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
                 locale === 'en' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
               }`}
@@ -1544,6 +1559,25 @@ export function SettingsView({
                     : isSw ? 'Imezimwa' : 'Disabled'}
               </span>
             </label>
+          </div>
+        )}
+
+        {!isPwaInstalled && (
+          <div className="p-5 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <Smartphone className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {isSw ? 'Sakinisha SokoKuu kwenye Simu' : 'Install SokoKuu on Your Phone'}
+                </div>
+                <div className="text-xs text-slate-500">
+                  {isSw
+                    ? 'Weka app kwenye home screen yako ili ifunguke haraka na ifanye kazi hata nje ya mtandao.'
+                    : 'Add the app to your home screen for quick access and offline support.'}
+                </div>
+              </div>
+            </div>
+            <PWAInstallButton locale={locale} />
           </div>
         )}
       </div>

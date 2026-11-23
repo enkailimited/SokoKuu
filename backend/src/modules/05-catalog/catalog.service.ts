@@ -5,15 +5,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PackagingUnit, Prisma } from '@prisma/client';
+import { BusinessTier, OrderChannel, PackagingUnit, Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
-import { MerchantTier, TenantContext } from '@common/security/auth.types';
+import { AuthenticatedUser, MerchantTier, TenantContext } from '@common/security/auth.types';
+import { Role } from '@common/security/roles.enum';
 import { OutboxService } from '@database/outbox.service';
 import { PrismaService } from '@database/prisma.service';
 import { kgToQuarterQuantaChecked } from '@modules/06-inventory/quarter-quanta.util';
 import {
   assertChannelHarmonyForCustomUnit,
   assertChannelHarmonyForTier,
+  WHOLESALE_BLOCKED_RETAIL_UNITS,
+  RETAIL_BLOCKED_BULK_UNITS,
 } from './channel-harmony.policy';
 import {
   AddGlobalCatalogItemDto,
@@ -21,6 +24,7 @@ import {
   CloneStandardCatalogDto,
   CreateCatalogCategoryDto,
   CreateMerchantProductDto,
+  DiscoverMerchantsDto,
   PublishMarketStockDto,
   UpdateClonePublishStatusDto,
   UpdateFreeDeliveryDto,
@@ -32,6 +36,61 @@ import {
 } from './dto/catalog.dto';
 import { syncLinkedProductFromClone } from './clone-product-sync.util';
 import { deriveUnitCategory } from './unit-category.util';
+
+const DEFAULT_QPU_BY_UNIT: Record<PackagingUnit, number> = {
+  QUARTER_KILO_LITRE: 1,
+  HALF_KILO_LITRE: 2,
+  THREE_QUARTER_KILO: 3,
+  SINGLE_KILO_LITRE: 4,
+  UNIT: 4,
+  PACK: 4,
+  DOZEN: 48,
+  CARTON: 96,
+  SACK_25KG: 100,
+  SACK_50KG: 200,
+};
+
+function haversineDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const r = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(r * c * 100) / 100;
+}
+
+function mapUnitCodeToPackagingUnit(
+  unitCode: string | undefined,
+  quarterQuantaPerUnit: number,
+): PackagingUnit {
+  const code = (unitCode ?? '').toUpperCase();
+  if (code.includes('GUNIA_50') || code.includes('SACK_50')) return 'SACK_50KG';
+  if (code.includes('GUNIA_25') || code.includes('SACK_25') || code.includes('GUNIA')) {
+    return quarterQuantaPerUnit >= 200 ? 'SACK_50KG' : 'SACK_25KG';
+  }
+  if (code.includes('CARTON') || code.includes('KATONI') || code.includes('DEBE')) return 'CARTON';
+  if (code.includes('DOZEN') || code.includes('DAZANI')) return 'DOZEN';
+  if (code.includes('PACK') || code.includes('PAKI')) return 'PACK';
+  if (quarterQuantaPerUnit >= 200) return 'SACK_50KG';
+  if (quarterQuantaPerUnit >= 100) return 'SACK_25KG';
+  if (quarterQuantaPerUnit >= 96) return 'CARTON';
+  if (quarterQuantaPerUnit >= 48) return 'DOZEN';
+  if (quarterQuantaPerUnit === 1) return 'QUARTER_KILO_LITRE';
+  if (quarterQuantaPerUnit === 2) return 'HALF_KILO_LITRE';
+  if (quarterQuantaPerUnit === 3) return 'THREE_QUARTER_KILO';
+  return 'SINGLE_KILO_LITRE';
+}
 
 @Injectable()
 export class CatalogService {
@@ -399,11 +458,19 @@ export class CatalogService {
     };
   }
 
-  async listGlobalCatalog(categoryCode?: string, q?: string) {
+  async listGlobalCatalog(categoryCode?: string, q?: string, categoryCodes?: string) {
     const where: Prisma.SokoGlobalCatalogWhereInput = { isActive: true };
-    if (categoryCode) {
+    const codeList = (categoryCodes ?? '')
+      .split(',')
+      .map((c) => c.trim().toUpperCase())
+      .filter((c) => c.length > 0 && c !== 'ALL');
+
+    if (codeList.length > 0) {
+      where.categoryCode = { in: codeList };
+    } else if (categoryCode && categoryCode.trim().toUpperCase() !== 'ALL') {
       where.categoryCode = categoryCode.trim().toUpperCase();
     }
+
     if (q && q.trim().length > 0) {
       const term = q.trim();
       where.OR = [
@@ -459,6 +526,14 @@ export class CatalogService {
           quarterQuantaPerUnit: u.quarterQuantaPerUnit,
           isWholesaleUnit: u.isWholesaleUnit,
         })),
+        standardPrices: (item.standardPrices ?? []).map((sp) => ({
+          id: sp.id,
+          globalProductUnitId: sp.globalProductUnitId,
+          profileType: sp.profileType,
+          minQty: sp.minQty,
+          maxQty: sp.maxQty,
+          standardPriceTzs: Number(sp.standardPriceTzs),
+        })),
         standardRetailPriceTzs: stdRetail ? Number(stdRetail.standardPriceTzs) : null,
         standardRetailUnitLabelSw:
           stdRetail?.globalProductUnit?.displayLabelSw ||
@@ -471,6 +546,498 @@ export class CatalogService {
           null,
       };
     });
+  }
+
+  async discoverMerchants(
+    dto: DiscoverMerchantsDto,
+    user: AuthenticatedUser,
+    tenantContext?: TenantContext,
+  ) {
+    const requestedByCatalog = new Map<
+      string,
+      { globalCatalogId: string; systemUnitId?: string; quantity: number }
+    >();
+    for (const line of dto.items) {
+      const existing = requestedByCatalog.get(line.globalCatalogId);
+      if (existing) {
+        existing.quantity += line.quantity;
+        if (!existing.systemUnitId && line.systemUnitId) {
+          existing.systemUnitId = line.systemUnitId;
+        }
+      } else {
+        requestedByCatalog.set(line.globalCatalogId, {
+          globalCatalogId: line.globalCatalogId,
+          systemUnitId: line.systemUnitId,
+          quantity: line.quantity,
+        });
+      }
+    }
+
+    const requestedItems = Array.from(requestedByCatalog.values());
+    const catalogIds = requestedItems.map((item) => item.globalCatalogId);
+
+    // Resolve buyer GPS (DTO -> buyer businessProfile -> Dar es Salaam center)
+    let buyerLat = dto.latitude;
+    let buyerLng = dto.longitude;
+    const buyerBusinessId = tenantContext?.businessId ?? null;
+
+    if (buyerLat === undefined || buyerLng === undefined) {
+      const buyerProfile = buyerBusinessId
+        ? await this.prismaService.businessProfile.findUnique({
+            where: { id: buyerBusinessId },
+            select: { latitude: true, longitude: true },
+          })
+        : await this.prismaService.businessProfile.findFirst({
+            where: { ownerUserId: user.sub },
+            orderBy: { createdAt: 'asc' },
+            select: { latitude: true, longitude: true },
+          });
+      if (buyerProfile) {
+        buyerLat = Number(buyerProfile.latitude);
+        buyerLng = Number(buyerProfile.longitude);
+      }
+    }
+    const finalBuyerLat = Number.isFinite(buyerLat) ? Number(buyerLat) : -6.816;
+    const finalBuyerLng = Number.isFinite(buyerLng) ? Number(buyerLng) : 39.28;
+
+    // Channel eligibility matrix
+    const buyerTier = tenantContext?.tier ?? null;
+    let eligibleTiers: BusinessTier[];
+    if (user.role === Role.WHOLESALER || buyerTier === 'WHOLESALE') {
+      eligibleTiers = [BusinessTier.MANUFACTURER_SUPPLIER];
+    } else if (buyerTier === 'HYBRID_STORE') {
+      eligibleTiers = [BusinessTier.MANUFACTURER_SUPPLIER, BusinessTier.WHOLESALE];
+    } else if (user.role === Role.RETAILER) {
+      eligibleTiers = [BusinessTier.WHOLESALE, BusinessTier.HYBRID_STORE];
+    } else if (user.role === Role.CONSUMER) {
+      eligibleTiers = [BusinessTier.RETAIL_DUKA, BusinessTier.HYBRID_STORE];
+    } else {
+      eligibleTiers = [
+        BusinessTier.WHOLESALE,
+        BusinessTier.HYBRID_STORE,
+        BusinessTier.RETAIL_DUKA,
+        BusinessTier.MANUFACTURER_SUPPLIER,
+      ];
+    }
+
+    const [catalogRecords, candidateMerchants] = await Promise.all([
+      this.prismaService.sokoGlobalCatalog.findMany({
+        where: { id: { in: catalogIds }, isActive: true },
+        include: {
+          productUnits: {
+            where: { isActive: true },
+            include: { systemUnit: true },
+          },
+        },
+      }),
+      this.prismaService.businessProfile.findMany({
+        where: {
+          accountStatus: 'ACTIVE',
+          isOpen: true,
+          tier: { in: eligibleTiers },
+          owner: { isActive: true },
+          ...(buyerBusinessId ? { id: { not: buyerBusinessId } } : {}),
+        },
+        select: {
+          id: true,
+          businessName: true,
+          tier: true,
+          ward: true,
+          district: true,
+          latitude: true,
+          longitude: true,
+          logoCdnUrl: true,
+          offersFreeDelivery: true,
+          isFreeDeliveryEnabled: true,
+          freeDeliveryMinOrderTzs: true,
+          standardDeliveryFeeTzs: true,
+        },
+      }),
+    ]);
+
+    const catalogMap = new Map(catalogRecords.map((item) => [item.id, item]));
+    const merchantIds = candidateMerchants.map((m) => m.id);
+
+    if (merchantIds.length === 0 || catalogMap.size === 0) {
+      return {
+        buyerLocation: { latitude: finalBuyerLat, longitude: finalBuyerLng },
+        requestedCount: requestedItems.length,
+        matchedMerchantsCount: 0,
+        merchants: [],
+      };
+    }
+
+    // PostGIS proximity distance calculation
+    const distanceMap = new Map<string, number>();
+    try {
+      const distanceRows = await this.prismaService.$queryRaw<
+        Array<{ id: string; distance_km: number }>
+      >`
+        SELECT id::text AS id,
+               ROUND((ST_Distance(
+                 location,
+                 ST_SetSRID(ST_MakePoint(${finalBuyerLng}::double precision, ${finalBuyerLat}::double precision), 4326)::geography
+               ) / 1000.0)::numeric, 2)::float8 AS distance_km
+          FROM business_profiles
+         WHERE account_status = 'ACTIVE'
+           AND is_open = TRUE
+           AND location IS NOT NULL
+      `;
+      for (const row of distanceRows) {
+        distanceMap.set(row.id, Number(row.distance_km));
+      }
+    } catch {
+      // Fallback to Haversine below if spatial extension query is unavailable in mock/test contexts
+    }
+
+    const [sellerProducts, supplierListings] = await Promise.all([
+      this.prismaService.product.findMany({
+        where: {
+          sellerBusinessId: { in: merchantIds },
+          globalCatalogId: { in: catalogIds },
+          isActive: true,
+          isPublishedToMarket: true,
+        },
+        include: {
+          priceTiers: {
+            where: { isActive: true },
+            orderBy: { quarterQuantaPerUnit: 'asc' },
+          },
+        },
+      }),
+      eligibleTiers.includes(BusinessTier.MANUFACTURER_SUPPLIER)
+        ? this.prismaService.supplierCatalogListing.findMany({
+            where: {
+              supplierBusinessId: { in: merchantIds },
+              globalCatalogId: { in: catalogIds },
+              isPublishedToMarket: true,
+            },
+            include: { systemUnit: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const productByMerchantCatalog = new Map<string, (typeof sellerProducts)[number]>();
+    for (const prod of sellerProducts) {
+      if (!prod.globalCatalogId) continue;
+      const key = `${prod.sellerBusinessId}:${prod.globalCatalogId}`;
+      const existing = productByMerchantCatalog.get(key);
+      const totalQuanta =
+        prod.baseQuarterQuantaStock + prod.sealedBulkPackagesStock * prod.quantaPerSealedPackage;
+      const existingQuanta = existing
+        ? existing.baseQuarterQuantaStock +
+          existing.sealedBulkPackagesStock * existing.quantaPerSealedPackage
+        : -1;
+      if (!existing || totalQuanta > existingQuanta) {
+        productByMerchantCatalog.set(key, prod);
+      }
+    }
+
+    const listingsByMerchantCatalog = new Map<
+      string,
+      Array<(typeof supplierListings)[number]>
+    >();
+    for (const listing of supplierListings) {
+      const key = `${listing.supplierBusinessId}:${listing.globalCatalogId}`;
+      const arr = listingsByMerchantCatalog.get(key) ?? [];
+      arr.push(listing);
+      listingsByMerchantCatalog.set(key, arr);
+    }
+
+    const matchedMerchants = [];
+
+    for (const merchant of candidateMerchants) {
+      const distanceKm =
+        distanceMap.get(merchant.id) ??
+        haversineDistanceKm(
+          finalBuyerLat,
+          finalBuyerLng,
+          Number(merchant.latitude),
+          Number(merchant.longitude),
+        );
+
+      const orderChannel: OrderChannel =
+        merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER
+          ? OrderChannel.SUPPLIER_TO_WHOLESALER
+          : OrderChannel.RETAIL_MARKETPLACE;
+
+      const matchedItems: Array<{
+        productId: string;
+        globalCatalogId: string;
+        sku: string;
+        nameSw: string;
+        nameEn: string;
+        imageUrl: string;
+        quantity: number;
+        unitType: PackagingUnit;
+        unitLabelSw: string;
+        unitLabelEn: string;
+        quarterQuantaPerUnit: number;
+        unitPriceTzs: number;
+        lineTotalTzs: number;
+        supplierListingId?: string;
+        isWholesaleTierApplied: boolean;
+      }> = [];
+
+      const missingItems: Array<{
+        globalCatalogId: string;
+        nameSw: string;
+        nameEn: string;
+        requestedQuantity: number;
+      }> = [];
+
+      for (const reqItem of requestedItems) {
+        const catalog = catalogMap.get(reqItem.globalCatalogId);
+        if (!catalog) continue;
+
+        const product = productByMerchantCatalog.get(
+          `${merchant.id}:${reqItem.globalCatalogId}`,
+        );
+        const totalAvailableQuanta = product
+          ? product.baseQuarterQuantaStock +
+            product.sealedBulkPackagesStock * product.quantaPerSealedPackage
+          : 0;
+
+        if (!product || totalAvailableQuanta <= 0) {
+          missingItems.push({
+            globalCatalogId: catalog.id,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            requestedQuantity: reqItem.quantity,
+          });
+          continue;
+        }
+
+        const requestedUnit = reqItem.systemUnitId
+          ? catalog.productUnits.find((pu) => pu.systemUnitId === reqItem.systemUnitId)
+          : catalog.productUnits[0];
+        const desiredQpu = requestedUnit?.quarterQuantaPerUnit ?? 4;
+
+        if (merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER) {
+          const listings =
+            listingsByMerchantCatalog.get(`${merchant.id}:${catalog.id}`) ?? [];
+          const listing =
+            (reqItem.systemUnitId
+              ? listings.find((l) => l.systemUnitId === reqItem.systemUnitId)
+              : undefined) ?? listings[0];
+          if (!listing) {
+            missingItems.push({
+              globalCatalogId: catalog.id,
+              nameSw: catalog.fixedNameSw,
+              nameEn: catalog.fixedNameEn,
+              requestedQuantity: reqItem.quantity,
+            });
+            continue;
+          }
+          const matchingUnit = catalog.productUnits.find(
+            (pu) => pu.systemUnitId === listing.systemUnitId,
+          );
+          const qpu = matchingUnit?.quarterQuantaPerUnit ?? Math.max(4, desiredQpu);
+          const effectiveQty = Math.max(reqItem.quantity, listing.minOrderQuantity);
+          if (totalAvailableQuanta < effectiveQty * qpu) {
+            missingItems.push({
+              globalCatalogId: catalog.id,
+              nameSw: catalog.fixedNameSw,
+              nameEn: catalog.fixedNameEn,
+              requestedQuantity: reqItem.quantity,
+            });
+            continue;
+          }
+          const unitType = mapUnitCodeToPackagingUnit(listing.systemUnit.unitCode, qpu);
+          const unitPriceTzs = Number(listing.supplierBulkPriceTzs);
+          matchedItems.push({
+            productId: product.id,
+            globalCatalogId: catalog.id,
+            sku: catalog.canonicalSku,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            imageUrl: catalog.imagekitCdnUrl || catalog.staticImageUrl,
+            quantity: effectiveQty,
+            unitType,
+            unitLabelSw: listing.systemUnit.nameSw,
+            unitLabelEn: listing.systemUnit.nameEn,
+            quarterQuantaPerUnit: qpu,
+            unitPriceTzs,
+            lineTotalTzs: unitPriceTzs * effectiveQty,
+            supplierListingId: listing.id,
+            isWholesaleTierApplied: true,
+          });
+          continue;
+        }
+
+        // Standard Merchant matching (WHOLESALE, RETAIL_DUKA, HYBRID_STORE) with Channel Harmony alignment
+        let chosenUnitType: PackagingUnit = mapUnitCodeToPackagingUnit(
+          requestedUnit?.systemUnit?.unitCode,
+          desiredQpu,
+        );
+        if (
+          merchant.tier === BusinessTier.WHOLESALE &&
+          WHOLESALE_BLOCKED_RETAIL_UNITS.has(chosenUnitType)
+        ) {
+          const validWholesaleTier = product.priceTiers.find(
+            (t) => t.isWholesaleTier && !WHOLESALE_BLOCKED_RETAIL_UNITS.has(t.unitType),
+          );
+          chosenUnitType =
+            validWholesaleTier?.unitType ??
+            (!WHOLESALE_BLOCKED_RETAIL_UNITS.has(product.sealedParentUnitType)
+              ? product.sealedParentUnitType
+              : 'CARTON');
+        } else if (
+          merchant.tier === BusinessTier.RETAIL_DUKA &&
+          RETAIL_BLOCKED_BULK_UNITS.has(chosenUnitType)
+        ) {
+          const validRetailTier = product.priceTiers.find(
+            (t) => !t.isWholesaleTier && !RETAIL_BLOCKED_BULK_UNITS.has(t.unitType),
+          );
+          chosenUnitType = validRetailTier?.unitType ?? 'SINGLE_KILO_LITRE';
+        }
+
+        const retailTier = product.priceTiers.find(
+          (t) => t.unitType === chosenUnitType && !t.isWholesaleTier,
+        );
+        const wholesaleTier = product.priceTiers.find(
+          (t) => t.unitType === chosenUnitType && t.isWholesaleTier,
+        );
+
+        const fallbackQuanta =
+          chosenUnitType === product.sealedParentUnitType
+            ? product.quantaPerSealedPackage
+            : DEFAULT_QPU_BY_UNIT[chosenUnitType];
+        const prelimQpu =
+          wholesaleTier?.quarterQuantaPerUnit ??
+          retailTier?.quarterQuantaPerUnit ??
+          fallbackQuanta;
+        const prelimTotalQuanta = prelimQpu * reqItem.quantity;
+
+        let isWholesaleTierApplied = false;
+        if (merchant.tier === BusinessTier.WHOLESALE) {
+          isWholesaleTierApplied = true;
+        } else if (merchant.tier === BusinessTier.RETAIL_DUKA) {
+          isWholesaleTierApplied = false;
+        } else {
+          const minUnits = Math.max(1, product.wholesaleMinUnitsThreshold ?? 1);
+          const minQuanta = Math.max(
+            1,
+            product.wholesaleMinQuarterQuanta ??
+              Math.max(1, Math.round(Number(product.wholesaleMinWeightKg ?? 1) * 4)),
+          );
+          const meetsThreshold =
+            reqItem.quantity >= minUnits || prelimTotalQuanta >= minQuanta;
+          isWholesaleTierApplied = Boolean(
+            (wholesaleTier && meetsThreshold) || (!retailTier && wholesaleTier),
+          );
+        }
+
+        const selectedTier = isWholesaleTierApplied
+          ? wholesaleTier ?? retailTier
+          : retailTier ?? wholesaleTier;
+        const finalQpu = selectedTier?.quarterQuantaPerUnit ?? fallbackQuanta;
+        const neededQuanta = finalQpu * reqItem.quantity;
+
+        if (totalAvailableQuanta < neededQuanta) {
+          missingItems.push({
+            globalCatalogId: catalog.id,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            requestedQuantity: reqItem.quantity,
+          });
+          continue;
+        }
+
+        const unitPriceBigInt = selectedTier
+          ? BigInt(selectedTier.priceTzs)
+          : chosenUnitType === 'CARTON' ||
+              chosenUnitType === 'SACK_50KG' ||
+              chosenUnitType === 'SACK_25KG'
+            ? BigInt(product.cartonPriceTzs)
+            : chosenUnitType === 'DOZEN'
+              ? BigInt(product.dozenPriceTzs)
+              : chosenUnitType === 'PACK'
+                ? BigInt(product.packPriceTzs)
+                : BigInt(product.unitPriceTzs);
+
+        const unitPriceTzs = Number(unitPriceBigInt);
+        if (unitPriceTzs <= 0) {
+          missingItems.push({
+            globalCatalogId: catalog.id,
+            nameSw: catalog.fixedNameSw,
+            nameEn: catalog.fixedNameEn,
+            requestedQuantity: reqItem.quantity,
+          });
+          continue;
+        }
+
+        matchedItems.push({
+          productId: product.id,
+          globalCatalogId: catalog.id,
+          sku: catalog.canonicalSku,
+          nameSw: catalog.fixedNameSw,
+          nameEn: catalog.fixedNameEn,
+          imageUrl: catalog.imagekitCdnUrl || catalog.staticImageUrl,
+          quantity: reqItem.quantity,
+          unitType: chosenUnitType,
+          unitLabelSw: requestedUnit?.displayLabelSw || requestedUnit?.systemUnit?.nameSw || chosenUnitType,
+          unitLabelEn: requestedUnit?.displayLabelEn || requestedUnit?.systemUnit?.nameEn || chosenUnitType,
+          quarterQuantaPerUnit: finalQpu,
+          unitPriceTzs,
+          lineTotalTzs: unitPriceTzs * reqItem.quantity,
+          isWholesaleTierApplied,
+        });
+      }
+
+      if (matchedItems.length === 0) continue;
+
+      const merchantSubtotalTzs = matchedItems.reduce((sum, l) => sum + l.lineTotalTzs, 0);
+      const freeDeliveryEnabled =
+        merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER
+          ? merchant.isFreeDeliveryEnabled
+          : merchant.offersFreeDelivery;
+
+      let estimatedDeliveryFeeTzs = 0;
+      if (merchant.tier === BusinessTier.MANUFACTURER_SUPPLIER) {
+        const minOrder = Number(merchant.freeDeliveryMinOrderTzs ?? 0n);
+        const qualifies =
+          merchant.isFreeDeliveryEnabled && (minOrder === 0 || merchantSubtotalTzs >= minOrder);
+        estimatedDeliveryFeeTzs = qualifies ? 0 : Number(merchant.standardDeliveryFeeTzs ?? 0n);
+      }
+
+      matchedMerchants.push({
+        merchantId: merchant.id,
+        businessName: merchant.businessName,
+        storeImageUrl:
+          merchant.logoCdnUrl ??
+          'https://ik.imagekit.io/ochspoiwa/sokokuutz/catalog/default-merchant.webp',
+        wardName: merchant.ward,
+        district: merchant.district,
+        distanceKm,
+        isFreeDeliveryEnabled: freeDeliveryEnabled,
+        freeDeliveryMinOrderTzs: Number(merchant.freeDeliveryMinOrderTzs ?? 0n),
+        standardDeliveryFeeTzs: Number(merchant.standardDeliveryFeeTzs ?? 0n),
+        tier: merchant.tier,
+        orderChannel,
+        matchedItems,
+        merchantSubtotalTzs,
+        estimatedDeliveryFeeTzs,
+        missingItems,
+      });
+    }
+
+    matchedMerchants.sort((a, b) => {
+      if (b.matchedItems.length !== a.matchedItems.length) {
+        return b.matchedItems.length - a.matchedItems.length;
+      }
+      if (a.distanceKm !== b.distanceKm) {
+        return a.distanceKm - b.distanceKm;
+      }
+      return a.merchantSubtotalTzs - b.merchantSubtotalTzs;
+    });
+
+    return {
+      buyerLocation: { latitude: finalBuyerLat, longitude: finalBuyerLng },
+      requestedCount: requestedItems.length,
+      matchedMerchantsCount: matchedMerchants.length,
+      merchants: matchedMerchants,
+    };
   }
 
   private async generateSupplierSmsItemCode(
@@ -964,6 +1531,7 @@ export class CatalogService {
             where: { id: productId },
             data: {
               baseQuarterQuantaStock: { increment: quantityQuanta },
+              isPublishedToMarket: true,
               isActive: true,
               version: { increment: 1 },
             },

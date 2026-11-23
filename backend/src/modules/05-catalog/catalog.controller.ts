@@ -12,8 +12,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { TenantContext } from '@common/security/auth.types';
-import { CurrentTenant, Roles, TenantScoped } from '@common/security/decorators';
+import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
+import { CurrentTenant, CurrentUser, Roles, TenantScoped } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
 import { CatalogService } from './catalog.service';
 import {
@@ -22,6 +22,7 @@ import {
   CloneStandardCatalogDto,
   CreateCatalogCategoryDto,
   CreateMerchantProductDto,
+  DiscoverMerchantsDto,
   PublishMarketStockDto,
   UpdateClonePublishStatusDto,
   UpdateFreeDeliveryDto,
@@ -102,12 +103,29 @@ export class CatalogController {
   @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.CONSUMER, Role.SUPPLIER)
   @ApiOperation({ summary: 'Browse active canonical SKUs in soko_global_catalog' })
   @ApiQuery({ name: 'categoryCode', required: false })
+  @ApiQuery({ name: 'categoryCodes', required: false, description: 'Comma-separated category codes' })
   @ApiQuery({ name: 'q', required: false })
   listGlobalCatalog(
     @Query('categoryCode') categoryCode?: string,
+    @Query('categoryCodes') categoryCodes?: string,
     @Query('q') q?: string,
   ) {
-    return this.catalogService.listGlobalCatalog(categoryCode, q);
+    return this.catalogService.listGlobalCatalog(categoryCode, q, categoryCodes);
+  }
+
+  @Post('marketplace/discover-merchants')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.SUPPLIER, Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Smart Merchant Discovery ranked by PostGIS proximity and item coverage',
+  })
+  @ApiResponse({ status: 200, description: 'Matched active verified Merchants returned' })
+  discoverMerchants(
+    @Body() dto: DiscoverMerchantsDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.catalogService.discoverMerchants(dto, user, tenantContext);
   }
 
   @Get('marketplace/merchants')

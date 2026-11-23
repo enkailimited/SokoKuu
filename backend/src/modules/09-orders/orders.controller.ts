@@ -15,7 +15,11 @@ import { ApiBearerAuth, ApiHeader, ApiOperation, ApiQuery, ApiResponse, ApiTags 
 import { AuthenticatedUser, TenantContext } from '@common/security/auth.types';
 import { CurrentTenant, CurrentUser, Roles } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
-import { CancelOrderDto, CreateOrderRequestDto } from './dto/orders.dto';
+import {
+  CancelOrderDto,
+  CreateOrderRequestDto,
+  SubmitBatchOrdersDto,
+} from './dto/orders.dto';
 import { OrderReceiptResponse, OrdersService } from './orders.service';
 
 @ApiTags('Orders')
@@ -84,6 +88,23 @@ export class OrdersController {
     @CurrentTenant() tenantContext?: TenantContext,
   ): Promise<OrderReceiptResponse> {
     return this.ordersService.createOrder(dto, idempotencyKey, user, tenantContext);
+  }
+
+  @Post('marketplace/orders/submit-batch')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(Role.RETAILER, Role.CONSUMER, Role.WHOLESALER, Role.SUPER_ADMIN)
+  @ApiHeader({ name: 'X-Idempotency-Key', required: true })
+  @ApiOperation({
+    summary: 'Submit instant or scheduled multi-Merchant orders with per-store isolation',
+  })
+  @ApiResponse({ status: 201, description: 'Batch orders placed cleanly' })
+  submitBatchOrders(
+    @Body() dto: SubmitBatchOrdersDto,
+    @Headers('x-idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTenant() tenantContext?: TenantContext,
+  ) {
+    return this.ordersService.submitBatchOrders(dto, idempotencyKey, user, tenantContext);
   }
 
   @Post('orders/:orderId/cancel')

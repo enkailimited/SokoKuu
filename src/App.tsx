@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Locale } from './data/i18n';
+import { Calculator, LayoutDashboard, Settings } from 'lucide-react';
+import { t, type Locale } from './i18n';
 import { DataSaverProvider } from './context/DataSaverContext';
 import { HybridModeProvider } from './context/HybridModeContext';
 import {
@@ -10,9 +11,12 @@ import {
 } from './types/auth';
 import { AuthPortalView } from './components/AuthPortalView';
 import { PublicLandingView } from './components/PublicLandingView';
-import { BrandedAppBarWithAlerts } from './components/BrandedAppBarWithAlerts';
+import {
+  BrandedAppBarWithAlerts,
+  type MerchantNavView,
+} from './components/BrandedAppBarWithAlerts';
 import { ConsumerDashboardView } from './components/ConsumerDashboardView';
-import { RetailerShoppingView, type RetailerTab } from './components/RetailerShoppingView';
+import { type RetailerTab } from './components/RetailerShoppingView';
 import { SokoniCoreEngine } from './components/SokoniCoreEngine';
 import { WholesalerOperationsView } from './components/WholesalerOperationsView';
 import { MerchantWarehouseView } from './components/MerchantWarehouseView';
@@ -20,21 +24,23 @@ import {
   SupplierDashboardView,
   type SupplierTab,
 } from './components/SupplierDashboardView';
+import { MerchantDashboardView } from './components/MerchantDashboardView';
+import { InventoryAndUnitManager } from './components/InventoryAndUnitManager';
+import { HybridAnalyticsDashboard } from './components/HybridAnalyticsDashboard';
+import { FullPageMarketplaceMap } from './components/FullPageMarketplaceMap';
 import { DashboardOnlineBadge } from './components/DashboardOnlineBadge';
 import { MobileDriverReceiptCard } from './components/MobileDriverReceiptCard';
 import { SuperAdminDiagnosticsView } from './components/SuperAdminDiagnosticsView';
 import { ProfileEditView, SettingsView } from './components/AccountPages';
 import { BackendOfflineBanner } from './components/DatabaseStateBanner';
 import { OfflineIndicator } from './components/OfflineIndicator';
-import { SplashScreen } from './components/SplashScreen';
+import { SokoSplashScreen } from './components/SokoSplashScreen';
 import { SokoApiClient, isSokoNetworkError } from './services/sokoApiClient';
 
 type ActiveAccountPage = 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
 
 const ACTIVE_USER_STORAGE_KEY = 'sokokuu_active_user_v1';
-const LOCALE_STORAGE_KEY = 'sokokuu_locale_v1';
-const RETAILER_TAB_STORAGE_KEY = 'sokokuu_retailer_tab_v1';
-const WHOLESALER_TAB_STORAGE_KEY = 'sokokuu_wholesaler_tab_v1';
+const MERCHANT_VIEW_STORAGE_KEY = 'sokokuu_merchant_view_v1';
 const SUPPLIER_TAB_STORAGE_KEY = 'sokokuu_supplier_tab_v1';
 
 export type WholesalerTab = 'operations' | 'ghala' | 'sokoni';
@@ -48,6 +54,10 @@ const ROLE_THEME_CLASSES: Record<PlatformRole, string> = {
   SUPER_ADMIN: 'bg-slate-50/80 text-slate-900',
 };
 
+function normalizeLocale(val?: string | null): Locale {
+  return val === 'en' ? 'en' : 'sw';
+}
+
 export default function App() {
   return (
     <DataSaverProvider>
@@ -59,34 +69,6 @@ export default function App() {
 }
 
 function SinglePlatformShell() {
-  const [locale, setLocaleState] = useState<Locale>(() => {
-    try {
-      const saved = window.localStorage.getItem(LOCALE_STORAGE_KEY);
-      if (saved === 'en' || saved === 'sw') {
-        return saved;
-      }
-    } catch {
-      // ignore storage errors
-    }
-    return 'sw';
-  });
-
-  const setLocale = (nextOrUpdater: Locale | ((prev: Locale) => Locale)) => {
-    setLocaleState((prev) => {
-      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
-      try {
-        window.localStorage.setItem(LOCALE_STORAGE_KEY, next);
-      } catch {
-        // ignore storage errors
-      }
-      return next;
-    });
-  };
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-  }, [locale]);
-
   const [activeProfile, setActiveProfile] = useState<UserProfile | null>(() => {
     if (!SokoApiClient.hasAccessToken()) return null;
     try {
@@ -100,55 +82,49 @@ function SinglePlatformShell() {
     return null;
   });
 
+  // Locale ALWAYS starts at Kiswahili ('sw') and is hydrated from the user's
+  // server-side profile (/auth/me preferredLanguage) — never from localStorage.
+  const [locale, setLocaleState] = useState<Locale>('sw');
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   const [activePage, setActivePage] = useState<ActiveAccountPage>('DASHBOARD');
   const [showAuthPortal, setShowAuthPortal] = useState(false);
-  const [retailerTab, setRetailerTabState] = useState<RetailerTab>(() => {
+
+  const [merchantView, setMerchantViewState] = useState<MerchantNavView>(() => {
     try {
-      const savedTab = window.localStorage.getItem(RETAILER_TAB_STORAGE_KEY);
+      const saved = window.localStorage.getItem(MERCHANT_VIEW_STORAGE_KEY);
       if (
-        savedTab === 'warehouse' ||
-        savedTab === 'pos_register' ||
-        savedTab === 'inventory_shelf' ||
-        savedTab === 'core_engine' ||
-        savedTab === 'proximity_map'
+        saved === 'dashboard' ||
+        saved === 'sokoni' ||
+        saved === 'pos' ||
+        saved === 'orders' ||
+        saved === 'inventory' ||
+        saved === 'warehouse' ||
+        saved === 'reports' ||
+        saved === 'map'
       ) {
-        return savedTab;
+        return saved;
       }
     } catch {
       // ignore storage errors
     }
-    return 'pos_register';
+    return 'dashboard';
   });
 
-  const setRetailerTab = (tab: RetailerTab) => {
-    setRetailerTabState(tab);
+  const setMerchantView = (view: MerchantNavView) => {
+    setMerchantViewState(view);
     try {
-      window.localStorage.setItem(RETAILER_TAB_STORAGE_KEY, tab);
+      window.localStorage.setItem(MERCHANT_VIEW_STORAGE_KEY, view);
     } catch {
       // ignore storage errors
     }
   };
 
-  const [wholesalerTab, setWholesalerTabState] = useState<WholesalerTab>(() => {
-    try {
-      const savedTab = window.localStorage.getItem(WHOLESALER_TAB_STORAGE_KEY);
-      if (savedTab === 'operations' || savedTab === 'ghala' || savedTab === 'sokoni') {
-        return savedTab;
-      }
-    } catch {
-      // ignore storage errors
-    }
-    return 'operations';
-  });
-
-  const setWholesalerTab = (tab: WholesalerTab) => {
-    setWholesalerTabState(tab);
-    try {
-      window.localStorage.setItem(WHOLESALER_TAB_STORAGE_KEY, tab);
-    } catch {
-      // ignore storage errors
-    }
-  };
+  const [retailerTab, setRetailerTab] = useState<RetailerTab>('pos_register');
+  const [wholesalerTab, setWholesalerTab] = useState<WholesalerTab>('operations');
 
   const [supplierTab, setSupplierTabState] = useState<SupplierTab>(() => {
     try {
@@ -181,7 +157,9 @@ function SinglePlatformShell() {
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState<boolean>(false);
   const [retailerMapEnabled, setRetailerMapEnabled] = useState<boolean>(false);
   const [sessionBackendOffline, setSessionBackendOffline] = useState<boolean>(false);
-  const [hydratingSession, setHydratingSession] = useState<boolean>(false);
+  const [hydratingSession, setHydratingSession] = useState<boolean>(() =>
+    SokoApiClient.hasAccessToken(),
+  );
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [focusedOrder, setFocusedOrder] = useState<{
     orderRef: string | null;
@@ -202,9 +180,46 @@ function SinglePlatformShell() {
     }
   };
 
+  const applyLocale = useCallback(
+    (nextOrUpdater: Locale | ((prev: Locale) => Locale)) => {
+      setLocaleState((prev) => {
+        const next =
+          typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+
+        if (SokoApiClient.hasAccessToken()) {
+          void SokoApiClient.patch<{ preferredLanguage: Locale }>('/auth/preferences', {
+            preferredLanguage: next,
+          }).catch(() => undefined);
+
+          setActiveProfile((curr) => {
+            if (!curr) return curr;
+            const updated: UserProfile = {
+              ...curr,
+              preferredLanguage: next,
+              preferredLocale: next,
+            };
+            try {
+              window.localStorage.setItem(
+                ACTIVE_USER_STORAGE_KEY,
+                JSON.stringify(updated),
+              );
+            } catch {
+              // ignore storage errors
+            }
+            return updated;
+          });
+        }
+
+        return next;
+      });
+    },
+    [],
+  );
+
   const hydrateSessionFromApi = useCallback(async () => {
     if (!SokoApiClient.hasAccessToken()) {
       persistActiveProfile(null);
+      setHydratingSession(false);
       return;
     }
 
@@ -216,6 +231,8 @@ function SinglePlatformShell() {
           phoneE164: string;
           fullName: string;
           role: PlatformRole;
+          preferredLocale?: string;
+          preferredLanguage?: string;
         };
         businessProfile?: {
           id: string;
@@ -240,6 +257,7 @@ function SinglePlatformShell() {
       if (!me?.user?.role) {
         SokoApiClient.clearTokens();
         persistActiveProfile(null);
+        setLocaleState('sw');
         return;
       }
 
@@ -247,10 +265,14 @@ function SinglePlatformShell() {
       const bp = me.businessProfile;
       const tier = bp?.tier ?? me.tenantContext?.tier ?? null;
       const geoEnabled = Boolean(bp?.geospatialMapEnabled);
+      const userLang = normalizeLocale(
+        me.user.preferredLanguage ?? me.user.preferredLocale,
+      );
 
+      setLocaleState(userLang);
       setRetailerMapEnabled(geoEnabled);
-      if (role === 'RETAILER' && !geoEnabled && retailerTab === 'proximity_map') {
-        setRetailerTab('core_engine');
+      if (role === 'RETAILER' && !geoEnabled && merchantView === 'map') {
+        setMerchantView('dashboard');
       }
 
       setActiveProfile((prev) => {
@@ -266,12 +288,15 @@ function SinglePlatformShell() {
           email: prev?.email ?? '',
           businessLabel:
             bp?.businessName ??
-            (locale === 'sw' ? ROLE_LABELS[role].sw : ROLE_LABELS[role].en),
+            (userLang === 'sw' ? ROLE_LABELS[role].sw : ROLE_LABELS[role].en),
           ward: bp?.ward ?? prev?.ward ?? '',
+          district: bp?.district ?? prev?.district ?? '',
           streetAddress: bp?.streetAddress ?? prev?.streetAddress ?? '',
           shopImageUrl: bp?.logoCdnUrl ?? prev?.shopImageUrl ?? null,
           role,
           mode: mapTierToAccountMode(role, tier),
+          preferredLocale: userLang,
+          preferredLanguage: userLang,
           smsAlertsEnabled: prev?.smsAlertsEnabled ?? true,
           offlineSmsFallbackEnabled: prev?.offlineSmsFallbackEnabled ?? true,
         };
@@ -286,14 +311,14 @@ function SinglePlatformShell() {
       if (isSokoNetworkError(err)) {
         setSessionBackendOffline(true);
       } else {
-        // Unauthorized / expired refresh session -> force clean login
         SokoApiClient.clearTokens();
         persistActiveProfile(null);
+        setLocaleState('sw');
       }
     } finally {
       setHydratingSession(false);
     }
-  }, [locale, retailerTab]);
+  }, [merchantView]);
 
   useEffect(() => {
     void hydrateSessionFromApi();
@@ -307,14 +332,14 @@ function SinglePlatformShell() {
       }
       try {
         await SokoApiClient.get(
-          '/geospatial/stores-map-matrix?originLat=-6.809&originLng=39.255&maxDistanceMeters=1000'
+          '/geospatial/stores-map-matrix?originLat=-6.809&originLng=39.255&maxDistanceMeters=1000',
         );
         setRetailerMapEnabled(true);
       } catch (err) {
         if (!isSokoNetworkError(err)) {
           setRetailerMapEnabled(false);
-          if (retailerTab === 'proximity_map') {
-            setRetailerTab('core_engine');
+          if (merchantView === 'map') {
+            setMerchantView('dashboard');
           }
         }
       }
@@ -328,7 +353,7 @@ function SinglePlatformShell() {
       window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded);
       window.removeEventListener('sokokuu:geospatial-toggle-updated', syncGeoPermission);
     };
-  }, [activeProfile?.role, retailerTab]);
+  }, [activeProfile?.role, merchantView]);
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -343,11 +368,19 @@ function SinglePlatformShell() {
   }, []);
 
   const handleSignIn = (profile: UserProfile) => {
-    persistActiveProfile(profile);
+    const userLang = normalizeLocale(
+      profile.preferredLanguage ?? profile.preferredLocale,
+    );
+    setLocaleState(userLang);
+    persistActiveProfile({
+      ...profile,
+      preferredLanguage: userLang,
+      preferredLocale: userLang,
+    });
     setRetailerMapEnabled(Boolean(profile.geospatialMapEnabled));
     setSessionBackendOffline(false);
     setActivePage('DASHBOARD');
-    setRetailerTab('pos_register');
+    setMerchantView('dashboard');
     setSupplierTab('warehouse');
     setMobileMenuOpen(false);
     setAdminMobileSidebarOpen(false);
@@ -361,41 +394,55 @@ function SinglePlatformShell() {
     }
     SokoApiClient.clearTokens();
     persistActiveProfile(null);
+    setLocaleState('sw');
     setActivePage('DASHBOARD');
+    setMerchantView('dashboard');
     setMobileMenuOpen(false);
     setAdminMobileSidebarOpen(false);
   };
 
   const handleSaveProfile = (updated: UserProfile) => {
     persistActiveProfile(updated);
+    if (updated.preferredLanguage || updated.preferredLocale) {
+      setLocaleState(
+        normalizeLocale(updated.preferredLanguage ?? updated.preferredLocale),
+      );
+    }
   };
 
   const handleOpenDeepLink = useCallback((deepLink: string) => {
     const queryIndex = deepLink.indexOf('?');
     const path = queryIndex >= 0 ? deepLink.slice(0, queryIndex) : deepLink;
     const params =
-      queryIndex >= 0 ? new URLSearchParams(deepLink.slice(queryIndex + 1)) : new URLSearchParams();
+      queryIndex >= 0
+        ? new URLSearchParams(deepLink.slice(queryIndex + 1))
+        : new URLSearchParams();
 
     setActivePage('DASHBOARD');
 
     if (path.includes('/dashboard/supplier')) {
       const supplierTabParam = params.get('tab');
-      setSupplierTabState(
-        supplierTabParam === 'warehouse' ||
-          supplierTabParam === 'publish' ||
-          supplierTabParam === 'orders' ||
-          supplierTabParam === 'reports'
-          ? supplierTabParam
-          : 'orders'
-      );
+      if (supplierTabParam === 'reports') {
+        setMerchantView('reports');
+        setSupplierTabState('reports');
+      } else if (supplierTabParam === 'publish') {
+        setMerchantView('pos');
+        setSupplierTabState('publish');
+      } else if (supplierTabParam === 'warehouse') {
+        setMerchantView('warehouse');
+        setSupplierTabState('warehouse');
+      } else {
+        setMerchantView('orders');
+        setSupplierTabState('orders');
+      }
     } else if (path.includes('/dashboard/wholesaler')) {
-      setWholesalerTabState('operations');
+      setMerchantView('orders');
+      setWholesalerTab('operations');
     } else if (path.includes('/dashboard/retailer')) {
-      setRetailerTabState('core_engine');
+      setMerchantView('orders');
+      setRetailerTab('core_engine');
     }
 
-    // A notification that points at a specific order must land the operator on
-    // that order row so they can receive, dispatch or resolve it immediately.
     const orderRef = params.get('orderRef');
     const orderId = params.get('orderId');
     setFocusedOrder({ orderRef, orderId });
@@ -416,7 +463,7 @@ function SinglePlatformShell() {
   }, [handleOpenDeepLink]);
 
   const splashOverlay = showSplash ? (
-    <SplashScreen
+    <SokoSplashScreen
       locale={locale}
       isReady={!hydratingSession}
       onFinish={() => setShowSplash(false)}
@@ -431,7 +478,7 @@ function SinglePlatformShell() {
           <div key="stage-landing" className="sk-theme-transition sk-dashboard-crossfade">
             <PublicLandingView
               locale={locale}
-              onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+              onToggleLocale={() => applyLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
               onEnter={() => setShowAuthPortal(true)}
             />
           </div>
@@ -444,7 +491,7 @@ function SinglePlatformShell() {
         <div key="stage-auth" className="sk-theme-transition sk-dashboard-crossfade">
           <AuthPortalView
             locale={locale}
-            onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
+            onToggleLocale={() => applyLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
             onSignIn={handleSignIn}
           />
         </div>
@@ -452,16 +499,16 @@ function SinglePlatformShell() {
     );
   }
 
+  const isMerchantRole =
+    activeProfile.role === 'RETAILER' ||
+    activeProfile.role === 'WHOLESALER' ||
+    activeProfile.role === 'SUPPLIER';
   const activeDashboardTab =
     activePage !== 'DASHBOARD'
       ? activePage
-      : activeProfile.role === 'RETAILER'
-        ? retailerTab
-        : activeProfile.role === 'WHOLESALER'
-          ? wholesalerTab
-          : activeProfile.role === 'SUPPLIER'
-            ? supplierTab
-            : activeProfile.role;
+      : isMerchantRole
+        ? `${activeProfile.role}:${merchantView}`
+        : activeProfile.role;
   const dashboardTransitionKey = `${activeProfile.role}:${activePage}:${activeDashboardTab}`;
   const isFullBleedAdmin = activeProfile.role === 'SUPER_ADMIN' && activePage === 'DASHBOARD';
 
@@ -491,10 +538,11 @@ function SinglePlatformShell() {
 
       <BrandedAppBarWithAlerts
         locale={locale}
-        onToggleLocale={() => setLocale((prev) => (prev === 'en' ? 'sw' : 'en'))}
         activeProfile={activeProfile}
         activePage={activePage}
         onSelectPage={setActivePage}
+        merchantView={merchantView}
+        onSelectMerchantView={setMerchantView}
         retailerTab={retailerTab}
         onSelectRetailerTab={setRetailerTab}
         wholesalerTab={wholesalerTab}
@@ -524,7 +572,11 @@ function SinglePlatformShell() {
         className={
           isFullBleedAdmin
             ? 'flex-1 w-full flex flex-col min-w-0'
-            : 'flex-1 p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto min-w-0 sk-safe-bottom'
+            : `flex-1 p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto min-w-0 ${
+                isMerchantRole
+                  ? 'pb-[calc(6rem+env(safe-area-inset-bottom,0px))]'
+                  : 'sk-safe-bottom'
+              }`
         }
       >
         <div
@@ -540,54 +592,172 @@ function SinglePlatformShell() {
               {activeProfile.role === 'CONSUMER' && (
                 <ConsumerDashboardView locale={locale} consumerWard={activeProfile.ward} />
               )}
-              {activeProfile.role === 'RETAILER' && (
-                <RetailerShoppingView
-                  locale={locale}
-                  activeTab={retailerTab}
-                  userRole="RETAILER"
-                  userTier={activeProfile.tier}
-                  businessId={activeProfile.businessId}
-                  onRedirectToWorkspace={() => setRetailerTab('core_engine')}
-                  sokoniInitialCatalogId={sokoniInitialCatalogId}
-                  onClearSokoniCatalogFilter={() => setSokoniInitialCatalogId(null)}
-                  onOpenSokoni={(catalogId) => {
-                    setSokoniInitialCatalogId(catalogId ?? null);
-                    setRetailerTab('core_engine');
-                  }}
-                />
+
+              {/* UNIFIED MERCHANT 3-SCREEN WORKSPACE (RETAILER, WHOLESALER, SUPPLIER) */}
+              {isMerchantRole && (
+                <>
+                  {merchantView === 'dashboard' && (
+                    <MerchantDashboardView
+                      locale={locale}
+                      profile={activeProfile}
+                      onOpenSokoni={() => setMerchantView('sokoni')}
+                      onOpenOrders={() => setMerchantView('orders')}
+                      onOpenInventory={() => setMerchantView('inventory')}
+                      onOpenWarehouse={() => setMerchantView('warehouse')}
+                      onOpenReports={() => setMerchantView('reports')}
+                      onOpenPos={() => setMerchantView('pos')}
+                      onSelectOrder={(orderId, orderRef) => {
+                        setFocusedOrder({ orderId, orderRef });
+                        setMerchantView('orders');
+                      }}
+                    />
+                  )}
+
+                  {merchantView === 'sokoni' && (
+                    <SokoniCoreEngine
+                      locale={locale}
+                      userRole={
+                        activeProfile.role as 'RETAILER' | 'WHOLESALER' | 'SUPPLIER'
+                      }
+                      userTier={activeProfile.tier}
+                      businessId={activeProfile.businessId}
+                      initialView="BUY"
+                      initialGlobalCatalogId={sokoniInitialCatalogId}
+                      onClearInitialCatalogFilter={() => setSokoniInitialCatalogId(null)}
+                      onBackToDashboard={() => setMerchantView('dashboard')}
+                    />
+                  )}
+
+                  {merchantView === 'pos' &&
+                    (activeProfile.role === 'SUPPLIER' ? (
+                      <SupplierDashboardView
+                        locale={locale}
+                        activeTab="publish"
+                        onTabChange={setSupplierTab}
+                        businessId={activeProfile.businessId}
+                        sellerPhone={activeProfile.phone}
+                        focusOrder={focusedOrder}
+                      />
+                    ) : (
+                      <InventoryAndUnitManager
+                        locale={locale}
+                        activeSection="pos_register"
+                        businessId={activeProfile.businessId}
+                        userRole={activeProfile.role === 'WHOLESALER' ? 'WHOLESALER' : 'RETAILER'}
+                        userTier={activeProfile.tier}
+                        onOpenSokoni={(catalogId) => {
+                          setSokoniInitialCatalogId(catalogId ?? null);
+                          setMerchantView('sokoni');
+                        }}
+                      />
+                    ))}
+
+                  {merchantView === 'orders' &&
+                    (activeProfile.role === 'RETAILER' ? (
+                      <SokoniCoreEngine
+                        locale={locale}
+                        userRole="RETAILER"
+                        userTier={activeProfile.tier}
+                        businessId={activeProfile.businessId}
+                        initialView="ORDERS"
+                        onBackToDashboard={() => setMerchantView('dashboard')}
+                      />
+                    ) : activeProfile.role === 'WHOLESALER' ? (
+                      <WholesalerOperationsView
+                        locale={locale}
+                        businessId={activeProfile.businessId}
+                        focusOrder={focusedOrder}
+                        initialTab="riders"
+                      />
+                    ) : (
+                      <SupplierDashboardView
+                        locale={locale}
+                        activeTab="orders"
+                        onTabChange={setSupplierTab}
+                        businessId={activeProfile.businessId}
+                        sellerPhone={activeProfile.phone}
+                        focusOrder={focusedOrder}
+                      />
+                    ))}
+
+                  {merchantView === 'inventory' &&
+                    (activeProfile.role === 'SUPPLIER' ? (
+                      <SupplierDashboardView
+                        locale={locale}
+                        activeTab="warehouse"
+                        onTabChange={setSupplierTab}
+                        businessId={activeProfile.businessId}
+                        sellerPhone={activeProfile.phone}
+                        focusOrder={focusedOrder}
+                      />
+                    ) : (
+                      <InventoryAndUnitManager
+                        locale={locale}
+                        activeSection="inventory_shelf"
+                        businessId={activeProfile.businessId}
+                        userRole={activeProfile.role === 'WHOLESALER' ? 'WHOLESALER' : 'RETAILER'}
+                        userTier={activeProfile.tier}
+                        onOpenSokoni={(catalogId) => {
+                          setSokoniInitialCatalogId(catalogId ?? null);
+                          setMerchantView('sokoni');
+                        }}
+                      />
+                    ))}
+
+                  {merchantView === 'warehouse' &&
+                    (activeProfile.role === 'SUPPLIER' ? (
+                      <SupplierDashboardView
+                        locale={locale}
+                        activeTab="warehouse"
+                        onTabChange={setSupplierTab}
+                        businessId={activeProfile.businessId}
+                        sellerPhone={activeProfile.phone}
+                        focusOrder={focusedOrder}
+                      />
+                    ) : (
+                      <MerchantWarehouseView locale={locale} />
+                    ))}
+
+                  {merchantView === 'reports' &&
+                    (activeProfile.role === 'RETAILER' ? (
+                      <HybridAnalyticsDashboard
+                        locale={locale}
+                        businessId={activeProfile.businessId}
+                      />
+                    ) : activeProfile.role === 'WHOLESALER' ? (
+                      <WholesalerOperationsView
+                        locale={locale}
+                        businessId={activeProfile.businessId}
+                        focusOrder={focusedOrder}
+                        initialTab="analytics"
+                      />
+                    ) : (
+                      <SupplierDashboardView
+                        locale={locale}
+                        activeTab="reports"
+                        onTabChange={setSupplierTab}
+                        businessId={activeProfile.businessId}
+                        sellerPhone={activeProfile.phone}
+                        focusOrder={focusedOrder}
+                      />
+                    ))}
+
+                  {merchantView === 'map' && activeProfile.role === 'RETAILER' && (
+                    <FullPageMarketplaceMap
+                      locale={locale}
+                      authority="RETAILER"
+                      tenantBusinessId={activeProfile.businessId ?? null}
+                      onRedirectToWorkspace={() => setMerchantView('sokoni')}
+                      onSelectMerchantStorefront={() => setMerchantView('sokoni')}
+                    />
+                  )}
+                </>
               )}
-              {activeProfile.role === 'WHOLESALER' &&
-                (wholesalerTab === 'sokoni' ? (
-                  <SokoniCoreEngine
-                    locale={locale}
-                    userRole="WHOLESALER"
-                    userTier={activeProfile.tier}
-                    businessId={activeProfile.businessId}
-                    initialGlobalCatalogId={sokoniInitialCatalogId}
-                    onClearInitialCatalogFilter={() => setSokoniInitialCatalogId(null)}
-                  />
-                ) : wholesalerTab === 'ghala' ? (
-                  <MerchantWarehouseView locale={locale} />
-                ) : (
-                  <WholesalerOperationsView
-                    locale={locale}
-                    businessId={activeProfile.businessId}
-                    focusOrder={focusedOrder}
-                  />
-                ))}
-              {activeProfile.role === 'SUPPLIER' && (
-                <SupplierDashboardView
-                  locale={locale}
-                  activeTab={supplierTab}
-                  onTabChange={setSupplierTab}
-                  businessId={activeProfile.businessId}
-                  sellerPhone={activeProfile.phone}
-                  focusOrder={focusedOrder}
-                />
-              )}
+
               {activeProfile.role === 'DRIVER' && (
                 <MobileDriverReceiptCard locale={locale} />
               )}
+
               {activeProfile.role === 'SUPER_ADMIN' && (
                 <SuperAdminDiagnosticsView
                   locale={locale}
@@ -613,7 +783,7 @@ function SinglePlatformShell() {
           {activePage === 'SETTINGS' && (
             <SettingsView
               locale={locale}
-              onSetLocale={setLocale}
+              onSetLocale={applyLocale}
               profile={activeProfile}
               onSaveProfile={handleSaveProfile}
               onBackToDashboard={() => setActivePage('DASHBOARD')}
@@ -621,7 +791,70 @@ function SinglePlatformShell() {
           )}
         </div>
       </main>
-      {activePage === 'DASHBOARD' && <DashboardOnlineBadge />}
+
+      {/* Fixed Bottom Navigation Bar (Wireframe 1 & 2: Dashboard | POS | Settings) */}
+      {isMerchantRole && (
+        <nav
+          aria-label={locale === 'sw' ? 'Urambazaji wa Chini' : 'Bottom navigation'}
+          className="fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 sk-safe-bottom"
+        >
+          <div className="max-w-lg mx-auto grid grid-cols-3 h-16">
+            <button
+              type="button"
+              onClick={() => {
+                setActivePage('DASHBOARD');
+                setMerchantView('dashboard');
+              }}
+              aria-current={
+                activePage === 'DASHBOARD' && merchantView !== 'pos' ? 'page' : undefined
+              }
+              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-colors cursor-pointer ${
+                activePage === 'DASHBOARD' && merchantView !== 'pos'
+                  ? 'text-[#15AC49]'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <LayoutDashboard className="w-5 h-5" aria-hidden="true" />
+              <span>{t(locale, 'nav.dashboard')}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActivePage('DASHBOARD');
+                setMerchantView('pos');
+              }}
+              aria-current={
+                activePage === 'DASHBOARD' && merchantView === 'pos' ? 'page' : undefined
+              }
+              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-colors cursor-pointer ${
+                activePage === 'DASHBOARD' && merchantView === 'pos'
+                  ? 'text-[#15AC49]'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <Calculator className="w-5 h-5" aria-hidden="true" />
+              <span>{t(locale, 'nav.pos')}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActivePage('SETTINGS')}
+              aria-current={activePage === 'SETTINGS' ? 'page' : undefined}
+              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-colors cursor-pointer ${
+                activePage === 'SETTINGS'
+                  ? 'text-[#15AC49]'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <Settings className="w-5 h-5" aria-hidden="true" />
+              <span>{t(locale, 'nav.settings')}</span>
+            </button>
+          </div>
+        </nav>
+      )}
+
+      {activePage === 'DASHBOARD' && !isMerchantRole && <DashboardOnlineBadge />}
       <OfflineIndicator locale={locale} />
     </div>
   );

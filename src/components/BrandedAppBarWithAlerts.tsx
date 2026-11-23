@@ -5,7 +5,6 @@ import {
   CheckCheck,
   ChevronDown,
   ChevronRight,
-  Languages,
   LogOut,
   Menu,
   Radio,
@@ -27,7 +26,6 @@ import {
   type UserProfile,
 } from '../types/auth';
 import { BrandLogo } from './BrandLogo';
-import { PWAInstallButton } from './PWAInstallButton';
 import {
   getWebPushStatus,
   initializeWebPushRegistration,
@@ -90,12 +88,23 @@ export type RetailerNavTab =
   | 'core_engine'
   | 'proximity_map';
 
+export type MerchantNavView =
+  | 'dashboard'
+  | 'sokoni'
+  | 'pos'
+  | 'orders'
+  | 'inventory'
+  | 'warehouse'
+  | 'reports'
+  | 'map';
+
 export interface BrandedAppBarWithAlertsProps {
   locale: Locale;
-  onToggleLocale: () => void;
   activeProfile: UserProfile;
   activePage: 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
   onSelectPage: (page: 'DASHBOARD' | 'PROFILE' | 'SETTINGS') => void;
+  merchantView?: MerchantNavView;
+  onSelectMerchantView?: (view: MerchantNavView) => void;
   retailerTab: RetailerNavTab;
   onSelectRetailerTab: (tab: RetailerNavTab) => void;
   wholesalerTab?: 'operations' | 'ghala' | 'sokoni';
@@ -222,10 +231,11 @@ export function playDukaAlarmChime(ctxRef: { current: AudioContext | null }): vo
 
 export function BrandedAppBarWithAlerts({
   locale,
-  onToggleLocale,
   activeProfile,
   activePage,
   onSelectPage,
+  merchantView = 'dashboard',
+  onSelectMerchantView,
   retailerTab,
   onSelectRetailerTab,
   wholesalerTab = 'operations',
@@ -243,6 +253,10 @@ export function BrandedAppBarWithAlerts({
   compactContainer = false,
 }: BrandedAppBarWithAlertsProps) {
   const isSw = locale === 'sw';
+  const isMerchantRole =
+    activeProfile.role === 'RETAILER' ||
+    activeProfile.role === 'WHOLESALER' ||
+    activeProfile.role === 'SUPPLIER';
 
   const [profileMenuOpen, setProfileMenuOpen] = useState<boolean>(false);
   const [bellOpen, setBellOpen] = useState<boolean>(false);
@@ -800,8 +814,8 @@ export function BrandedAppBarWithAlerts({
           compactContainer ? 'max-w-2xl' : 'max-w-6xl'
         } mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4`}
       >
-        <div className="flex items-center gap-3 md:gap-4 lg:gap-8 min-w-0 flex-1">
-          {/* Mobile Menu Icon in AppBar (Brand hidden on mobile; also opens Admin sidebar on < lg) */}
+        <div className="flex items-center gap-2 sm:gap-3 md:gap-4 lg:gap-8 min-w-0 flex-1">
+          {/* Mobile Menu Icon in AppBar */}
           <button
             type="button"
             onClick={() => {
@@ -828,22 +842,71 @@ export function BrandedAppBarWithAlerts({
             <Menu className="w-5 h-5" aria-hidden="true" />
           </button>
 
-          {/* Brand Logo hidden on mobile view, visible on md+ */}
+          {/* Brand Logo — visible & centered on mobile, left-aligned on md+ */}
           <button
             type="button"
             onClick={() => {
+              if (isMerchantRole && onSelectMerchantView) {
+                onSelectMerchantView('dashboard');
+              }
               onSelectPage('DASHBOARD');
               setProfileMenuOpen(false);
               setBellOpen(false);
             }}
-            className="hidden md:inline-flex whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity cursor-pointer"
+            className="inline-flex flex-1 md:flex-none justify-center md:justify-start whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity cursor-pointer"
           >
-            <BrandLogo size="md" />
+            <BrandLogo size="sm" />
           </button>
 
           {/* Desktop Top AppBar Navigation Tabs */}
-          <nav className="hidden md:flex items-center gap-5 lg:gap-6 text-xs sm:text-sm font-medium text-slate-600 overflow-x-auto no-scrollbar py-2 min-w-0">
-            {activeProfile.role === 'RETAILER' ? (
+          <nav className="hidden md:flex items-center gap-4 lg:gap-5 text-xs sm:text-sm font-medium text-slate-600 overflow-x-auto no-scrollbar py-2 min-w-0">
+            {isMerchantRole && onSelectMerchantView ? (
+              <>
+                {(
+                  [
+                    { key: 'dashboard', label: isSw ? 'Dashibodi' : 'Dashboard' },
+                    { key: 'sokoni', label: 'Sokoni' },
+                    { key: 'pos', label: 'POS' },
+                    { key: 'orders', label: isSw ? 'Oda' : 'Orders' },
+                    { key: 'inventory', label: isSw ? 'Hifadhi' : 'Inventory' },
+                    { key: 'warehouse', label: isSw ? 'Ghala' : 'Warehouse' },
+                    { key: 'reports', label: isSw ? 'Ripoti' : 'Reports' },
+                  ] as Array<{ key: MerchantNavView; label: string }>
+                ).map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => {
+                      onSelectMerchantView(item.key);
+                      onSelectPage('DASHBOARD');
+                    }}
+                    className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                      activePage === 'DASHBOARD' && merchantView === item.key
+                        ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-[#15AC49] font-semibold'
+                        : 'hover:text-slate-900'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+                {activeProfile.role === 'RETAILER' && retailerMapEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectMerchantView('map');
+                      onSelectPage('DASHBOARD');
+                    }}
+                    className={`whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                      activePage === 'DASHBOARD' && merchantView === 'map'
+                        ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-[#15AC49] font-semibold'
+                        : 'hover:text-slate-900'
+                    }`}
+                  >
+                    {isSw ? 'Ramani (GIS)' : 'Proximity Map'}
+                  </button>
+                )}
+              </>
+            ) : activeProfile.role === 'RETAILER' ? (
               <>
                 <button
                   type="button"
@@ -1026,10 +1089,8 @@ export function BrandedAppBarWithAlerts({
           </nav>
         </div>
 
-        {/* Top-Right Telemetry Bell + PWA Install + Language Switcher + Always-Visible Profile Matrix */}
+        {/* Top-Right Telemetry Bell + Always-Visible Profile Matrix */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <PWAInstallButton locale={locale} />
-
           {/* Interactive White-Labeled STOMP Notification Bell */}
           <div className="relative shrink-0" ref={bellContainerRef}>
             <button
@@ -1263,16 +1324,6 @@ export function BrandedAppBarWithAlerts({
             )}
           </div>
 
-          <button
-            type="button"
-            onClick={onToggleLocale}
-            title={isSw ? 'Switch to English' : 'Badili kwenda Kiswahili'}
-            className="min-h-[40px] px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex items-center gap-1 text-xs font-semibold text-slate-700 cursor-pointer transition-colors"
-          >
-            <Languages className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
-            <span>{isSw ? 'SW' : 'EN'}</span>
-          </button>
-
           <div className="relative shrink-0" ref={menuContainerRef}>
             <button
               type="button"
@@ -1285,16 +1336,8 @@ export function BrandedAppBarWithAlerts({
               aria-label={isSw ? 'Menyu ya Wasifu na Ondoka' : 'Profile and Logout menu'}
               className="min-h-[40px] px-2 sm:px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex items-center gap-2 cursor-pointer transition-colors"
             >
-              <div className="w-7 h-7 rounded-full bg-emerald-600 text-white font-mono text-xs font-bold flex items-center justify-center shrink-0">
+              <div className="w-7 h-7 rounded-full bg-[#15AC49] text-white font-mono text-xs font-bold flex items-center justify-center shrink-0">
                 {getInitials(activeProfile.fullName)}
-              </div>
-              <div className="text-left sm:hidden max-w-[64px]">
-                <div className="text-[11px] font-semibold text-slate-900 truncate">
-                  {activeProfile.fullName.split(' ')[0] || (isSw ? 'Wasifu' : 'Profile')}
-                </div>
-                <div className="text-[9px] text-emerald-700 font-medium leading-none">
-                  {isSw ? 'Wasifu' : 'Profile'}
-                </div>
               </div>
               <div className="text-left hidden sm:block max-w-[140px]">
                 <div className="text-xs font-semibold text-slate-900 truncate">
@@ -1304,7 +1347,7 @@ export function BrandedAppBarWithAlerts({
                   {isSw ? ROLE_LABELS[activeProfile.role].sw : ROLE_LABELS[activeProfile.role].en}
                 </div>
               </div>
-              <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" aria-hidden="true" />
+              <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
             </button>
 
             {profileMenuOpen && (
@@ -1406,7 +1449,55 @@ export function BrandedAppBarWithAlerts({
             </div>
 
             <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-              {activeProfile.role === 'RETAILER' ? (
+              {isMerchantRole && onSelectMerchantView ? (
+                <>
+                  {(
+                    [
+                      { key: 'dashboard', label: isSw ? 'Dashibodi (Muhtasari)' : 'Dashboard Overview' },
+                      { key: 'sokoni', label: isSw ? 'Sokoni (Nunua / Uza)' : 'Sokoni (Buy / Sell)' },
+                      { key: 'pos', label: isSw ? 'POS Mauzo' : 'POS Register' },
+                      { key: 'orders', label: isSw ? 'Oda & Usafirishaji' : 'Orders & Dispatch' },
+                      { key: 'inventory', label: isSw ? 'Hifadhi & Bei' : 'Inventory & Pricing' },
+                      { key: 'warehouse', label: isSw ? 'Ghala & Kupokea' : 'Warehouse & Receiving' },
+                      { key: 'reports', label: isSw ? 'Ripoti & Mauzo' : 'Reports & Analytics' },
+                    ] as Array<{ key: MerchantNavView; label: string }>
+                  ).map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        onSelectMerchantView(item.key);
+                        onSelectPage('DASHBOARD');
+                        onToggleMobileMenu();
+                      }}
+                      className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                        activePage === 'DASHBOARD' && merchantView === item.key
+                          ? 'bg-[#15AC49]/10 text-[#15AC49] border border-[#15AC49]/30'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                  {activeProfile.role === 'RETAILER' && retailerMapEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectMerchantView('map');
+                        onSelectPage('DASHBOARD');
+                        onToggleMobileMenu();
+                      }}
+                      className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                        activePage === 'DASHBOARD' && merchantView === 'map'
+                          ? 'bg-[#15AC49]/10 text-[#15AC49] border border-[#15AC49]/30'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {isSw ? 'Ramani (GIS)' : 'Proximity Map'}
+                    </button>
+                  )}
+                </>
+              ) : activeProfile.role === 'RETAILER' ? (
                 <>
                   <button
                     type="button"
@@ -1670,27 +1761,29 @@ export function BrandedAppBarWithAlerts({
         </div>
       )}
 
-      {/* Mobile-first tab strip: finger-scrollable, no visible scrollbar. */}
-      <nav
-        aria-label={isSw ? 'Vichupo vya Uongozi' : 'Primary navigation'}
-        className="md:hidden sk-scroll-x items-center gap-1 border-t border-slate-100 bg-white px-2 py-1.5"
-      >
-        {mobileNavTabs.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={tab.onSelect}
-            aria-current={tab.active ? 'page' : undefined}
-            className={`inline-flex min-h-[40px] items-center whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-              tab.active
-                ? 'bg-emerald-50 text-emerald-900 ring-1 ring-inset ring-emerald-200'
-                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
+      {/* Mobile-first tab strip for non-Merchant roles (Merchants use Dashboard + Fixed Bottom Nav) */}
+      {!isMerchantRole && (
+        <nav
+          aria-label={isSw ? 'Vichupo vya Uongozi' : 'Primary navigation'}
+          className="md:hidden sk-scroll-x items-center gap-1 border-t border-slate-100 bg-white px-2 py-1.5"
+        >
+          {mobileNavTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={tab.onSelect}
+              aria-current={tab.active ? 'page' : undefined}
+              className={`inline-flex min-h-[40px] items-center whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+                tab.active
+                  ? 'bg-emerald-50 text-emerald-900 ring-1 ring-inset ring-emerald-200'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      )}
     </header>
   );
 }

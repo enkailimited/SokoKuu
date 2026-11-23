@@ -50,7 +50,7 @@ interface ActiveDeliveryStop {
   stop: number;
   orderId: string;
   orderRef: string;
-  status: 'DISPATCHED' | 'IN_TRANSIT';
+  status: 'DISPATCHED';
   expectedCashTzs: number;
   paymentMethod: string;
   customer: { name: string | null; phoneE164: string | null };
@@ -336,8 +336,8 @@ export function MobileDriverReceiptCard({ locale = 'sw' }: { locale?: Locale }) 
             locale={locale}
             titleSw="Hakuna oda za usafirishaji kwa sasa"
             titleEn="No active deliveries right now"
-            descriptionSw="Utakapo pangiwa oda hai (DISPATCHED/IN_TRANSIT) itaonekana hapa moja kwa moja kutoka mfumo."
-            descriptionEn="When you are assigned active DISPATCHED/IN_TRANSIT orders, they will appear here live from the system."
+            descriptionSw="Utakapo pangiwa oda hai (DISPATCHED) itaonekana hapa moja kwa moja kutoka mfumo."
+            descriptionEn="When you are assigned active DISPATCHED orders, they will appear here live from the system."
           />
         ) : (
           <>

@@ -366,10 +366,10 @@ export class DispatchService {
   async getActiveDriverDeliveries(user: AuthenticatedUser) {
     const whereClause =
       user.role === Role.SUPER_ADMIN
-        ? { status: { in: ['DISPATCHED', 'IN_TRANSIT'] as OrderStatus[] } }
+        ? { status: { in: ['DISPATCHED'] as OrderStatus[] } }
         : {
             driverUserId: user.sub,
-            status: { in: ['DISPATCHED', 'IN_TRANSIT'] as OrderStatus[] },
+            status: { in: ['DISPATCHED'] as OrderStatus[] },
           };
 
     const orders = await this.prismaService.order.findMany({
