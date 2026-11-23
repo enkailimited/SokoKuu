@@ -18,7 +18,7 @@ export class SalesLeadsController {
   constructor(private readonly salesLeadsService: SalesLeadsService) {}
 
   @Get()
-  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER)
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.SALES_STAFF)
   @ApiQuery({ name: 'status', required: false })
   @ApiOperation({ summary: 'List field-captured Merchant prospect and converted leads' })
   listLeads(@Query('status') status?: string) {
@@ -26,7 +26,7 @@ export class SalesLeadsController {
   }
 
   @Post()
-  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER)
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.SALES_STAFF)
   @ApiOperation({
     summary: 'Capture prospective Merchant lead with mandatory WGS84 GPS coordinates',
   })
@@ -56,7 +56,7 @@ export class SalesLeadsController {
   }
 
   @Post(':leadId/convert')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.WHOLESALER, Role.RETAILER, Role.SALES_STAFF)
   @ApiOperation({
     summary: 'Convert prospective Merchant lead atomically with optimistic version locking',
   })

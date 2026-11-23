@@ -14,6 +14,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 import { TZ_E164_REGEX } from '@modules/01-identity/dto/auth.dto';
 
@@ -126,11 +127,41 @@ export class CreateLeadDto {
   })
   ownerPhoneE164!: string;
 
+  @ApiPropertyOptional({ example: 'Tanzania', default: 'Tanzania' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  countryName?: string;
+
+  @ApiPropertyOptional({ example: 'Dar es Salaam' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  regionName?: string;
+
+  @ApiPropertyOptional({ example: 'Ilala' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  districtName?: string;
+
   @ApiProperty({ example: 'Kariakoo' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(140)
   wardName!: string;
+
+  @ApiPropertyOptional({ example: 'Msimbazi Street' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  streetAddress?: string;
+
+  @ApiPropertyOptional({ example: '11103' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  postcode?: string;
 
   @ApiProperty({ enum: MerchantTierDto, example: MerchantTierDto.RETAIL_DUKA })
   @IsEnum(MerchantTierDto)
@@ -199,15 +230,44 @@ export class PublicLeadDto {
   })
   ownerPhoneE164!: string;
 
+  @ApiPropertyOptional({ example: 'Tanzania', default: 'Tanzania' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  countryName?: string;
+
+  @ApiPropertyOptional({ example: 'Dar es Salaam' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  regionName?: string;
+
+  @ApiPropertyOptional({ example: 'Ilala' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  districtName?: string;
+
   @ApiProperty({ example: 'Kariakoo, Dar es Salaam' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(140)
   wardName!: string;
 
+  @ApiPropertyOptional({ example: 'Msimbazi Street' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  streetAddress?: string;
+
+  @ApiPropertyOptional({ example: '11103' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  postcode?: string;
+
   @ApiProperty({ enum: MerchantTierDto, example: MerchantTierDto.RETAIL_DUKA })
   @IsEnum(MerchantTierDto)
-  @IsIn([MerchantTierDto.RETAIL_DUKA, MerchantTierDto.WHOLESALE, MerchantTierDto.HYBRID_STORE])
   businessTier!: MerchantTierDto;
 
   @ApiProperty({ example: -6.8205 })
@@ -262,4 +322,37 @@ export class ConvertLeadDto {
   @IsString()
   @MaxLength(200)
   streetAddress?: string;
+}
+
+/** Admin-created sales team account. Role is always forced to SALES_STAFF. */
+export class CreateSalesStaffDto {
+  @ApiProperty({ example: '+255712345678' })
+  @IsString()
+  @Matches(TZ_E164_REGEX, {
+    message: 'phoneE164 must be a valid Tanzanian MSISDN (+2556XXXXXXXX or +2557XXXXXXXX)',
+  })
+  phoneE164!: string;
+
+  @ApiProperty({ example: 'Amina Hassan' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(150)
+  fullName!: string;
+
+  @ApiProperty({ example: 'SokoKuu#2026!', minLength: 8 })
+  @IsString()
+  @MinLength(8)
+  @MaxLength(128)
+  password!: string;
+
+  @ApiPropertyOptional({ example: 'sw', enum: ['sw', 'en'], default: 'sw' })
+  @IsOptional()
+  @IsIn(['sw', 'en'])
+  preferredLanguage?: string;
+}
+
+export class SetSalesStaffActiveDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  isActive!: boolean;
 }

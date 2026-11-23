@@ -195,6 +195,8 @@ export class OutboxRelayWorker implements OnModuleInit, OnModuleDestroy {
     switch (role) {
       case UserRole.SUPER_ADMIN:
         return `/dashboard/admin${suffix}`;
+      case UserRole.SALES_STAFF:
+        return `/dashboard/sales${suffix}`;
       case UserRole.WHOLESALER:
         return `/dashboard/wholesaler${suffix}`;
       case UserRole.RETAILER:

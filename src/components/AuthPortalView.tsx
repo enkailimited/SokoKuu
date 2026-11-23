@@ -29,9 +29,19 @@ import {
   checkBackendHealth,
   isSokoNetworkError,
 } from '../services/sokoApiClient';
+import {
+  EMPTY_TANZANIA_ADDRESS,
+  formatTanzaniaAddress,
+  type TanzaniaAddress,
+} from '../services/tanzaniaLocations';
+import { TanzaniaLocationFields } from './TanzaniaLocationFields';
 
 type ResetView = 'AUTH' | 'RESET_CHALLENGE' | 'RESET_CONFIRM';
-type PublicBusinessTier = 'RETAIL_DUKA' | 'WHOLESALE';
+type PublicBusinessTier =
+  | 'RETAIL_DUKA'
+  | 'WHOLESALE'
+  | 'HYBRID_STORE'
+  | 'MANUFACTURER_SUPPLIER';
 
 interface PublicLeadCoordinates {
   latitude: number;
@@ -99,7 +109,7 @@ export function AuthPortalView({
 
   // Public quote / registration lead capture
   const [businessNameInput, setBusinessNameInput] = useState<string>('');
-  const [wardInput, setWardInput] = useState<string>('');
+  const [location, setLocation] = useState<TanzaniaAddress>(EMPTY_TANZANIA_ADDRESS);
   const [quoteInput, setQuoteInput] = useState<string>('');
   const [businessTier, setBusinessTier] = useState<PublicBusinessTier>('RETAIL_DUKA');
   const [leadGps, setLeadGps] = useState<PublicLeadCoordinates | null>(null);
@@ -452,12 +462,11 @@ export function AuthPortalView({
     if (authTab === 'REGISTER') {
       const cleanOwner = fullNameInput.trim();
       const cleanMerchant = businessNameInput.trim();
-      const cleanWard = wardInput.trim();
-      if (!cleanOwner || !cleanMerchant || !cleanWard) {
+      if (!cleanOwner || !cleanMerchant || !location.region || !location.district || !location.ward) {
         setAuthError(
           isSw
-            ? 'Jaza jina lako, jina la biashara, na kata/mahali pa biashara.'
-            : 'Enter your name, business name, and business ward/location.'
+            ? 'Jaza jina lako, jina la biashara, kisha chagua mkoa, wilaya na kata halisi.'
+            : 'Enter your name, business name, then select a real region, district and ward.'
         );
         return;
       }
@@ -465,14 +474,15 @@ export function AuthPortalView({
       const coordinates = leadGps ?? ESTIMATED_LEAD_COORDINATES;
       const quoteParts: string[] = [];
       if (quoteInput.trim()) quoteParts.push(quoteInput.trim());
+      quoteParts.push(`[${isSw ? 'Anwani' : 'Address'}: ${formatTanzaniaAddress(location)}]`);
       quoteParts.push(
         coordinates.source === 'device'
           ? isSw
             ? `[GPS ya kifaa: ${coordinates.latitude}, ${coordinates.longitude} ±${coordinates.accuracyMeters}m]`
             : `[Device GPS: ${coordinates.latitude}, ${coordinates.longitude} ±${coordinates.accuracyMeters}m]`
           : isSw
-            ? `[Eneo lilikadiriwa: Dar es Salaam. Kata: ${cleanWard}. Tafadhali thibitisha na mwombaji.]`
-            : `[Estimated location: Dar es Salaam. Ward: ${cleanWard}. Please verify with applicant.]`,
+            ? '[Eneo la GPS halijapatikani; tafadhali thibitisha anwani iliyochaguliwa na mwombaji.]'
+            : '[Device GPS unavailable; please verify the selected address with the applicant.]',
       );
 
       setSubmitting(true);
@@ -483,7 +493,12 @@ export function AuthPortalView({
             merchantName: cleanMerchant,
             ownerName: cleanOwner,
             ownerPhoneE164: normalizedPhone,
-            wardName: cleanWard,
+            countryName: 'Tanzania',
+            regionName: location.region,
+            districtName: location.district,
+            wardName: location.ward,
+            streetAddress: location.street,
+            postcode: location.postcode,
             businessTier,
             latitude: coordinates.latitude,
             longitude: coordinates.longitude,
@@ -498,6 +513,7 @@ export function AuthPortalView({
           merchantName: created?.merchantName || cleanMerchant,
         });
         setQuoteInput('');
+        setLocation(EMPTY_TANZANIA_ADDRESS);
       } catch (err) {
         if (err instanceof SokoHttpError) {
           setBackendOnline(true);
@@ -920,14 +936,20 @@ export function AuthPortalView({
                         <option value="WHOLESALE">
                           {isSw ? 'Mfanyabiashara wa Jumla' : 'Wholesaler'}
                         </option>
+                        <option value="HYBRID_STORE">
+                          {isSw ? 'Duka Mseto (Jumla + Rejareja)' : 'Hybrid Store (Wholesale + Retail)'}
+                        </option>
+                        <option value="MANUFACTURER_SUPPLIER">
+                          {isSw ? 'Mtengenezaji / Msambizaji' : 'Manufacturer / Supplier'}
+                        </option>
                       </select>
                     </label>
 
-                    <div className="space-y-1.5">
+                    <div className="space-y-2.5">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
                           <MapPin className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-                          {isSw ? 'Kata / Mahali pa Biashara' : 'Ward / Business Location'}
+                          {isSw ? 'Mahali pa Biashara' : 'Business Location'}
                         </span>
                         <button
                           type="button"
@@ -945,24 +967,22 @@ export function AuthPortalView({
                               : 'Use my GPS'}
                         </button>
                       </div>
-                      <input
-                        type="text"
-                        required
-                        value={wardInput}
-                        onChange={(e) => {
-                          setWardInput(e.target.value);
+                      <TanzaniaLocationFields
+                        locale={locale}
+                        value={location}
+                        onChange={(next) => {
+                          setLocation(next);
                           setAuthError(null);
                         }}
-                        placeholder={isSw ? 'Mf. Kariakoo, Dar es Salaam' : 'e.g. Kariakoo, Dar es Salaam'}
-                        className="w-full min-h-[44px] px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-emerald-600 focus:outline-none"
+                        idPrefix="public-register"
                       />
                       {leadGps && (
                         <p className="text-[11px] font-mono text-emerald-700">
                           {leadGps.source === 'device'
                             ? `GPS: ${leadGps.latitude.toFixed(4)}, ${leadGps.longitude.toFixed(4)} ±${leadGps.accuracyMeters}m`
                             : isSw
-                              ? 'Eneo litakadiriwa; timu itathibitisha kata yako.'
-                              : 'Estimated location; our team will confirm your ward.'}
+                              ? 'GPS haipatikani; timu itathibitisha anwani uliyochagua.'
+                              : 'GPS unavailable; our team will confirm the selected address.'}
                         </p>
                       )}
                       {gpsNotice && <p className="text-[11px] text-amber-700">{gpsNotice}</p>}

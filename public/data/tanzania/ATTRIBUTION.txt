@@ -1,0 +1,4 @@
+Tanzania administrative location data (31 regions, 168 districts, 4054 wards, 75061 streets)
+source: https://github.com/mwemanoor/tz-locations (data from tanzaniapostcode.com)
+license: MIT (https://opensource.org/licenses/MIT)
+Streets are split into one JSON file per region slug.

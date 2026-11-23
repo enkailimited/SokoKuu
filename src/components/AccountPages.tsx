@@ -338,6 +338,8 @@ export function ProfileEditView({
         return ['MANUFACTURER_SUPPLIER'];
       case 'SUPER_ADMIN':
         return ['PLATFORM_ADMIN'];
+      case 'SALES_STAFF':
+        return ['SALES_WORKSPACE'];
     }
   };
 

@@ -20,10 +20,27 @@ import {
   isSokoNetworkError,
 } from '../services/sokoApiClient';
 import { normalizeTzPhoneE164 } from '../types/auth';
+import {
+  EMPTY_TANZANIA_ADDRESS,
+  formatTanzaniaAddress,
+  type TanzaniaAddress,
+} from '../services/tanzaniaLocations';
 import { BackendOfflineBanner, EmptyStateCard } from './DatabaseStateBanner';
+import { TanzaniaLocationFields } from './TanzaniaLocationFields';
 
 export type LeadLifecycleStatus = 'Prospect' | 'Converted';
-export type LeadBusinessTier = 'Retailer' | 'Wholesaler';
+export type LeadBusinessTier =
+  | 'RETAIL_DUKA'
+  | 'WHOLESALE'
+  | 'HYBRID_STORE'
+  | 'MANUFACTURER_SUPPLIER';
+
+const TIER_LABELS: Record<LeadBusinessTier, { en: string; sw: string }> = {
+  RETAIL_DUKA: { en: 'Retailer', sw: 'Rejareja' },
+  WHOLESALE: { en: 'Wholesaler', sw: 'Jumla' },
+  HYBRID_STORE: { en: 'Hybrid Store', sw: 'Duka Mseto' },
+  MANUFACTURER_SUPPLIER: { en: 'Manufacturer / Supplier', sw: 'Mtengenezaji / Msambizaji' },
+};
 
 export interface SokoLeadRecord {
   leadId: string;
@@ -31,6 +48,7 @@ export interface SokoLeadRecord {
   ownerName: string;
   ownerPhoneE164: string;
   ward: string;
+  address?: string;
   businessTier: LeadBusinessTier;
   latitude: number;
   longitude: number;
@@ -46,8 +64,13 @@ interface BackendLeadDto {
   merchantName: string;
   ownerName: string;
   ownerPhoneE164: string;
+  countryName?: string | null;
+  regionName?: string | null;
+  districtName?: string | null;
   wardName: string;
-  businessTier: 'WHOLESALE' | 'RETAIL_DUKA' | 'HYBRID_STORE';
+  streetAddress?: string | null;
+  postcode?: string | null;
+  businessTier: LeadBusinessTier;
   latitude: number;
   longitude: number;
   gpsAccuracyMeters: number;
@@ -70,10 +93,10 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
   const [merchantName, setMerchantName] = useState<string>('');
   const [ownerName, setOwnerName] = useState<string>('');
   const [ownerPhone, setOwnerPhone] = useState<string>('');
-  const [wardName, setWardName] = useState<string>('');
+  const [location, setLocation] = useState<TanzaniaAddress>(EMPTY_TANZANIA_ADDRESS);
   const [manualLat, setManualLat] = useState<string>('');
   const [manualLng, setManualLng] = useState<string>('');
-  const [businessTier, setBusinessTier] = useState<LeadBusinessTier>('Retailer');
+  const [businessTier, setBusinessTier] = useState<LeadBusinessTier>('RETAIL_DUKA');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [convertingId, setConvertingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -92,7 +115,17 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
         ownerName: l.ownerName,
         ownerPhoneE164: l.ownerPhoneE164,
         ward: l.wardName,
-        businessTier: l.businessTier === 'WHOLESALE' ? 'Wholesaler' : 'Retailer',
+        address: l.regionName
+          ? formatTanzaniaAddress({
+              country: l.countryName ?? 'Tanzania',
+              region: l.regionName,
+              district: l.districtName ?? '',
+              ward: l.wardName,
+              street: l.streetAddress ?? '',
+              postcode: l.postcode ?? '',
+            })
+          : undefined,
+        businessTier: l.businessTier,
         latitude: l.latitude,
         longitude: l.longitude,
         accuracyMeters: l.gpsAccuracyMeters,
@@ -141,15 +174,21 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
 
     const cleanMerchant = merchantName.trim();
     const cleanOwner = ownerName.trim();
-    const cleanWard = wardName.trim();
     const normalizedPhone = normalizeTzPhoneE164(ownerPhone);
 
-    if (!cleanMerchant || !cleanOwner || !cleanWard || !/^\+255[67]\d{8}$/.test(normalizedPhone)) {
+    if (
+      !cleanMerchant ||
+      !cleanOwner ||
+      !location.region ||
+      !location.district ||
+      !location.ward ||
+      !/^\+255[67]\d{8}$/.test(normalizedPhone)
+    ) {
       setNotice({
         kind: 'err',
         text: isSw
-          ? 'Jaza jina la biashara, mmiliki, kata, na namba sahihi ya Tanzania (+2557XXXXXXXX / +2556XXXXXXXX).'
-          : 'Enter merchant name, owner name, ward, and valid Tanzania MSISDN (+2557XXXXXXXX or +2556XXXXXXXX).',
+          ? 'Jaza jina la biashara na mmiliki, chagua mkoa/wilaya/kata halisi, na weka namba sahihi ya Tanzania (+2557XXXXXXXX / +2556XXXXXXXX).'
+          : 'Enter merchant and owner names, select a real region/district/ward, and provide a valid Tanzania MSISDN (+2557XXXXXXXX or +2556XXXXXXXX).',
       });
       return;
     }
@@ -177,8 +216,13 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
         merchantName: cleanMerchant,
         ownerName: cleanOwner,
         ownerPhoneE164: normalizedPhone,
-        wardName: cleanWard,
-        businessTier: businessTier === 'Wholesaler' ? 'WHOLESALE' : 'RETAIL_DUKA',
+        countryName: 'Tanzania',
+        regionName: location.region,
+        districtName: location.district,
+        wardName: location.ward,
+        streetAddress: location.street,
+        postcode: location.postcode,
+        businessTier,
         latitude: latVal,
         longitude: lngVal,
         gpsAccuracyMeters: Math.max(1, Math.round(gps.coordinates?.accuracyMeters ?? 15)),
@@ -188,7 +232,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
       setMerchantName('');
       setOwnerName('');
       setOwnerPhone('');
-      setWardName('');
+      setLocation(EMPTY_TANZANIA_ADDRESS);
       await loadLeadsFromApi();
       setNotice({
         kind: 'ok',
@@ -450,34 +494,29 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-700">
-                  {isSw ? 'Kata / Mkoa' : 'Ward & District'}
-                </label>
-                <input
-                  type="text"
-                  value={wardName}
-                  onChange={(e) => setWardName(e.target.value)}
-                  placeholder={isSw ? 'Mf. Kariakoo, Dar es Salaam' : 'e.g. Kariakoo, Dar es Salaam'}
-                  className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900"
-                  required
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-700">
-                  {isSw ? 'Aina ya Biashara' : 'Business Tier'}
-                </label>
-                <select
-                  value={businessTier}
-                  onChange={(e) => setBusinessTier(e.target.value as LeadBusinessTier)}
-                  className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900 bg-white"
-                >
-                  <option value="Retailer">{isSw ? 'Mfanyabiashara wa Rejareja' : 'Retail Merchant'}</option>
-                  <option value="Wholesaler">{isSw ? 'Mfanyabiashara wa Jumla' : 'Wholesale Merchant'}</option>
-                </select>
-              </div>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-700">
+                {isSw ? 'Aina ya Biashara' : 'Business Type'}
+              </label>
+              <select
+                value={businessTier}
+                onChange={(e) => setBusinessTier(e.target.value as LeadBusinessTier)}
+                className="w-full min-h-[38px] px-3 rounded-lg border border-slate-200 text-xs text-slate-900 bg-white"
+              >
+                {(Object.keys(TIER_LABELS) as LeadBusinessTier[]).map((tier) => (
+                  <option key={tier} value={tier}>
+                    {isSw ? TIER_LABELS[tier].sw : TIER_LABELS[tier].en}
+                  </option>
+                ))}
+              </select>
             </div>
+
+            <TanzaniaLocationFields
+              locale={locale}
+              value={location}
+              onChange={setLocation}
+              idPrefix="sales-lead"
+            />
 
             <button
               type="submit"
@@ -545,7 +584,13 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
                           <span className="text-slate-400">·</span>
                           <span className="font-bold text-slate-900">{lead.merchantName}</span>
                           <span className="text-slate-400">·</span>
-                          <span className="text-slate-600">{lead.businessTier}</span>
+                          <span className="text-slate-600">
+                            {TIER_LABELS[lead.businessTier]
+                              ? isSw
+                                ? TIER_LABELS[lead.businessTier].sw
+                                : TIER_LABELS[lead.businessTier].en
+                              : lead.businessTier}
+                          </span>
                         </div>
                         <div className="text-xs text-slate-600 flex flex-wrap items-center gap-2">
                           <a
@@ -558,7 +603,7 @@ export function SalesLeadsDashboard({ locale = 'sw' }: { locale?: Locale }) {
                           <span className="text-slate-400">·</span>
                           <span>{lead.ownerName}</span>
                           <span className="text-slate-400">·</span>
-                          <span>{lead.ward}</span>
+                          <span>{lead.address ?? lead.ward}</span>
                         </div>
                         <div className="text-[11px] font-mono text-slate-500">
                           GPS: {lead.latitude}, {lead.longitude} (±{lead.accuracyMeters}m) · Version v

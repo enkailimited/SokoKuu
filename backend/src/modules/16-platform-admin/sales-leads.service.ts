@@ -47,7 +47,12 @@ export class SalesLeadsService {
         merchantName: lead.merchantName,
         ownerName: lead.ownerName,
         ownerPhoneE164: lead.ownerPhoneE164,
+        countryName: lead.countryName,
+        regionName: lead.regionName,
+        districtName: lead.districtName,
         wardName: lead.wardName,
+        streetAddress: lead.streetAddress,
+        postcode: lead.postcode,
         businessTier: lead.businessTier,
         latitude: lead.latitude,
         longitude: lead.longitude,
@@ -100,7 +105,12 @@ export class SalesLeadsService {
             shop_name,
             owner_name,
             owner_phone_e164,
+            country_name,
+            region_name,
+            district_name,
             ward_name,
+            street_address,
+            postcode,
             business_tier,
             latitude,
             longitude,
@@ -115,7 +125,12 @@ export class SalesLeadsService {
             ${dto.merchantName.trim()},
             ${dto.ownerName.trim()},
             ${dto.ownerPhoneE164.trim()},
+            ${(dto.countryName?.trim() || 'Tanzania').slice(0, 64)},
+            ${dto.regionName?.trim() || ''},
+            ${dto.districtName?.trim() || ''},
             ${dto.wardName.trim()},
+            ${dto.streetAddress?.trim() || ''},
+            ${dto.postcode?.trim() || ''},
             ${dto.businessTier}::business_tier,
             ${dto.latitude}::double precision,
             ${dto.longitude}::double precision,
@@ -171,7 +186,12 @@ export class SalesLeadsService {
           merchantName: true,
           ownerName: true,
           ownerPhoneE164: true,
+          countryName: true,
+          regionName: true,
+          districtName: true,
           wardName: true,
+          streetAddress: true,
+          postcode: true,
           businessTier: true,
           latitude: true,
           longitude: true,
@@ -226,8 +246,15 @@ export class SalesLeadsService {
         );
       }
 
-      const ownerRole =
-        existingLead.businessTier === 'WHOLESALE' ? 'WHOLESALER' : 'RETAILER';
+      // Converted supplier leads must own a SUPPLIER account so the supplier
+      // module's role + tier checks pass after activation.
+      const ownerRoleByTier: Record<string, UserRole> = {
+        WHOLESALE: UserRole.WHOLESALER,
+        RETAIL_DUKA: UserRole.RETAILER,
+        HYBRID_STORE: UserRole.WHOLESALER,
+        MANUFACTURER_SUPPLIER: UserRole.SUPPLIER,
+      };
+      const ownerRole = ownerRoleByTier[existingLead.businessTier] ?? UserRole.RETAILER;
 
       let ownerUser = await tx.user.findUnique({
         where: { phoneE164: existingLead.ownerPhoneE164 },
@@ -269,9 +296,9 @@ export class SalesLeadsService {
           ${shortCode},
           ${existingLead.merchantName},
           ${existingLead.businessTier}::business_tier,
-          ${dto.streetAddress?.trim() || existingLead.wardName},
+          ${dto.streetAddress?.trim() || existingLead.streetAddress?.trim() || existingLead.wardName},
           ${existingLead.wardName},
-          ${dto.district?.trim() || 'Dar es Salaam'},
+          ${dto.district?.trim() || existingLead.districtName?.trim() || existingLead.regionName?.trim() || 'Dar es Salaam'},
           ${existingLead.latitude}::numeric(9,6),
           ${existingLead.longitude}::numeric(9,6),
           TRUE,

@@ -24,6 +24,7 @@ enum UserRole {
   CONSUMER
   DRIVER
   SUPPLIER
+  SALES_STAFF
 
   @@map("user_role")
 }
@@ -585,7 +586,12 @@ model SokoLead {
   merchantName        String                                @map("shop_name") @db.VarChar(180)
   ownerName           String                                @map("owner_name") @db.VarChar(150)
   ownerPhoneE164      String                                @unique @map("owner_phone_e164") @db.VarChar(16)
+  countryName         String?                               @default("Tanzania") @map("country_name") @db.VarChar(64)
+  regionName          String?                               @map("region_name") @db.VarChar(120)
+  districtName        String?                               @map("district_name") @db.VarChar(120)
   wardName            String                                @map("ward_name") @db.VarChar(140)
+  streetAddress       String?                               @map("street_address") @db.VarChar(200)
+  postcode            String?                               @map("postcode") @db.VarChar(16)
   quoteRequest        String?                               @map("quote_request") @db.Text
   businessTier        BusinessTier                          @map("business_tier")
   latitude            Float
