@@ -31,6 +31,7 @@ import {
   Tag,
   Trash2,
   TrendingUp,
+  Users,
   X,
 } from 'lucide-react';
 import { CODE_ARTIFACTS, type CodeArtifact } from '../data/blueprints';
@@ -73,6 +74,7 @@ import { FullPageMarketplaceMap } from './FullPageMarketplaceMap';
 import { ManagedOrderInterceptorPanel } from './ManagedOrderInterceptorPanel';
 import { OptimizationLabPanel } from './OptimizationLabPanel';
 import { SalesLeadsDashboard } from './SalesLeadsDashboard';
+import { SalesStaffManagement } from './SalesStaffManagement';
 import { WholesalerEodReconciliation } from './WholesalerEodReconciliation';
 
 export type AdminSectionKey =
@@ -81,6 +83,7 @@ export type AdminSectionKey =
   | 'merchants'
   | 'map_matrix'
   | 'leads'
+  | 'sales_workspace'
   | 'catalog'
   | 'categories'
   | 'units'
@@ -808,6 +811,14 @@ export function SuperAdminDashboardLayout({
       icon: MapPin,
     },
     {
+      key: 'sales_workspace',
+      labelSw: 'Dashboard ya Mauzo & Staff',
+      labelEn: 'Sales Workspace & Staff',
+      metaSw: 'Akaunti za Timu · App ya Mauzo',
+      metaEn: 'Team Accounts · Sales App',
+      icon: Users,
+    },
+    {
       key: 'catalog',
       labelSw: 'Global Catalog Manager',
       labelEn: 'Global Catalog Manager',
@@ -1132,6 +1143,32 @@ export function SuperAdminDashboardLayout({
 
         {/* VIEW 2C: FIELD SALES LEADS & GPS CONVERSION ENGINE */}
         {activeSection === 'leads' && <SalesLeadsDashboard locale={locale} />}
+
+        {/* VIEW 2D: STANDALONE SALES APP + ADMIN-MANAGED SALES STAFF */}
+        {activeSection === 'sales_workspace' && (
+          <div className="space-y-4">
+            <section className="bg-white border border-slate-100 rounded-lg shadow-sm p-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h2 className="text-sm font-bold text-slate-900">
+                  {isSw ? 'App ya Mauzo ya Kujitegemea' : 'Standalone Sales App'}
+                </h2>
+                <p className="text-xs text-slate-600">
+                  {isSw
+                    ? 'Timu ya mauzo inaingia kwenye dashboard yake yenyewe na kusajili wateja/nukuu.'
+                    : 'The sales team signs in to its own dashboard to register leads and quotes.'}
+                </p>
+              </div>
+              <a
+                href="#/sales-dashboard"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+              >
+                <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                {isSw ? 'Fungua Dashboard ya Mauzo' : 'Open Sales Dashboard'}
+              </a>
+            </section>
+            <SalesStaffManagement locale={locale} />
+          </div>
+        )}
 
         {/* VIEW 3: GLOBAL CATALOG MANAGER */}
         {activeSection === 'catalog' && (

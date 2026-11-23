@@ -38,6 +38,7 @@ import {
   type FloatingBottomNavTab,
 } from './components/SokoFloatingBottomNav';
 import { SokoSplashScreen } from './components/SokoSplashScreen';
+import { SalesWorkspace } from './components/SalesWorkspace';
 import { SokoApiClient, isSokoNetworkError } from './services/sokoApiClient';
 
 type ActiveAccountPage = 'DASHBOARD' | 'PROFILE' | 'SETTINGS';
@@ -55,6 +56,7 @@ const ROLE_THEME_CLASSES: Record<PlatformRole, string> = {
   SUPPLIER: 'bg-slate-50/60 text-slate-900',
   DRIVER: 'bg-amber-50/25 text-slate-900',
   SUPER_ADMIN: 'bg-slate-50/80 text-slate-900',
+  SALES_STAFF: 'bg-slate-50 text-slate-900',
 };
 
 function normalizeLocale(val?: string | null): Locale {
@@ -95,6 +97,15 @@ function SinglePlatformShell() {
 
   const [activePage, setActivePage] = useState<ActiveAccountPage>('DASHBOARD');
   const [showAuthPortal, setShowAuthPortal] = useState(false);
+  const [standaloneHash, setStandaloneHash] = useState(() =>
+    typeof window === 'undefined' ? '' : window.location.hash.split('?')[0],
+  );
+
+  useEffect(() => {
+    const onHashChange = () => setStandaloneHash(window.location.hash.split('?')[0]);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   const [merchantView, setMerchantViewState] = useState<MerchantNavView>(() => {
     try {
@@ -486,6 +497,26 @@ function SinglePlatformShell() {
     />
   ) : null;
 
+  // Standalone sales application. No merchant shell, floating nav, or admin
+  // chrome is mounted on this hash route; the workspace owns its own layout.
+  if (standaloneHash === '#/sales-dashboard') {
+    return (
+      <>
+        {splashOverlay}
+        <SalesWorkspace
+          locale={locale}
+          profile={activeProfile}
+          onSignIn={handleSignIn}
+          onLogout={handleLogout}
+          onExit={() => {
+            window.location.hash = '';
+            setStandaloneHash('');
+          }}
+        />
+      </>
+    );
+  }
+
   if (!activeProfile) {
     if (!showAuthPortal) {
       return (
@@ -791,6 +822,25 @@ function SinglePlatformShell() {
 
               {activeProfile.role === 'DRIVER' && (
                 <MobileDriverReceiptCard locale={locale} />
+              )}
+
+              {activeProfile.role === 'SALES_STAFF' && (
+                <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-3">
+                  <h2 className="text-base font-bold text-slate-900">
+                    {locale === 'sw' ? 'Karibu kwenye Timu ya Mauzo' : 'Welcome to the Sales Team'}
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    {locale === 'sw'
+                      ? 'Kazi yako ya kusajili wateja na nukuu iko kwenye dashboard yako ya mauzo.'
+                      : 'Your lead and quote registration workspace lives in the standalone sales dashboard.'}
+                  </p>
+                  <a
+                    href="#/sales-dashboard"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold"
+                  >
+                    {locale === 'sw' ? 'Fungua Dashboard ya Mauzo' : 'Open Sales Dashboard'}
+                  </a>
+                </section>
               )}
 
               {activeProfile.role === 'SUPER_ADMIN' && (

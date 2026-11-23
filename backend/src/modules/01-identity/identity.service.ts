@@ -38,7 +38,7 @@ const USER_REVOCATION_TTL_SECONDS = 15 * 60; // matches maximum access-token lif
 
 // Privileged roles are never self-assignable. The DTO already restricts the
 // public surface; this set is a defence-in-depth check inside the service.
-const NON_SELF_REGISTRABLE_ROLES = new Set<Role>([Role.SUPER_ADMIN]);
+const NON_SELF_REGISTRABLE_ROLES = new Set<Role>([Role.SUPER_ADMIN, Role.SALES_STAFF]);
 
 export interface AuthTokenResponse {
   accessToken: string;

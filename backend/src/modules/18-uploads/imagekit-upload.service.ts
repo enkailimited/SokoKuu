@@ -36,6 +36,7 @@ const ROLE_FOLDERS: Record<Role, readonly string[]> = {
   [Role.RETAILER]: ['/merchants', '/sokokuu'],
   [Role.CONSUMER]: ['/sokokuu'],
   [Role.DRIVER]: ['/sokokuu'],
+  [Role.SALES_STAFF]: ['/sokokuu'],
 };
 
 @Injectable()

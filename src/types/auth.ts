@@ -6,7 +6,8 @@ export type PlatformRole =
   | 'WHOLESALER'
   | 'DRIVER'
   | 'SUPPLIER'
-  | 'SUPER_ADMIN';
+  | 'SUPER_ADMIN'
+  | 'SALES_STAFF';
 
 export type AccountMode =
   | 'END_CONSUMER'
@@ -15,7 +16,8 @@ export type AccountMode =
   | 'HYBRID_STORE'
   | 'FLEET_RIDER'
   | 'MANUFACTURER_SUPPLIER'
-  | 'PLATFORM_ADMIN';
+  | 'PLATFORM_ADMIN'
+  | 'SALES_WORKSPACE';
 
 export interface UserProfile {
   userId: string;
@@ -56,6 +58,7 @@ export function mapTierToAccountMode(
   tier?: string | null
 ): AccountMode {
   if (role === 'SUPER_ADMIN') return 'PLATFORM_ADMIN';
+  if (role === 'SALES_STAFF') return 'SALES_WORKSPACE';
   if (role === 'DRIVER') return 'FLEET_RIDER';
   if (role === 'SUPPLIER' || tier === 'MANUFACTURER_SUPPLIER') {
     return 'MANUFACTURER_SUPPLIER';
@@ -73,6 +76,7 @@ export const ROLE_LABELS: Record<PlatformRole, { en: string; sw: string }> = {
   DRIVER: { en: 'Delivery Driver', sw: 'Dereva Msafirishaji' },
   SUPPLIER: { en: 'Manufacturer Supplier', sw: 'Mtengenezaji / Msambizaji' },
   SUPER_ADMIN: { en: 'System Admin', sw: 'Msimamizi Mkuu' },
+  SALES_STAFF: { en: 'Sales Team Member', sw: 'Mfanyikazi wa Mauzo' },
 };
 
 export const MODE_LABELS: Record<AccountMode, { en: string; sw: string }> = {
@@ -86,4 +90,5 @@ export const MODE_LABELS: Record<AccountMode, { en: string; sw: string }> = {
     sw: 'Hali ya Ghala la Mtengenezaji (B2B)',
   },
   PLATFORM_ADMIN: { en: 'Platform Governance Mode', sw: 'Hali ya Usimamizi Mkuu' },
+  SALES_WORKSPACE: { en: 'Sales Workspace Mode', sw: 'Hali ya Kazi ya Mauzo' },
 };
