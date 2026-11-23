@@ -260,6 +260,29 @@ body,
 /* Hover: fade the finished logo out, then replay the stroke + fill sequence. */
 .sk-logo-wrap.sk-logo-closing { opacity: 0; }
 
+/* Brand light-islands: when the user forces dark, the surrounding UI may go
+   dark, but the SokoKuu artwork keeps its authentic blue/green on a white
+   plate. These subtrees opt out of forced darkening (color-scheme: light);
+   the halo uses box-shadow so no layout shifts on the normal light UI. */
+.sk-logo-wrap,
+.sk-brand-light {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sk-logo-wrap svg,
+  [aria-label="SokoKuu App Icon"] {
+    background-color: #ffffff;
+    border-radius: 10px;
+    box-shadow: 0 0 0 5px #ffffff;
+  }
+
+  .sk-brand-light {
+    background-color: #ffffff;
+    color: #0f172a;
+  }
+}
+
 /* --- Splash screen App Icon: pure stroke draw first (no fill), then color fill --- */
 @keyframes sk-icon-stroke-trace {
   0% {

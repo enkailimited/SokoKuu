@@ -51,7 +51,7 @@ export function SokoFloatingBottomNav({
           type="button"
           onClick={() => onSelectTab('dashboard')}
           aria-label={locale === 'sw' ? 'Rudi Dashibodi' : 'Back to dashboard'}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white shadow-[0_4px_12px_rgba(0,0,0,0.22)] ring-2 ring-[#15AC49] transition-transform duration-200 active:scale-95 cursor-pointer"
+          className="sk-brand-light flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white shadow-[0_4px_12px_rgba(0,0,0,0.22)] ring-2 ring-[#15AC49] transition-transform duration-200 active:scale-95 cursor-pointer"
         >
           <SokoKuuAppIcon sizeClass="h-7 w-7" animated={false} />
         </button>
