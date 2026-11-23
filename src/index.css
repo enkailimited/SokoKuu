@@ -179,14 +179,15 @@ body,
   to { opacity: 1; transform: translateX(0); }
 }
 
+/* NOTE: opacity-only on purpose. A persisted `transform` (animation fill-mode
+   `both`) would turn every animated ancestor into the containing block for
+   `position: fixed` descendants, breaking the fixed bottom nav and overlays. */
 @keyframes sk-dashboard-crossfade-in {
   0% {
     opacity: 0;
-    transform: translateY(4px) scale(0.996);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 
