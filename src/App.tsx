@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Calculator, LayoutDashboard, Settings } from 'lucide-react';
 import { t, type Locale } from './i18n';
 import { DataSaverProvider } from './context/DataSaverContext';
 import { HybridModeProvider } from './context/HybridModeContext';
@@ -34,6 +33,10 @@ import { SuperAdminDiagnosticsView } from './components/SuperAdminDiagnosticsVie
 import { ProfileEditView, SettingsView } from './components/AccountPages';
 import { BackendOfflineBanner } from './components/DatabaseStateBanner';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import {
+  SokoFloatingBottomNav,
+  type FloatingBottomNavTab,
+} from './components/SokoFloatingBottomNav';
 import { SokoSplashScreen } from './components/SokoSplashScreen';
 import { SokoApiClient, isSokoNetworkError } from './services/sokoApiClient';
 
@@ -153,6 +156,7 @@ function SinglePlatformShell() {
   };
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [hasUnreadOrderAlert, setHasUnreadOrderAlert] = useState(false);
   const [adminMobileSidebarOpen, setAdminMobileSidebarOpen] = useState<boolean>(false);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState<boolean>(false);
   const [retailerMapEnabled, setRetailerMapEnabled] = useState<boolean>(false);
@@ -462,6 +466,18 @@ function SinglePlatformShell() {
     };
   }, [handleOpenDeepLink]);
 
+  // Unread dot on the floating marketplace/orders tab. The app bar owns the
+  // full alert list; this only mirrors the live alert events as a badge.
+  useEffect(() => {
+    const markUnread = () => setHasUnreadOrderAlert(true);
+    window.addEventListener('sokokuu:managed-order-alert', markUnread);
+    window.addEventListener('sokokuu:stomp-alert', markUnread);
+    return () => {
+      window.removeEventListener('sokokuu:managed-order-alert', markUnread);
+      window.removeEventListener('sokokuu:stomp-alert', markUnread);
+    };
+  }, []);
+
   const splashOverlay = showSplash ? (
     <SokoSplashScreen
       locale={locale}
@@ -511,6 +527,25 @@ function SinglePlatformShell() {
         : activeProfile.role;
   const dashboardTransitionKey = `${activeProfile.role}:${activePage}:${activeDashboardTab}`;
   const isFullBleedAdmin = activeProfile.role === 'SUPER_ADMIN' && activePage === 'DASHBOARD';
+
+  const activeFloatingTab: FloatingBottomNavTab =
+    activePage === 'SETTINGS'
+      ? 'settings'
+      : merchantView === 'sokoni'
+        ? 'sokoni'
+        : merchantView === 'pos'
+          ? 'pos'
+          : 'dashboard';
+
+  const handleFloatingNavSelect = (tab: FloatingBottomNavTab) => {
+    if (tab === 'settings') {
+      setActivePage('SETTINGS');
+      return;
+    }
+    setActivePage('DASHBOARD');
+    setMerchantView(tab);
+    if (tab === 'sokoni') setHasUnreadOrderAlert(false);
+  };
 
   return (
     <div
@@ -792,66 +827,14 @@ function SinglePlatformShell() {
         </div>
       </main>
 
-      {/* Fixed Bottom Navigation Bar (Wireframe 1 & 2: Dashboard | POS | Settings) */}
+      {/* Floating curved-notch pill navigation (z-30, below z-50 modals/sheets). */}
       {isMerchantRole && (
-        <nav
-          aria-label={locale === 'sw' ? 'Urambazaji wa Chini' : 'Bottom navigation'}
-          className="fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 sk-safe-bottom"
-        >
-          <div className="max-w-lg mx-auto grid grid-cols-3 h-16">
-            <button
-              type="button"
-              onClick={() => {
-                setActivePage('DASHBOARD');
-                setMerchantView('dashboard');
-              }}
-              aria-current={
-                activePage === 'DASHBOARD' && merchantView !== 'pos' ? 'page' : undefined
-              }
-              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-colors cursor-pointer ${
-                activePage === 'DASHBOARD' && merchantView !== 'pos'
-                  ? 'text-[#15AC49]'
-                  : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <LayoutDashboard className="w-5 h-5" aria-hidden="true" />
-              <span>{t(locale, 'nav.dashboard')}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActivePage('DASHBOARD');
-                setMerchantView('pos');
-              }}
-              aria-current={
-                activePage === 'DASHBOARD' && merchantView === 'pos' ? 'page' : undefined
-              }
-              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-colors cursor-pointer ${
-                activePage === 'DASHBOARD' && merchantView === 'pos'
-                  ? 'text-[#15AC49]'
-                  : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <Calculator className="w-5 h-5" aria-hidden="true" />
-              <span>{t(locale, 'nav.pos')}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActivePage('SETTINGS')}
-              aria-current={activePage === 'SETTINGS' ? 'page' : undefined}
-              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-colors cursor-pointer ${
-                activePage === 'SETTINGS'
-                  ? 'text-[#15AC49]'
-                  : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <Settings className="w-5 h-5" aria-hidden="true" />
-              <span>{t(locale, 'nav.settings')}</span>
-            </button>
-          </div>
-        </nav>
+        <SokoFloatingBottomNav
+          locale={locale}
+          activeTab={activeFloatingTab}
+          onSelectTab={handleFloatingNavSelect}
+          hasUnreadAlerts={hasUnreadOrderAlert}
+        />
       )}
 
       {activePage === 'DASHBOARD' && !isMerchantRole && <DashboardOnlineBadge />}
