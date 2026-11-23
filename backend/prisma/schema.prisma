@@ -586,6 +586,7 @@ model SokoLead {
   ownerName           String                                @map("owner_name") @db.VarChar(150)
   ownerPhoneE164      String                                @unique @map("owner_phone_e164") @db.VarChar(16)
   wardName            String                                @map("ward_name") @db.VarChar(140)
+  quoteRequest        String?                               @map("quote_request") @db.Text
   businessTier        BusinessTier                          @map("business_tier")
   latitude            Float
   longitude           Float

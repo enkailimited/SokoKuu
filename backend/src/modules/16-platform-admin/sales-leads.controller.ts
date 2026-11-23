@@ -1,9 +1,14 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthenticatedUser } from '@common/security/auth.types';
-import { CurrentUser, Roles } from '@common/security/decorators';
+import { CurrentUser, Public, Roles } from '@common/security/decorators';
 import { Role } from '@common/security/roles.enum';
-import { ConvertLeadDto, CreateLeadDto } from './dto/platform-admin.dto';
+import {
+  ConvertLeadDto,
+  CreateLeadDto,
+  PublicLeadDto,
+} from './dto/platform-admin.dto';
 import { SalesLeadsService } from './sales-leads.service';
 
 @ApiTags('Platform Administration')
@@ -31,6 +36,23 @@ export class SalesLeadsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.salesLeadsService.captureProspectLead(dto, user.sub);
+  }
+
+  /**
+   * Public quote / registration entry point used by the public "register"
+   * screen. Creates a PROSPECT lead in the same table; the SokoKuu team
+   * contacts the applicant and later converts/verifies the merchant.
+   */
+  @Public()
+  @Post('public')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Submit a public merchant quote / registration request as a sales lead',
+  })
+  @ApiResponse({ status: 201, description: 'Prospect lead captured for team follow-up' })
+  @ApiResponse({ status: 409, description: 'A lead already exists for this phone number' })
+  capturePublicLead(@Body() dto: PublicLeadDto) {
+    return this.salesLeadsService.capturePublicProspectLead(dto);
   }
 
   @Post(':leadId/convert')
